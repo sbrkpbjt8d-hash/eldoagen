@@ -18,6 +18,10 @@ export default function BanksPage() {
   const [editBalance, setEditBalance] = useState('');
   const [editNotes, setEditNotes] = useState('');
 
+  const [reconciliationModal, setReconciliationModal] = useState({ isOpen: false, bank: null });
+  const [reconciledBalance, setReconciledBalance] = useState('');
+  const [reconciliationNotes, setReconciliationNotes] = useState('');
+
   // حالات نافذة عرض سجل حركات البنك
   const [historyModal, setHistoryModal] = useState({ isOpen: false, bank: null });
   const [historyStartDate, setHistoryStartDate] = useState('');
@@ -135,6 +139,45 @@ export default function BanksPage() {
     },
   });
 
+  const reconcileBankMutation = useMutation({
+    mutationFn: async () => {
+      if (!isAdmin) throw new Error('عذراً، التسوية مقتصرة على المسؤولين فقط.');
+      const bank = reconciliationModal.bank;
+      const actualBalance = Number(reconciledBalance);
+      const currentBalance = Number(bank?.balance || 0);
+      const difference = actualBalance - currentBalance;
+
+      if (!bank) throw new Error('اختر البنك المراد تسويته.');
+      if (!Number.isFinite(actualBalance) || actualBalance < 0) throw new Error('اكتب الرصيد الفعلي بشكل صحيح.');
+      if (difference === 0) throw new Error('الرصيد الفعلي يساوي الرصيد الحالي، لا توجد تسوية.');
+
+      await pb.collection('banks').update(bank.id, {
+        balance: actualBalance,
+        actor_name: currentUserName(),
+      });
+      return await pb.collection('treasury_transactions').create({
+        type: 'purchase',
+        movement_type: 'bank_adjustment',
+        source_type: 'bank',
+        bank_id: bank.id,
+        amount: difference,
+        title: `تسوية رصيد البنك: ${bank.name}`,
+        notes: reconciliationNotes.trim() || 'تسوية رصيد البنك',
+        date: new Date().toISOString(),
+        actor_name: currentUserName(),
+      });
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['banks'] });
+      await queryClient.invalidateQueries({ queryKey: ['treasury_transactions_banks'] });
+      setReconciliationModal({ isOpen: false, bank: null });
+      setReconciledBalance('');
+      setReconciliationNotes('');
+      showFeedback('✅ تمت تسوية رصيد البنك وتسجيلها في السجل.', 'success');
+    },
+    onError: (error) => showFeedback('❌ فشل تنفيذ التسوية: ' + error.message, 'error'),
+  });
+
   // حذف بنك (للمسؤولين فقط)
   const deleteBankMutation = useMutation({
     mutationFn: async (id) => {
@@ -241,12 +284,25 @@ export default function BanksPage() {
       }).map(transaction => ({ ...transaction, movementType: 'bank_deposit' }))
     : [];
 
+  const currentBankAdjustments = historyModal.bank
+    ? treasuryTransactions.filter(transaction => {
+        const bankId = typeof transaction.bank_id === 'string' ? transaction.bank_id : transaction.bank_id?.id;
+        const transactionDate = String(transaction.date || transaction.created || '').slice(0, 10);
+        return String(transaction.movement_type || '').toLowerCase() === 'bank_adjustment' &&
+          transaction.source_type === 'bank' &&
+          bankId === historyModal.bank.id &&
+          (!historyStartDate || transactionDate >= historyStartDate) &&
+          (!historyEndDate || transactionDate <= historyEndDate);
+      }).map(transaction => ({ ...transaction, movementType: 'bank_adjustment' }))
+    : [];
+
   const currentBankTransactions = [
     ...currentBankExpenses.map((expense) => ({ ...expense, movementType: 'expense' })),
     ...currentBankPayments,
     ...currentSupplierPayments,
     ...currentBankOtherAdvanceTransactions,
     ...currentBankDeposits,
+    ...currentBankAdjustments,
   ].sort((first, second) => new Date(second.date || second.created) - new Date(first.date || first.created));
 
   return (
@@ -300,6 +356,35 @@ export default function BanksPage() {
         </div>
       )}
 
+      {reconciliationModal.isOpen && reconciliationModal.bank && isAdmin && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4">
+            <div className="flex justify-between items-center border-b pb-3">
+              <div>
+                <h3 className="text-base font-black text-gray-800">⚖️ تسوية رصيد البنك</h3>
+                <p className="text-xs text-gray-500 mt-1">البنك: {reconciliationModal.bank.name}</p>
+              </div>
+              <button onClick={() => setReconciliationModal({ isOpen: false, bank: null })} className="text-gray-400 font-bold text-lg hover:text-gray-700">✕</button>
+            </div>
+            <p className="text-xs text-gray-600">الرصيد الحالي: <span className="font-black text-blue-600">{Number(reconciliationModal.bank.balance || 0).toLocaleString()} ج.م</span></p>
+            <form onSubmit={(event) => { event.preventDefault(); reconcileBankMutation.mutate(); }} className="space-y-3">
+              <div>
+                <label className="text-xs font-bold text-gray-700">الرصيد الفعلي بعد التسوية</label>
+                <input type="number" min="0" step="0.01" value={reconciledBalance} onChange={(event) => setReconciledBalance(event.target.value)} className="w-full border p-3 rounded-xl text-xs mt-1 outline-none focus:border-blue-500 font-black" required />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-gray-700">بيان التسوية</label>
+                <input type="text" value={reconciliationNotes} onChange={(event) => setReconciliationNotes(event.target.value)} placeholder="مثال: مطابقة كشف البنك" className="w-full border p-3 rounded-xl text-xs mt-1 outline-none focus:border-blue-500" />
+              </div>
+              <div className="flex gap-2 pt-3">
+                <button type="button" onClick={() => setReconciliationModal({ isOpen: false, bank: null })} className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-xl text-xs font-bold">إلغاء</button>
+                <button type="submit" disabled={reconcileBankMutation.isPending} className="flex-1 bg-emerald-600 text-white py-3 rounded-xl text-xs font-bold">{reconcileBankMutation.isPending ? 'جارٍ الحفظ...' : 'حفظ التسوية'}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* نافذة سجل الحركات */}
       {historyModal.isOpen && historyModal.bank && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -338,10 +423,10 @@ export default function BanksPage() {
                       <tr key={tx.id} className="hover:bg-gray-50/60">
                         <td className="p-3 text-gray-600">{String(tx.date || tx.created || '').slice(0, 10) || '-'}</td>
                         <td className="p-3 font-bold text-blue-600">
-                          {tx.movementType === 'client_payment' ? `تحصيل من عميل: ${tx.expand?.client_id?.name || 'عميل'}` : tx.movementType === 'supplier_payment' ? `سداد مورد: ${tx.expand?.supplier_id?.name || 'مورد'}` : tx.movementType === 'other_advance' ? tx.title || 'صرف عهدة' : tx.movementType === 'other_advance_return' ? tx.title || 'رد عهدة' : tx.movementType === 'bank_deposit' ? tx.title || 'إيداع من الخزنة' : tx.expand?.category_id?.name || 'مصروف'}
+                          {tx.movementType === 'client_payment' ? `تحصيل من عميل: ${tx.expand?.client_id?.name || 'عميل'}` : tx.movementType === 'supplier_payment' ? `سداد مورد: ${tx.expand?.supplier_id?.name || 'مورد'}` : tx.movementType === 'other_advance' ? tx.title || 'صرف عهدة' : tx.movementType === 'other_advance_return' ? tx.title || 'رد عهدة' : tx.movementType === 'bank_deposit' ? tx.title || 'إيداع من الخزنة' : tx.movementType === 'bank_adjustment' ? tx.title || 'تسوية رصيد البنك' : tx.expand?.category_id?.name || 'مصروف'}
                         </td>
-                        <td className={`p-3 font-black ${tx.movementType === 'client_payment' || tx.movementType === 'other_advance_return' || tx.movementType === 'bank_deposit' ? 'text-emerald-600' : 'text-red-600'}`}>
-                          {tx.movementType === 'client_payment' || tx.movementType === 'other_advance_return' || tx.movementType === 'bank_deposit' ? '+' : '-'} {Number(tx.amount || 0).toLocaleString()} ج.م
+                        <td className={`p-3 font-black ${tx.movementType === 'bank_adjustment' ? (Number(tx.amount || 0) >= 0 ? 'text-emerald-600' : 'text-red-600') : tx.movementType === 'client_payment' || tx.movementType === 'other_advance_return' || tx.movementType === 'bank_deposit' ? 'text-emerald-600' : 'text-red-600'}`}>
+                          {tx.movementType === 'bank_adjustment' ? (Number(tx.amount || 0) >= 0 ? '+' : '-') : tx.movementType === 'client_payment' || tx.movementType === 'other_advance_return' || tx.movementType === 'bank_deposit' ? '+' : '-'} {Math.abs(Number(tx.amount || 0)).toLocaleString()} ج.م
                         </td>
                         <td className="p-3 text-gray-500">{tx.notes || '-'}</td>
                         <td className="p-3 font-bold text-gray-700">{tx.actor_name || 'غير معروف'}</td>
@@ -479,6 +564,19 @@ export default function BanksPage() {
                       >
                         📜 السجل
                       </button>
+
+                      {isAdmin && (
+                        <button
+                          onClick={() => {
+                            setReconciledBalance(bank.balance ?? '');
+                            setReconciliationNotes('');
+                            setReconciliationModal({ isOpen: true, bank });
+                          }}
+                          className="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 px-3 py-1.5 rounded-lg text-xs font-bold transition"
+                        >
+                          ⚖️ تسوية
+                        </button>
+                      )}
                       
                       {/* أزرار التعديل والحذف تظهر للمسؤولين فقط (isAdmin) */}
                       {isAdmin && (
