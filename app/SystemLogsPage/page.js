@@ -28,6 +28,11 @@ export default function SystemLogsPage() {
     queryFn: async () => pb.collection('client_transactions').getFullList({ sort: '-created', expand: 'client_id' }).catch(() => []),
   });
 
+  const { data: treasuryTransactions = [] } = useQuery({
+    queryKey: ['logs_treasury_transactions'],
+    queryFn: async () => pb.collection('treasury_transactions').getFullList({ sort: '-date' }).catch(() => []),
+  });
+
   // دمج وتصنيف الحركات بدقة
   const allSystemLogs = [
     ...banks.map(b => ({
@@ -74,7 +79,23 @@ export default function SystemLogsPage() {
         'الوجهة': t.destination || '-',
         'ملاحظات': t.notes || 'لا توجد ملاحظات'
       }
-    }))
+    })),
+    ...treasuryTransactions
+      .filter(t => String(t.movement_type || '').toLowerCase() === 'bank_deposit')
+      .map(t => ({
+        id: t.id,
+        section: 'الخزنة والبنوك',
+        type: 'bank_deposit',
+        typeName: 'إيداع بنكي',
+        action: 'إيداع من الخزنة إلى البنك',
+        actor: t.actor_name || 'مسؤول النظام',
+        date: t.created || t.date,
+        details: {
+          'البيان': t.title || 'إيداع من الخزنة إلى البنك',
+          'المبلغ': `${Number(t.amount || 0).toLocaleString()} ج.م`,
+          'ملاحظات': t.notes || 'لا توجد ملاحظات'
+        }
+      }))
   ].sort((a, b) => new Date(b.date) - new Date(a.date));
 
   // تصفية السجلات حسب البحث، الفترة، ونوع الحركة
@@ -184,6 +205,7 @@ export default function SystemLogsPage() {
             <option value="expense">مصروف</option>
             <option value="bank_operation">حركة بنكية</option>
             <option value="client_transaction">حركة عملاء</option>
+            <option value="bank_deposit">إيداع بنكي</option>
           </select>
         </div>
 

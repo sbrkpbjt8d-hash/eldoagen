@@ -229,11 +229,24 @@ export default function BanksPage() {
       }))
     : [];
 
+  const currentBankDeposits = historyModal.bank
+    ? treasuryTransactions.filter(transaction => {
+        const bankId = typeof transaction.bank_id === 'string' ? transaction.bank_id : transaction.bank_id?.id;
+        const transactionDate = String(transaction.date || transaction.created || '').slice(0, 10);
+        return String(transaction.movement_type || '').toLowerCase() === 'bank_deposit' &&
+          transaction.source_type === 'treasury' &&
+          bankId === historyModal.bank.id &&
+          (!historyStartDate || transactionDate >= historyStartDate) &&
+          (!historyEndDate || transactionDate <= historyEndDate);
+      }).map(transaction => ({ ...transaction, movementType: 'bank_deposit' }))
+    : [];
+
   const currentBankTransactions = [
     ...currentBankExpenses.map((expense) => ({ ...expense, movementType: 'expense' })),
     ...currentBankPayments,
     ...currentSupplierPayments,
     ...currentBankOtherAdvanceTransactions,
+    ...currentBankDeposits,
   ].sort((first, second) => new Date(second.date || second.created) - new Date(first.date || first.created));
 
   return (
@@ -325,10 +338,10 @@ export default function BanksPage() {
                       <tr key={tx.id} className="hover:bg-gray-50/60">
                         <td className="p-3 text-gray-600">{String(tx.date || tx.created || '').slice(0, 10) || '-'}</td>
                         <td className="p-3 font-bold text-blue-600">
-                          {tx.movementType === 'client_payment' ? `تحصيل من عميل: ${tx.expand?.client_id?.name || 'عميل'}` : tx.movementType === 'supplier_payment' ? `سداد مورد: ${tx.expand?.supplier_id?.name || 'مورد'}` : tx.movementType === 'other_advance' ? tx.title || 'صرف عهدة' : tx.movementType === 'other_advance_return' ? tx.title || 'رد عهدة' : tx.expand?.category_id?.name || 'مصروف'}
+                          {tx.movementType === 'client_payment' ? `تحصيل من عميل: ${tx.expand?.client_id?.name || 'عميل'}` : tx.movementType === 'supplier_payment' ? `سداد مورد: ${tx.expand?.supplier_id?.name || 'مورد'}` : tx.movementType === 'other_advance' ? tx.title || 'صرف عهدة' : tx.movementType === 'other_advance_return' ? tx.title || 'رد عهدة' : tx.movementType === 'bank_deposit' ? tx.title || 'إيداع من الخزنة' : tx.expand?.category_id?.name || 'مصروف'}
                         </td>
-                        <td className={`p-3 font-black ${tx.movementType === 'client_payment' || tx.movementType === 'other_advance_return' ? 'text-emerald-600' : 'text-red-600'}`}>
-                          {tx.movementType === 'client_payment' || tx.movementType === 'other_advance_return' ? '+' : '-'} {Number(tx.amount || 0).toLocaleString()} ج.م
+                        <td className={`p-3 font-black ${tx.movementType === 'client_payment' || tx.movementType === 'other_advance_return' || tx.movementType === 'bank_deposit' ? 'text-emerald-600' : 'text-red-600'}`}>
+                          {tx.movementType === 'client_payment' || tx.movementType === 'other_advance_return' || tx.movementType === 'bank_deposit' ? '+' : '-'} {Number(tx.amount || 0).toLocaleString()} ج.م
                         </td>
                         <td className="p-3 text-gray-500">{tx.notes || '-'}</td>
                         <td className="p-3 font-bold text-gray-700">{tx.actor_name || 'غير معروف'}</td>

@@ -7,12 +7,17 @@ export default function TreasuryPage() {
   const queryClient = useQueryClient();
 
   const [openingBalanceInput, setOpeningBalanceInput] = useState('');
+  const [depositBankId, setDepositBankId] = useState('');
+  const [depositAmount, setDepositAmount] = useState('');
+  const [depositNotes, setDepositNotes] = useState('');
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [confirmation, setConfirmation] = useState(null);
 
   // حالات فلترة السجل بالتاريخ
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [movementTypeFilter, setMovementTypeFilter] = useState('all');
+  const [descriptionFilter, setDescriptionFilter] = useState('');
 
   const currentUser = pb.authStore.model;
   const isAdmin = currentUser?.role === 'admin' || currentUser?.isAdmin === true || currentUser?.email === 'mohamedfrf@icloud.com'; 
@@ -42,6 +47,11 @@ export default function TreasuryPage() {
   });
   const treasury = treasuryRecords.find((record) => Object.prototype.hasOwnProperty.call(record, 'opening_balance')) || null;
   const openingBalance = treasury ? Number(treasury.opening_balance || 0) : 0;
+
+  const { data: banks = [] } = useQuery({
+    queryKey: ['banks'],
+    queryFn: async () => pb.collection('banks').getFullList({ sort: 'name' }).catch(() => []),
+  });
 
   // 2. جلب المصروفات
   const { data: expenses = [] } = useQuery({
@@ -152,6 +162,22 @@ export default function TreasuryPage() {
       if (!isAdmin) {
         throw new Error('عذراً، هذه الصلاحية للأدمن فقط.');
       }
+      if (collectionName === 'treasury_transactions') {
+        const transaction = await pb.collection(collectionName).getOne(id);
+        if (String(transaction.movement_type || '').toLowerCase() === 'bank_deposit') {
+          const bank = banks.find(item => item.id === transaction.bank_id);
+          if (bank) {
+            await pb.collection('banks').update(bank.id, {
+              balance: Math.max(0, Number(bank.balance || 0) - Number(transaction.amount || 0)),
+            });
+          }
+          if (treasury?.id) {
+            await pb.collection('treasury').update(treasury.id, {
+              balance: currentBalance + Number(transaction.amount || 0),
+            });
+          }
+        }
+      }
       return await pb.collection(collectionName).delete(id);
     },
     onSuccess: () => {
@@ -166,6 +192,47 @@ export default function TreasuryPage() {
       showToast('🗑️ تم حذف الحركة بنجاح وتحديث الرصيد!');
     },
     onError: (err) => showToast('❌ فشل الحذف: ' + err.message, 'error'),
+  });
+
+  const depositToBankMutation = useMutation({
+    mutationFn: async () => {
+      const amount = Number(depositAmount);
+      const bank = banks.find(item => item.id === depositBankId);
+
+      if (!bank) throw new Error('اختر البنك المراد الإيداع فيه.');
+      if (!Number.isFinite(amount) || amount <= 0) throw new Error('اكتب مبلغ إيداع صحيح.');
+      if (amount > currentBalance) throw new Error('مبلغ الإيداع أكبر من رصيد الخزنة.');
+
+      const actorName = currentUser?.name || currentUser?.email || 'مستخدم النظام';
+      const date = new Date().toISOString();
+      await pb.collection('treasury').update(treasury?.id, { balance: currentBalance - amount });
+      await pb.collection('banks').update(bank.id, {
+        balance: Number(bank.balance || 0) + amount,
+        actor_name: actorName,
+      });
+      return await pb.collection('treasury_transactions').create({
+        type: 'purchase',
+        movement_type: 'bank_deposit',
+        source_type: 'treasury',
+        bank_id: bank.id,
+        amount,
+        title: `إيداع من الخزنة إلى البنك: ${bank.name}`,
+        notes: depositNotes.trim() || 'إيداع بنكي',
+        date,
+        actor_name: actorName,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['treasury'] });
+      queryClient.invalidateQueries({ queryKey: ['banks'] });
+      queryClient.invalidateQueries({ queryKey: ['treasury_transactions_treasury'] });
+      queryClient.invalidateQueries({ queryKey: ['treasury_transactions_banks'] });
+      setDepositBankId('');
+      setDepositAmount('');
+      setDepositNotes('');
+      showToast('تم الإيداع وتحديث رصيد الخزنة والبنك وتسجيل الحركة.');
+    },
+    onError: (err) => showToast('❌ فشل الإيداع: ' + err.message, 'error'),
   });
 
   // تصفية المصروفات
@@ -412,6 +479,26 @@ export default function TreasuryPage() {
       };
     });
 
+  const formattedBankDeposits = treasuryTransactions
+    .filter(transaction => String(transaction.movement_type || '').toLowerCase() === 'bank_deposit' && String(transaction.source_type || '') === 'treasury')
+    .filter(transaction => {
+      const transactionDate = String(transaction.date || transaction.created || '').slice(0, 10);
+      if (startDate && transactionDate < startDate) return false;
+      if (endDate && transactionDate > endDate) return false;
+      return true;
+    })
+    .map(transaction => ({
+      id: transaction.id,
+      collection: 'treasury_transactions',
+      date: transaction.date || transaction.created,
+      movementType: 'bank_deposit',
+      title: transaction.title || 'إيداع في بنك',
+      amount: Number(transaction.amount || 0),
+      signedAmount: -Number(transaction.amount || 0),
+      notes: transaction.notes || 'إيداع بنكي',
+      actor: transaction.actor_name || 'غير معروف',
+    }));
+
   // دمج وترتيب الحركات (تصاعدياً أولاً لحساب الرصيد التراكمي بدقة)
   const sortedAscTransactions = [
     ...formattedExpenses,
@@ -423,6 +510,7 @@ export default function TreasuryPage() {
     ...formattedTreasurySalaries,
     ...formattedTreasuryTransactionSalaries,
     ...formattedOtherAdvanceTransactions,
+    ...formattedBankDeposits,
   ].sort((a, b) => new Date(a.date) - new Date(b.date));
 
   // حساب الرصيد التراكمي
@@ -441,6 +529,12 @@ export default function TreasuryPage() {
 
   // عكس الترتيب لعرض الأحدث في الأعلى
   const allTransactions = [...transactionsWithTreasuryBalance].reverse();
+
+  const filteredTreasuryTransactions = allTransactions.filter(transaction => {
+    if (movementTypeFilter !== 'all' && transaction.movementType !== movementTypeFilter) return false;
+    if (descriptionFilter.trim() && !transaction.title.toLowerCase().includes(descriptionFilter.trim().toLowerCase())) return false;
+    return true;
+  });
 
   // حساب الرصيد الحالي
   const currentBalance = transactionsWithTreasuryBalance.length > 0 
@@ -513,8 +607,52 @@ export default function TreasuryPage() {
         </div>
       </div>
 
+      <div className="bg-white p-6 rounded-3xl shadow-xl border border-gray-100">
+        <h2 className="text-base font-black text-gray-800 border-b pb-3">🏦 إيداع من الخزنة إلى بنك</h2>
+        <form onSubmit={(event) => { event.preventDefault(); depositToBankMutation.mutate(); }} className="grid grid-cols-1 md:grid-cols-4 gap-3 mt-4">
+          <select value={depositBankId} onChange={(event) => setDepositBankId(event.target.value)} className="border border-gray-200 bg-gray-50 p-3 rounded-xl text-xs font-bold outline-none" required>
+            <option value="">اختر البنك</option>
+            {banks.map(bank => <option key={bank.id} value={bank.id}>{bank.name}</option>)}
+          </select>
+          <input type="number" min="0.01" step="0.01" value={depositAmount} onChange={(event) => setDepositAmount(event.target.value)} placeholder="مبلغ الإيداع" className="border border-gray-200 bg-gray-50 p-3 rounded-xl text-xs font-bold outline-none" required />
+          <input type="text" value={depositNotes} onChange={(event) => setDepositNotes(event.target.value)} placeholder="ملاحظات (اختياري)" className="border border-gray-200 bg-gray-50 p-3 rounded-xl text-xs outline-none" />
+          <button type="submit" disabled={depositToBankMutation.isPending || banks.length === 0} className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-300 text-white p-3 rounded-xl text-xs font-black">
+            {depositToBankMutation.isPending ? 'جارٍ الحفظ...' : 'تسجيل الإيداع'}
+          </button>
+        </form>
+      </div>
+
       {/* شريط الفلترة بالتاريخ */}
-      <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div>
+          <label className="text-xs font-bold text-gray-700">نوع الحركة</label>
+          <select
+            value={movementTypeFilter}
+            onChange={(event) => setMovementTypeFilter(event.target.value)}
+            className="w-full border border-gray-200 bg-gray-50 p-2.5 rounded-xl text-xs font-bold outline-none mt-1"
+          >
+            <option value="all">كل الحركات</option>
+            <option value="client_payment">تحصيل نقدي</option>
+            <option value="sales_invoice">مبيعات كاش</option>
+            <option value="supplier_payment">سداد مورد</option>
+            <option value="expense">مصروف نقدية</option>
+            <option value="employee_advance">سلفة موظف</option>
+            <option value="salary_payout">صرف مرتبات</option>
+            <option value="other_advance">صرف عهدة</option>
+            <option value="other_advance_return">رد عهدة</option>
+            <option value="bank_deposit">إيداع في بنك</option>
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-bold text-gray-700">البحث في البيان</label>
+          <input
+            type="search"
+            value={descriptionFilter}
+            onChange={(event) => setDescriptionFilter(event.target.value)}
+            placeholder="اكتب جزءًا من البيان..."
+            className="w-full border border-gray-200 bg-gray-50 p-2.5 rounded-xl text-xs font-bold outline-none mt-1"
+          />
+        </div>
         <div>
           <label className="text-xs font-bold text-gray-700">من تاريخ</label>
           <input
@@ -552,7 +690,7 @@ export default function TreasuryPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {allTransactions.map((tx) => (
+              {filteredTreasuryTransactions.map((tx) => (
                 <tr key={tx.id} className="hover:bg-gray-50 transition">
                   <td className="p-3 text-gray-600">{new Date(tx.date).toLocaleString()}</td>
                   <td className="p-3">
@@ -583,6 +721,10 @@ export default function TreasuryPage() {
                     ) : tx.movementType === 'other_advance' ? (
                       <span className="bg-orange-100 text-orange-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
                         💼 صرف عهدة (-)
+                      </span>
+                    ) : tx.movementType === 'bank_deposit' ? (
+                      <span className="bg-cyan-100 text-cyan-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
+                        🏦 إيداع في بنك (-)
                       </span>
                     ) : (
                       <span className="bg-red-100 text-red-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
@@ -615,7 +757,7 @@ export default function TreasuryPage() {
                   )}
                 </tr>
               ))}
-              {allTransactions.length === 0 && (
+              {filteredTreasuryTransactions.length === 0 && (
                 <tr>
                   <td colSpan={isAdmin ? 8 : 7} className="p-8 text-center text-gray-400 font-bold">لا توجد حركات نقدية مسجلة للخزنة في الفترة المحددة.</td>
                 </tr>
