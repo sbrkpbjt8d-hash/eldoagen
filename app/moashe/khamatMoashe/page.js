@@ -55,6 +55,12 @@ export default function ProductsPage() {
     newName: '',
   });
 
+  const [stockModal, setStockModal] = useState({
+    isOpen: false,
+    product: null,
+    stock: '',
+  });
+
   const { data: products = [], isLoading } = useQuery({
     queryKey: ['khamat_moashe'],
     queryFn: async () => {
@@ -104,6 +110,21 @@ export default function ProductsPage() {
     onError: (error) => {
       toast.error('فشل التعديل: ' + (error.message || 'خطأ غير معروف'));
     },
+  });
+
+  const updateStockMutation = useMutation({
+    mutationFn: async ({ id, stock }) => {
+      if (!isAdmin) throw new Error('عفواً، تعديل الكمية المتاحة متاح للأدمن فقط!');
+      const value = Number(stock);
+      if (!Number.isFinite(value) || value < 0) throw new Error('أدخل كمية متاحة صحيحة.');
+      return await pb.collection('khamat_moashe').update(id, { stock: value, actor_name: currentUserName() });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['khamat_moashe'] });
+      toast.success('تم تعديل الكمية المتاحة بنجاح!');
+      setStockModal({ isOpen: false, product: null, stock: '' });
+    },
+    onError: (error) => toast.error('فشل تعديل الكمية المتاحة: ' + (error.message || 'خطأ غير معروف')),
   });
 
   const deleteProductMutation = useMutation({
@@ -280,6 +301,38 @@ export default function ProductsPage() {
         </div>
       )}
 
+      {stockModal.isOpen && stockModal.product && isAdmin && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fadeIn">
+          <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl border border-gray-100 space-y-4">
+            <h3 className="text-lg font-black text-gray-800 flex items-center gap-2">📦 تعديل الكمية المتاحة</h3>
+            <p className="text-xs text-gray-500">الخامة: <span className="font-black text-gray-800">{stockModal.product.name}</span></p>
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-gray-600">الكمية المتاحة الحالية</label>
+              <input
+                type="number"
+                min="0"
+                step="any"
+                value={stockModal.stock}
+                onChange={(event) => setStockModal({ ...stockModal, stock: event.target.value })}
+                className="w-full border border-gray-300 p-2.5 rounded-xl text-black bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-600 text-xs"
+                required
+              />
+            </div>
+            <div className="flex justify-end gap-3 pt-2">
+              <button type="button" onClick={() => setStockModal({ isOpen: false, product: null, stock: '' })} className="px-4 py-2 rounded-xl text-xs font-bold bg-gray-100 hover:bg-gray-200 text-gray-700 transition">إلغاء</button>
+              <button
+                type="button"
+                disabled={updateStockMutation.isPending}
+                onClick={() => updateStockMutation.mutate({ id: stockModal.product.id, stock: stockModal.stock })}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white transition shadow-md disabled:opacity-50"
+              >
+                {updateStockMutation.isPending ? 'جاري الحفظ...' : 'حفظ الكمية المتاحة'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-3 border-b pb-4">
         <h1 className="text-2xl font-black text-gray-800">📦 إدارة خامات المواشى</h1>
         <div className="flex flex-wrap gap-2 items-center">
@@ -359,6 +412,14 @@ export default function ProductsPage() {
                     </td>
                     <td className="py-4 px-6 text-xs font-bold text-gray-700">{p.actor_name || 'غير معروف'}</td>
                     <td className="py-4 px-6 text-center flex items-center justify-center gap-2">
+                      {isAdmin && (
+                        <button
+                          onClick={() => setStockModal({ isOpen: true, product: p, stock: p.stock ?? 0 })}
+                          className="text-emerald-600 hover:text-emerald-800 text-xs font-bold bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded-xl border border-emerald-100 transition"
+                        >
+                          📦 تعديل الكمية
+                        </button>
+                      )}
                       <button
                         onClick={() => setEditModal({ isOpen: true, product: p, newName: p.name })}
                         className="text-blue-600 hover:text-blue-800 text-xs font-bold bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-xl border border-blue-100 transition"
