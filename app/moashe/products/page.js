@@ -658,7 +658,7 @@ export default function ProductsPage() {
 
                           return (
                             <span key={idx} className="bg-white border border-gray-200 text-gray-700 text-[11px] px-2.5 py-1 rounded-lg font-medium shadow-2xs">
-                              {matName} (<span className="text-blue-600 font-bold">{qty}</span> وحدة) - <span className="text-emerald-600 font-bold">{itemTotalCost.toFixed(1)} ج.م</span>
+                              {matName} (<span className="text-blue-600 font-bold">{qty}</span> طن) - <span className="text-emerald-600 font-bold">{itemTotalCost.toFixed(1)} ج.م</span>
                             </span>
                           );
                         })}

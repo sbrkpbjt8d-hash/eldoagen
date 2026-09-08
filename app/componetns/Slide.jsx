@@ -67,7 +67,7 @@ export default function Sidebar() {
               aria-expanded={openRaw}
               className={`w-full flex items-center justify-between rounded-2xl border p-3 text-base font-bold text-white transition-all ${isLivestockPath ? 'border-blue-400/30 bg-blue-500/10' : 'border-transparent bg-slate-900/60 hover:border-blue-400/25 hover:bg-slate-800/90'}`}
             >
-              <span>🐄 مواشى (Livestock)</span>
+              <span>الدواجن(Livestock)</span>
               <span className={`text-sm transition-transform duration-200 ${openRaw ? 'rotate-180' : ''}`}>▼</span>
             </button>
 
@@ -87,7 +87,7 @@ export default function Sidebar() {
                                 <Link href="/moashe/expenses" className={navLinkClass('/moashe/expenses')}>المصروفات </Link>
                 <Link href="/moashe/Treasury" className={navLinkClass('/moashe/Treasury')}>الخزنه </Link>
                 <Link href="/moashe/banks" className={navLinkClass('/moashe/banks')}>البنوك </Link>
-                <Link href="/moashe/salaires" className={navLinkClass('/moashe/salaires')}>المرتبات (Salaires)</Link>
+                <Link href="/moashe/salaires" className={navLinkClass('/moashe/salaires')}>المرتبات </Link>
                                 <Link href="/moashe/other-accounts" className={navLinkClass('/moashe/other-accounts')}>عهده</Link>
                                                 <Link href="/moashe/manadeb" className={navLinkClass('/moashe/manadeb')}>المناديب </Link>
                 <Link href="/moashe/price" className={navLinkClass('/moashe/price')}>الاسعار </Link>
