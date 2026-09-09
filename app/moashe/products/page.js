@@ -4,6 +4,15 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
 import toast, { Toaster } from 'react-hot-toast';
 
+function formatQuantity(value) {
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue)) return '0';
+  return numberValue.toLocaleString('en-US', {
+    useGrouping: false,
+    maximumFractionDigits: 15,
+  });
+}
+
 export default function ProductsPage() {
   const queryClient = useQueryClient();
   const isAdmin = pb.authStore.model?.collectionName === '_superusers';
@@ -21,6 +30,7 @@ export default function ProductsPage() {
   const [newSellingPrice, setNewSellingPrice] = useState('');
   const [editingMaterialsProd, setEditingMaterialsProd] = useState(null);
   const [editingMaterials, setEditingMaterials] = useState([]);
+  const [expandedProductRecipes, setExpandedProductRecipes] = useState({});
 
   // حالة نافذة التأكيد الاحترافية (Modal) للحذف
   const [confirmModal, setConfirmModal] = useState({
@@ -383,7 +393,7 @@ export default function ProductsPage() {
                             onChange={(e) => handleQtyChange(item.id, e.target.value)}
                             className="w-16 border p-1 rounded text-center text-black font-bold text-xs outline-none focus:ring-1 focus:ring-blue-600"
                             step="any"
-                            min="0.001"
+                            min="0.000000"
                             required
                           />
                         </td>
@@ -449,6 +459,14 @@ export default function ProductsPage() {
                 const totalCost = liveCost + otherCostVal;
                 const profit = sellingPriceVal - totalCost;
                 const isEditing = editingPriceProd === prodName;
+                const areRecipesVisible = !!expandedProductRecipes[prodName];
+                const totalMaterialQuantity = prodRecipes.reduce((sum, item) => {
+                  const matId = item.raw_material_id || item.material_id;
+                  const matInfo = materials.find(m => m.id === matId);
+                  const materialName = matInfo?.name || '';
+                  if (materialName.includes('شكاير')) return sum;
+                  return sum + Number(item.quantity_needed || item.qtyNeeded || item.quantity || 0);
+                }, 0);
 
                 return (
                   <div key={index} className="pt-4 first:pt-0 space-y-3">
@@ -592,7 +610,7 @@ export default function ProductsPage() {
                                     <td className="p-2">
                                       <input
                                         type="number"
-                                        min="0.001"
+                                        min="0"
                                         step="any"
                                         value={item.qtyNeeded}
                                         onChange={(e) => {
@@ -646,23 +664,46 @@ export default function ProductsPage() {
                     </div>
 
                     <div className="bg-gray-50 p-2.5 rounded-xl border border-gray-100">
-                      <span className="text-[11px] font-bold text-gray-500 block mb-1.5">📋 الخامات المستخدمة:</span>
-                      <div className="flex flex-wrap gap-1.5">
-                        {prodRecipes.map((item, idx) => {
-                          const matId = item.raw_material_id || item.material_id;
-                          const matInfo = materials.find(m => m.id === matId);
-                          const matName = matInfo?.name || 'خامة';
-                          const matPrice = Number(matInfo?.price || 0);
-                          const qty = Number(item.quantity_needed || item.qtyNeeded || item.quantity || 0);
-                          const itemTotalCost = matPrice * qty;
+                      <button
+                        type="button"
+                        onClick={() => setExpandedProductRecipes((previous) => ({ ...previous, [prodName]: !previous[prodName] }))}
+                        className="text-[11px] font-bold text-blue-700 hover:text-blue-900"
+                      >
+                        {areRecipesVisible ? '🙈 إخفاء الخامات' : `📋 عرض الخامات المستخدمة (${prodRecipes.length} خامة، إجمالي ${formatQuantity(totalMaterialQuantity)} طن بدون الشكاير)`}
+                      </button>
+                      {areRecipesVisible && (
+                        <div className="mt-3 overflow-x-auto rounded-xl border border-gray-200 bg-white">
+                          <table className="w-full min-w-[420px] text-right text-[11px]">
+                            <thead className="bg-blue-50 text-blue-900">
+                              <tr>
+                                <th className="p-2.5 font-black">#</th>
+                                <th className="p-2.5 font-black">الخامة</th>
+                                <th className="p-2.5 font-black">الكمية</th>
+                                <th className="p-2.5 font-black">التكلفة</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-100">
+                              {prodRecipes.map((item, idx) => {
+                                const matId = item.raw_material_id || item.material_id;
+                                const matInfo = materials.find(m => m.id === matId);
+                                const matName = matInfo?.name || 'خامة';
+                                const matPrice = Number(matInfo?.price || 0);
+                                const qty = Number(item.quantity_needed || item.qtyNeeded || item.quantity || 0);
+                                const itemTotalCost = matPrice * qty;
 
-                          return (
-                            <span key={idx} className="bg-white border border-gray-200 text-gray-700 text-[11px] px-2.5 py-1 rounded-lg font-medium shadow-2xs">
-                              {matName} (<span className="text-blue-600 font-bold">{qty}</span> طن) - <span className="text-emerald-600 font-bold">{itemTotalCost.toFixed(1)} ج.م</span>
-                            </span>
-                          );
-                        })}
-                      </div>
+                                return (
+                                  <tr key={idx} className="hover:bg-blue-50/40">
+                                    <td className="p-2.5 text-gray-400">{idx + 1}</td>
+                                    <td className="p-2.5 font-bold text-gray-800">{matName}</td>
+                                    <td className="p-2.5 font-bold text-blue-700">{formatQuantity(qty)} طن</td>
+                                    <td className="p-2.5 font-bold text-emerald-700">{itemTotalCost.toFixed(1)} ج.م</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
                     </div>
 
                   </div>

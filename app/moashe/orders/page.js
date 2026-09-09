@@ -171,14 +171,26 @@ export default function ProductionOrdersPage() {
         }
       }
 
-      const existingProductStock = productsStock.find(p => normalizeProductName(p.product_name || p.name) === normalizeProductName(productName));
-      if (existingProductStock) {
-        const newStock = Number(existingProductStock.stock || 0) - qtyProduced;
-        const newCost = Number(existingProductStock.total_cost || 0) - orderCost;
-        await pb.collection('products_stock').update(existingProductStock.id, {
-          stock: newStock > 0 ? newStock : 0,
-          total_cost: newCost > 0 ? newCost : 0
+      const freshProductsStock = await pb.collection('products_stock').getFullList();
+      const matchingProductStocks = freshProductsStock.filter(p => (
+        normalizeProductName(p.product_name || p.name) === normalizeProductName(productName)
+      ));
+      const totalCurrentStock = matchingProductStocks.reduce((sum, productStock) => sum + Number(productStock.stock || 0), 0);
+      const totalCurrentCost = matchingProductStocks.reduce((sum, productStock) => sum + Number(productStock.total_cost || 0), 0);
+      const updatedStock = Math.max(0, totalCurrentStock - qtyProduced);
+      const updatedCost = Math.max(0, totalCurrentCost - orderCost);
+
+      if (matchingProductStocks.length > 0) {
+        await pb.collection('products_stock').update(matchingProductStocks[0].id, {
+          stock: updatedStock,
+          total_cost: updatedCost,
         });
+        for (const duplicateStock of matchingProductStocks.slice(1)) {
+          await pb.collection('products_stock').update(duplicateStock.id, {
+            stock: 0,
+            total_cost: 0,
+          });
+        }
       }
 
       await pb.collection('production_orders').delete(order.id);

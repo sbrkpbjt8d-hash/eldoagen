@@ -31,11 +31,18 @@ export default function ProductionStockPage() {
     queryFn: () => pb.collection('products_recipes').getFullList().catch(() => []),
   });
 
+  const { data: productionOrders = [] } = useQuery({
+    queryKey: ['production_orders_products_stock'],
+    queryFn: () => pb.collection('production_orders').getFullList().catch(() => []),
+  });
+
   // تجهيز وتنظيف البيانات المأخوذة من جدول الـ Stock (مع دعم حقول التكلفة)
   const inventoryList = productsStock.map(item => ({
     id: item.id,
     product_name: item.product_name || item.name || 'منتج بدون اسم',
-    stock: Number(item.stock || item.quantity || 0),
+    stock: productionOrders
+      .filter(order => (order.product_name || order.name) === (item.product_name || item.name))
+      .reduce((sum, order) => sum + Number(order.batch_quantity || order.quantity || 0), 0),
     unit_cost: (() => {
       const productRecipes = recipes.filter(recipe => (recipe.product_name || recipe.name) === (item.product_name || item.name));
       const recipeCost = productRecipes.reduce((sum, recipe) => {

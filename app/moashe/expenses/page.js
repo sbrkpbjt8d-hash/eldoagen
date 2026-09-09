@@ -43,7 +43,7 @@ export default function ExpensesPage() {
       return await pb.collection('treasury').getFullList().catch(() => []);
     },
   });
-  const treasury = treasuryRecords[0] || null;
+  const treasury = treasuryRecords.find((record) => Object.prototype.hasOwnProperty.call(record, 'opening_balance')) || treasuryRecords[0] || null;
 
   // 2. جلب قائمة البنوك
   const { data: banks = [] } = useQuery({
@@ -70,6 +70,36 @@ export default function ExpensesPage() {
         expand: 'category_id,bank_id',
       }).catch(() => []);
     },
+  });
+
+  const { data: clientTransactions = [] } = useQuery({
+    queryKey: ['client_transactions_expenses_balance'],
+    queryFn: async () => pb.collection('client_transactions').getFullList().catch(() => []),
+  });
+
+  const { data: supplierTransactions = [] } = useQuery({
+    queryKey: ['supplier_transactions_expenses_balance'],
+    queryFn: async () => pb.collection('supplier_transactions').getFullList().catch(() => []),
+  });
+
+  const { data: salesInvoices = [] } = useQuery({
+    queryKey: ['sales_invoices_expenses_balance'],
+    queryFn: async () => pb.collection('sales_invoices').getFullList().catch(() => []),
+  });
+
+  const { data: employeeAdvances = [] } = useQuery({
+    queryKey: ['advances_expenses_balance'],
+    queryFn: async () => pb.collection('advances').getFullList().catch(() => []),
+  });
+
+  const { data: salariesPayouts = [] } = useQuery({
+    queryKey: ['salaries_payouts_expenses_balance'],
+    queryFn: async () => pb.collection('salaries_payouts').getFullList().catch(() => []),
+  });
+
+  const { data: treasuryTransactions = [] } = useQuery({
+    queryKey: ['treasury_transactions_expenses_balance'],
+    queryFn: async () => pb.collection('treasury_transactions').getFullList().catch(() => []),
   });
 
   // Mutation إضافة نوع مصروف فرعي
@@ -246,7 +276,43 @@ export default function ExpensesPage() {
     return true;
   });
 
-  const currentTreasuryBalance = treasury ? Number(treasury.balance || 0) : 0;
+  const cashExpensesTotal = expenses.reduce((sum, expense) => {
+    const bankId = String(expense.bank_id || '').trim().toLowerCase();
+    const bankName = String(expense.bank || '').trim().toLowerCase();
+    const notesValue = String(expense.notes || '').toLowerCase();
+    const isBankExpense = (bankId && bankId !== 'treasury' && bankId !== 'الخزنة') || (bankName && !bankName.includes('خزن')) || notesValue.includes('بنك') || notesValue.includes('visa');
+    return isBankExpense ? sum : sum + Number(expense.amount || 0);
+  }, 0);
+
+  const cashClientPayments = clientTransactions
+    .filter(transaction => ['treasury', 'خزنة', 'كاش', ''].includes(String(transaction.destination || '')) && !String(transaction.type || '').toLowerCase().includes('open'))
+    .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+
+  const cashSupplierPayments = supplierTransactions
+    .filter(transaction => ['treasury', 'خزنة', 'كاش', ''].includes(String(transaction.destination || '')) && !String(transaction.type || '').toLowerCase().includes('open'))
+    .reduce((sum, transaction) => sum - Number(transaction.amount || 0), 0);
+
+  const cashSales = salesInvoices.reduce((sum, invoice) => {
+    const paymentType = String(invoice.payment_type || invoice.payment_method || invoice.type || '').toLowerCase();
+    const isCash = paymentType.includes('cash') || paymentType.includes('كاش') || paymentType.includes('نقدي') || paymentType === '';
+    return isCash ? sum + Number(invoice.total_amount || invoice.amount || 0) : sum;
+  }, 0);
+
+  const cashAdvances = employeeAdvances.reduce((sum, advance) => sum - Number(advance.amount || 0), 0);
+  const cashSalaries = salariesPayouts.reduce((sum, salary) => sum - Number(salary.amount || salary.total_amount || salary.net_salary || 0), 0);
+  const treasurySalaryTransactions = treasuryRecords
+    .filter(record => String(record.type || '').toLowerCase().includes('مرتبات'))
+    .reduce((sum, record) => sum - Number(record.amount || 0), 0);
+  const treasuryMovementTotal = treasuryTransactions.reduce((sum, transaction) => {
+    const movementType = String(transaction.movement_type || '').toLowerCase();
+    const sourceType = String(transaction.source_type || 'treasury');
+    if (movementType === 'salary' || (sourceType === 'treasury' && movementType === 'other_advance')) return sum - Number(transaction.amount || 0);
+    if (sourceType === 'treasury' && movementType === 'other_advance_return') return sum + Number(transaction.amount || 0);
+    if (sourceType === 'treasury' && movementType === 'bank_deposit') return sum - Number(transaction.amount || 0);
+    return sum;
+  }, 0);
+
+  const currentTreasuryBalance = (treasury ? Number(treasury.opening_balance || 0) : 0) + cashClientPayments + cashSupplierPayments + cashSales + cashExpensesTotal * -1 + cashAdvances + cashSalaries + treasurySalaryTransactions + treasuryMovementTotal;
   const totalBanksBalance = banks.reduce((sum, b) => sum + Number(b.balance || 0), 0);
 
   return (

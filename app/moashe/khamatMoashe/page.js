@@ -37,6 +37,7 @@ export default function ProductsPage() {
   const [adjustmentReason, setAdjustmentReason] = useState('');
   const [adjustmentStartDate, setAdjustmentStartDate] = useState('');
   const [adjustmentEndDate, setAdjustmentEndDate] = useState('');
+  const [inventorySearchTerm, setInventorySearchTerm] = useState('');
 
   const isAdmin = checkIfAdmin();
 
@@ -59,6 +60,7 @@ export default function ProductsPage() {
     isOpen: false,
     product: null,
     stock: '',
+    price: '',
   });
 
   const { data: products = [], isLoading } = useQuery({
@@ -113,16 +115,18 @@ export default function ProductsPage() {
   });
 
   const updateStockMutation = useMutation({
-    mutationFn: async ({ id, stock }) => {
-      if (!isAdmin) throw new Error('عفواً، تعديل الكمية المتاحة متاح للأدمن فقط!');
-      const value = Number(stock);
-      if (!Number.isFinite(value) || value < 0) throw new Error('أدخل كمية متاحة صحيحة.');
-      return await pb.collection('khamat_moashe').update(id, { stock: value, actor_name: currentUserName() });
+    mutationFn: async ({ id, stock, price }) => {
+      if (!isAdmin) throw new Error('عفواً، تعديل الكمية والسعر متاح للأدمن فقط!');
+      const stockValue = Number(stock);
+      const priceValue = Number(price);
+      if (!Number.isFinite(stockValue) || stockValue < 0) throw new Error('أدخل كمية متاحة صحيحة.');
+      if (!Number.isFinite(priceValue) || priceValue < 0) throw new Error('أدخل سعراً صحيحاً.');
+      return await pb.collection('khamat_moashe').update(id, { stock: stockValue, price: priceValue, actor_name: currentUserName() });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['khamat_moashe'] });
-      toast.success('تم تعديل الكمية المتاحة بنجاح!');
-      setStockModal({ isOpen: false, product: null, stock: '' });
+      toast.success('تم تعديل الكمية والسعر بنجاح!');
+      setStockModal({ isOpen: false, product: null, stock: '', price: '' });
     },
     onError: (error) => toast.error('فشل تعديل الكمية المتاحة: ' + (error.message || 'خطأ غير معروف')),
   });
@@ -254,6 +258,10 @@ export default function ProductsPage() {
     .filter(adjustment => Number(adjustment.quantity || 0) < 0)
     .reduce((sum, adjustment) => sum + Math.abs(Number(adjustment.quantity || 0)), 0);
 
+  const filteredInventoryProducts = products.filter((product) =>
+    String(product.name || '').toLowerCase().includes(inventorySearchTerm.trim().toLowerCase())
+  );
+
   return (
     <div className="p-8 max-w-6xl mx-auto space-y-8 relative" dir="rtl">
       <Toaster position="top-center" reverseOrder={false} />
@@ -304,7 +312,7 @@ export default function ProductsPage() {
       {stockModal.isOpen && stockModal.product && isAdmin && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fadeIn">
           <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl border border-gray-100 space-y-4">
-            <h3 className="text-lg font-black text-gray-800 flex items-center gap-2">📦 تعديل الكمية المتاحة</h3>
+            <h3 className="text-lg font-black text-gray-800 flex items-center gap-2">📦 تعديل الكمية والسعر</h3>
             <p className="text-xs text-gray-500">الخامة: <span className="font-black text-gray-800">{stockModal.product.name}</span></p>
             <div className="space-y-1">
               <label className="text-xs font-bold text-gray-600">الكمية المتاحة الحالية</label>
@@ -318,15 +326,27 @@ export default function ProductsPage() {
                 required
               />
             </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-gray-600">السعر</label>
+              <input
+                type="number"
+                min="0"
+                step="any"
+                value={stockModal.price}
+                onChange={(event) => setStockModal({ ...stockModal, price: event.target.value })}
+                className="w-full border border-gray-300 p-2.5 rounded-xl text-black bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-600 text-xs"
+                required
+              />
+            </div>
             <div className="flex justify-end gap-3 pt-2">
-              <button type="button" onClick={() => setStockModal({ isOpen: false, product: null, stock: '' })} className="px-4 py-2 rounded-xl text-xs font-bold bg-gray-100 hover:bg-gray-200 text-gray-700 transition">إلغاء</button>
+              <button type="button" onClick={() => setStockModal({ isOpen: false, product: null, stock: '', price: '' })} className="px-4 py-2 rounded-xl text-xs font-bold bg-gray-100 hover:bg-gray-200 text-gray-700 transition">إلغاء</button>
               <button
                 type="button"
                 disabled={updateStockMutation.isPending}
-                onClick={() => updateStockMutation.mutate({ id: stockModal.product.id, stock: stockModal.stock })}
+                onClick={() => updateStockMutation.mutate({ id: stockModal.product.id, stock: stockModal.stock, price: stockModal.price })}
                 className="px-4 py-2 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white transition shadow-md disabled:opacity-50"
               >
-                {updateStockMutation.isPending ? 'جاري الحفظ...' : 'حفظ الكمية المتاحة'}
+                {updateStockMutation.isPending ? 'جاري الحفظ...' : 'حفظ الكمية والسعر'}
               </button>
             </div>
           </div>
@@ -334,7 +354,7 @@ export default function ProductsPage() {
       )}
 
       <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-3 border-b pb-4">
-        <h1 className="text-2xl font-black text-gray-800">📦 إدارة خامات المواشى</h1>
+        <h1 className="text-2xl font-black text-gray-800">📦 إدارة خامات الدواجن</h1>
         <div className="flex flex-wrap gap-2 items-center">
           <span className="bg-blue-100 text-blue-800 text-sm font-semibold px-4 py-1.5 rounded-full shadow-sm">
             إجمالي العناصر: {products.length}
@@ -374,14 +394,23 @@ export default function ProductsPage() {
       </form>
 
       <div className="bg-white shadow-xl rounded-2xl border border-gray-100 overflow-hidden">
-        <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+        <div className="px-6 py-4 bg-gray-50 border-b border-gray-100 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
           <h2 className="text-lg font-bold text-gray-800">قائمة المخزون الحالي</h2>
+          <input
+            type="search"
+            value={inventorySearchTerm}
+            onChange={(event) => setInventorySearchTerm(event.target.value)}
+            placeholder="🔍 ابحث باسم الخامة..."
+            className="w-full md:w-72 border border-gray-200 bg-white p-2.5 rounded-xl text-xs outline-none focus:border-blue-500"
+          />
         </div>
 
         {isLoading ? (
           <div className="p-12 text-center text-gray-400 font-medium">جاري تحميل البيانات...</div>
         ) : products.length === 0 ? (
           <div className="p-12 text-center text-gray-400 font-medium">لا توجد خامات مسجلة حتى الآن.</div>
+        ) : filteredInventoryProducts.length === 0 ? (
+          <div className="p-12 text-center text-gray-400 font-medium">لا توجد خامات مطابقة للبحث.</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-right border-collapse">
@@ -397,7 +426,7 @@ export default function ProductsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 text-gray-700 font-medium">
-                {products.map((p, index) => (
+                {filteredInventoryProducts.map((p, index) => (
                   <tr key={p.id} className="hover:bg-blue-50/40 transition duration-150">
                     <td className="py-4 px-6 text-gray-400 text-sm">{index + 1}</td>
                     <td className="py-4 px-6 font-bold text-gray-900">{p.name}</td>
@@ -414,7 +443,7 @@ export default function ProductsPage() {
                     <td className="py-4 px-6 text-center flex items-center justify-center gap-2">
                       {isAdmin && (
                         <button
-                          onClick={() => setStockModal({ isOpen: true, product: p, stock: p.stock ?? 0 })}
+                          onClick={() => setStockModal({ isOpen: true, product: p, stock: p.stock ?? 0, price: p.price ?? 0 })}
                           className="text-emerald-600 hover:text-emerald-800 text-xs font-bold bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded-xl border border-emerald-100 transition"
                         >
                           📦 تعديل الكمية
@@ -480,7 +509,7 @@ export default function ProductsPage() {
                       isLogOpen ? 'bg-red-100 text-red-700 hover:bg-red-200' : 'bg-blue-600 text-white hover:bg-blue-700 shadow-sm'
                     }`}
                   >
-                    {isLogOpen ? 'إخفاء السجل ✕' : '👁️ عرض سجل التسويات'}
+                    {isLogOpen ? 'إخفاء السجل ✕' : '👁️ '}
                   </button>
                 </div>
 

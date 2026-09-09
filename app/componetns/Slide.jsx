@@ -38,13 +38,13 @@ export default function Sidebar() {
   return (
     <aside className="sticky top-0 flex h-screen w-72 shrink-0 flex-col overflow-hidden border-l border-slate-800 bg-slate-950 text-slate-300 shadow-[0_0_40px_rgba(15,23,42,0.8)]" dir="rtl">
       <div className="mb-5 border-b border-slate-800 bg-gradient-to-br from-slate-900 via-slate-900 to-slate-950 p-4">
-        <div className="flex items-center gap-3">
+        {/* <div className="flex items-center gap-3">
           <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500/25 to-cyan-400/20 text-xl ring-1 ring-blue-400/30">🏭</span>
           <div>
             <p className="text-base font-black tracking-wide text-white">Factory ERP</p>
             <p className="mt-0.5 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">Management system</p>
           </div>
-        </div>
+        </div> */}
         <div className="mt-4 flex items-center gap-2 text-[11px] font-bold text-emerald-400">
           <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.9)]" />
           النظام يعمل
