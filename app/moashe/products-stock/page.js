@@ -40,9 +40,9 @@ export default function ProductionStockPage() {
   const inventoryList = productsStock.map(item => ({
     id: item.id,
     product_name: item.product_name || item.name || 'منتج بدون اسم',
-    stock: productionOrders
+    stock: Number(item.stock ?? productionOrders
       .filter(order => (order.product_name || order.name) === (item.product_name || item.name))
-      .reduce((sum, order) => sum + Number(order.batch_quantity || order.quantity || 0), 0),
+      .reduce((sum, order) => sum + Number(order.batch_quantity || order.quantity || 0), 0)),
     unit_cost: (() => {
       const productRecipes = recipes.filter(recipe => (recipe.product_name || recipe.name) === (item.product_name || item.name));
       const recipeCost = productRecipes.reduce((sum, recipe) => {

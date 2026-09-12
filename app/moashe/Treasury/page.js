@@ -402,6 +402,7 @@ export default function TreasuryPage() {
   // تجهيز فواتير البيع الكاش
   const formattedSalesInvoices = salesInvoices
     .filter(inv => {
+      if (String(inv.status || '') === 'مرتجع') return false;
       const paymentType = String(inv.payment_type || inv.payment_method || inv.type || '').toLowerCase();
       const isCash = paymentType.includes('cash') || paymentType.includes('كاش') || paymentType.includes('نقدي') || paymentType === '';
       
@@ -429,6 +430,27 @@ export default function TreasuryPage() {
         actor: inv.actor_name || 'غير معروف',
       };
     });
+
+  const formattedSalesReturns = treasuryTransactions
+    .filter(transaction => String(transaction.movement_type || '').toLowerCase() === 'sales_return')
+    .filter(transaction => {
+      const returnDate = String(transaction.date || transaction.created || '').slice(0, 10);
+      if (startDate && returnDate < startDate) return false;
+      if (endDate && returnDate > endDate) return false;
+      return true;
+    })
+    .map(transaction => ({
+      id: transaction.id,
+      collection: 'treasury_transactions',
+      date: transaction.date || transaction.created,
+      created: transaction.created,
+      movementType: 'sales_return',
+      title: transaction.title || 'مرتجع فاتورة بيع',
+      amount: Math.abs(Number(transaction.amount || 0)),
+      signedAmount: -Math.abs(Number(transaction.amount || 0)),
+      notes: transaction.notes || 'رد قيمة فاتورة مبيعات',
+      actor: transaction.actor_name || 'غير معروف',
+    }));
 
   // تجهيز سلف الموظفين
   const formattedAdvances = employeeAdvances
@@ -623,6 +645,7 @@ export default function TreasuryPage() {
     ...formattedClientPayments,
     ...formattedSupplierPayments,
     ...formattedSalesInvoices,
+    ...formattedSalesReturns,
     ...formattedAdvances,
     ...formattedSalaries,
     ...formattedTreasurySalaries,
@@ -783,6 +806,7 @@ export default function TreasuryPage() {
             <option value="all">كل الحركات</option>
             <option value="client_payment">تحصيل نقدي</option>
             <option value="sales_invoice">مبيعات كاش</option>
+            <option value="sales_return">مرتجع مبيعات</option>
             <option value="supplier_payment">سداد مورد</option>
             <option value="expense">مصروف نقدية</option>
             <option value="employee_advance">سلفة موظف</option>
@@ -870,6 +894,10 @@ export default function TreasuryPage() {
                     ) : tx.movementType === 'sales_invoice' ? (
                       <span className="bg-blue-100 text-blue-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
                         🛒 مبيعات كاش (+)
+                      </span>
+                    ) : tx.movementType === 'sales_return' ? (
+                      <span className="bg-red-100 text-red-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
+                        ↩️ مرتجع مبيعات (-)
                       </span>
                     ) : tx.movementType === 'supplier_payment' ? (
                       <span className="bg-amber-100 text-amber-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">

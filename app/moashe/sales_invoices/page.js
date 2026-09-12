@@ -33,6 +33,7 @@ export default function SalesInvoicesPage() {
 
   const [viewInvoiceModal, setViewInvoiceModal] = useState({ show: false, invoice: null });
   const [viewLogModal, setViewLogModal] = useState({ show: false, log: null });
+  const [returnModal, setReturnModal] = useState({ show: false, invoice: null, items: [] });
 
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [confirmModal, setConfirmModal] = useState({ show: false, title: '', message: '', onConfirm: null });
@@ -123,6 +124,17 @@ export default function SalesInvoicesPage() {
     return result;
   }, {});
   const uniqueMaterialsList = Object.keys(uniqueMaterialsMap);
+
+  const getNextInvoiceNumber = () => {
+    const existingNumbers = [
+      ...salesInvoices.map((invoice) => invoice.invoice_number),
+    ]
+      .map((value) => String(value || '').trim())
+      .filter((value) => /^\d+$/.test(value))
+      .map(Number);
+
+    return String(Math.max(0, ...existingNumbers) + 1);
+  };
 
   function handleAddProduct(productName) {
     if (!productName) return;
@@ -252,24 +264,6 @@ export default function SalesInvoicesPage() {
         }
       }
 
-      for (const prod of selectedProducts) {
-        if (prod.itemType === 'material') continue;
-        const prodRecipe = allRecipes.filter(r => (r.product_name || r.name) === prod.name);
-        for (const item of prodRecipe) {
-          const matId = item.raw_material_id || item.material_id;
-          const matInfo = materials.find(m => m.id === matId);
-          if (matInfo) {
-            const qtyPerUnit = Number(item.quantity_needed || item.quantity || 0);
-            const totalNeeded = qtyPerUnit * Number(prod.qty || 0);
-            const currentStock = Number(matInfo.stock || matInfo.quantity || 0);
-
-            await pb.collection('khamat_moashe').update(matId, {
-              stock: currentStock - totalNeeded
-            });
-          }
-        }
-      }
-
       const customerName = customerType === 'walk-in' 
         ? (walkInName.trim() || 'عميل فوري') 
         : (customers.find(c => c.id === selectedCustomer)?.name || 'عميل مسجل');
@@ -341,7 +335,7 @@ export default function SalesInvoicesPage() {
         }).catch(() => {});
 
       } else {
-        invoiceData.invoice_number = `INV-${Date.now().toString().slice(-6)}`;
+        invoiceData.invoice_number = getNextInvoiceNumber();
         savedInvoice = await pb.collection('sales_invoices').create(invoiceData);
       }
 
@@ -480,6 +474,142 @@ export default function SalesInvoicesPage() {
     }
   });
 
+  const getReturnItemKey = (item) => item.itemType === 'material'
+    ? `material:${item.materialId}`
+    : `product:${item.name}`;
+
+  const getReturnedQuantities = (invoice) => {
+    const invoiceNumber = invoice.invoice_number || invoice.id.slice(-6);
+    return invoiceLogs
+      .filter((log) => log.action_type === 'مرتجع' && log.invoice_number === invoiceNumber)
+      .reduce((quantities, log) => {
+        try {
+          const details = JSON.parse(log.details || '{}');
+          (details.items || []).forEach((item) => {
+            const key = getReturnItemKey(item);
+            quantities[key] = (quantities[key] || 0) + Number(item.qty || 0);
+          });
+        } catch {
+          return quantities;
+        }
+        return quantities;
+      }, {});
+  };
+
+  const isInvoiceFullyReturned = (invoice) => {
+    if (invoice.status === 'مرتجع') return true;
+    const items = Array.isArray(invoice.items) ? invoice.items : [];
+    const returnedQuantities = getReturnedQuantities(invoice);
+    return items.length > 0 && items.every((item) => (
+      Number(returnedQuantities[getReturnItemKey(item)] || 0) >= Number(item.qty || 0) - 0.000000001
+    ));
+  };
+
+  const returnInvoiceMutation = useMutation({
+    mutationFn: async ({ invoice, returnItems }) => {
+      const invoiceNumber = invoice.invoice_number || invoice.id.slice(-6);
+      const originalItems = Array.isArray(invoice.items) ? invoice.items : [];
+      const returnedQuantities = getReturnedQuantities(invoice);
+      const itemsList = returnItems
+        .map((item) => {
+          const originalItem = originalItems.find((sourceItem) => getReturnItemKey(sourceItem) === item.key);
+          return originalItem ? { ...originalItem, qty: Number(item.qty || 0) } : null;
+        })
+        .filter((item) => item && item.qty > 0);
+      if (!itemsList.length) throw new Error('اكتب كمية مرتجع لصنف واحد على الأقل.');
+
+      for (const item of itemsList) {
+        const alreadyReturnedQty = returnedQuantities[getReturnItemKey(item)] || 0;
+        const originalItem = originalItems.find((sourceItem) => getReturnItemKey(sourceItem) === getReturnItemKey(item));
+        const remainingQty = Number(originalItem?.qty || 0) - alreadyReturnedQty;
+        if (item.qty > remainingQty + 0.000000001) {
+          throw new Error(`كمية المرتجع للصنف "${item.name}" أكبر من الكمية المتبقية.`);
+        }
+        if (item.itemType === 'material' && item.materialId) {
+          await updateMaterialStock(item.materialId, item.qty);
+          continue;
+        }
+
+        const matchedStockProduct = productsStock.find((product) => (
+          (product.product_name || product.name) === item.name
+        ));
+        if (matchedStockProduct) {
+          await pb.collection('products_stock').update(matchedStockProduct.id, {
+            stock: Number(matchedStockProduct.stock || 0) + item.qty,
+          });
+        }
+      }
+
+      const originalSubtotal = Number(invoice.sub_total || 0) || originalItems.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.qty || 0), 0);
+      const returnedSubtotal = itemsList.reduce((sum, item) => sum + Number(item.price || 0) * item.qty, 0);
+      const discountRatio = originalSubtotal > 0 ? Number(invoice.total_amount || 0) / originalSubtotal : 1;
+      const invoiceAmount = Number((returnedSubtotal * discountRatio).toFixed(6));
+      if (invoice.payment_type === 'credit' && invoice.customer_type === 'registered') {
+        const customer = customers.find((item) => normalizeCustomerName(item.name) === normalizeCustomerName(invoice.customer_name));
+        if (customer) {
+          const currentDebt = Number(customer.balance ?? customer.debt ?? customer.total_debt ?? 0);
+          await pb.collection('clientsmoashe').update(customer.id, {
+            balance: Math.max(0, currentDebt - invoiceAmount),
+          });
+        }
+      }
+
+      if (invoice.payment_type !== 'credit') {
+        const treasuryRecords = await pb.collection('treasury').getFullList().catch(() => []);
+        const treasury = treasuryRecords[0];
+        if (treasury) {
+          await pb.collection('treasury').update(treasury.id, {
+            balance: Number(treasury.balance || 0) - invoiceAmount,
+          });
+        }
+        await pb.collection('treasury_transactions').create({
+          type: 'sale',
+          movement_type: 'sales_return',
+          amount: -invoiceAmount,
+          title: `مرتجع فاتورة: ${invoiceNumber}`,
+          notes: `رد قيمة فاتورة العميل: ${invoice.customer_name || 'عميل'}`,
+          actor_name: currentUserName,
+          date: new Date().toISOString(),
+        });
+      }
+
+      const allReturned = originalItems.every((item) => {
+        const returnedQty = (returnedQuantities[getReturnItemKey(item)] || 0)
+          + (itemsList.find((returnedItem) => getReturnItemKey(returnedItem) === getReturnItemKey(item))?.qty || 0);
+        return returnedQty >= Number(item.qty || 0) - 0.000000001;
+      });
+      const updatedInvoice = await pb.collection('sales_invoices').update(invoice.id, {
+        status: allReturned ? 'مرتجع' : 'مرتجع جزئي',
+      });
+
+      await pb.collection('invoices_logs').create({
+        action_type: 'مرتجع',
+        actor_name: currentUserName,
+        invoice_number: invoiceNumber,
+        details: JSON.stringify({
+          customer_name: invoice.customer_name,
+          payment_type: invoice.payment_type || 'cash',
+          items: itemsList,
+          total_amount: invoiceAmount,
+          message: `${allReturned ? 'تم عمل مرتجع كامل' : 'تم عمل مرتجع جزئي'} للفاتورة بقيمة ${invoiceAmount} ج.م وإرجاع الأصناف وتحديث الحسابات.`,
+        }),
+      });
+
+      return updatedInvoice;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['sales_invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['products_stock'] });
+      queryClient.invalidateQueries({ queryKey: ['khamat_moashe'] });
+      queryClient.invalidateQueries({ queryKey: ['clientsList'] });
+      queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
+      queryClient.invalidateQueries({ queryKey: ['treasury'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices_logs'] });
+      showToast('✅ تم عمل المرتجع وإرجاع الأصناف وتحديث الحسابات بنجاح.');
+    },
+    onError: (error) => showToast('❌ فشل عمل المرتجع: ' + error.message, 'error'),
+  });
+
   function handleEditClick(invoice) {
     setEditingInvoiceId(invoice.id);
     setOldInvoiceItems(invoice.items || []);
@@ -513,6 +643,20 @@ export default function SalesInvoicesPage() {
     setSelectedSalesAgent('');
     setDiscountAmount('');
     setPaymentType('cash');
+  }
+
+  function handleReturnClick(invoice) {
+    const returnedQuantities = getReturnedQuantities(invoice);
+    const items = (invoice.items || []).map((item) => {
+      const remaining = Math.max(0, Number(item.qty || 0) - Number(returnedQuantities[getReturnItemKey(item)] || 0));
+      return { key: getReturnItemKey(item), name: item.name, itemType: item.itemType, qty: '', remaining };
+    }).filter((item) => item.remaining > 0);
+
+    if (!items.length) {
+      showToast('تم عمل مرتجع لكل أصناف هذه الفاتورة بالفعل.', 'error');
+      return;
+    }
+    setReturnModal({ show: true, invoice, items });
   }
 
   function handleSaveInvoice(e) {
@@ -570,44 +714,11 @@ export default function SalesInvoicesPage() {
       }
     }
 
-    const requiredMaterialsMap = {};
-
     for (const prod of selectedProducts) {
       if (prod.itemType === 'material') continue;
       const prodRecipe = allRecipes.filter(r => (r.product_name || r.name) === prod.name);
       if (prodRecipe.length === 0) {
         showToast(`⚠️ المنتج "${prod.name}" ليس له تركيبة/وصفة مسجلة، لا يمكن إتمام البيع!`, 'error');
-        return;
-      }
-
-      for (const item of prodRecipe) {
-        const matId = item.raw_material_id || item.material_id;
-        const qtyPerUnit = Number(item.quantity_needed || item.quantity || 0);
-        const totalNeededForThisProd = qtyPerUnit * Number(prod.qty || 0);
-
-        requiredMaterialsMap[matId] = (requiredMaterialsMap[matId] || 0) + totalNeededForThisProd;
-      }
-    }
-
-    for (const [matId, neededQty] of Object.entries(requiredMaterialsMap)) {
-      const matInfo = materials.find(m => m.id === matId);
-      let availableMatStock = matInfo ? Number(matInfo.stock || matInfo.quantity || 0) : 0;
-
-      if (editingInvoiceId && oldInvoiceItems.length > 0) {
-        for (const oldProd of oldInvoiceItems) {
-          const oldProdRecipe = allRecipes.filter(r => (r.product_name || r.name) === oldProd.name);
-          for (const item of oldProdRecipe) {
-            const oldMatId = item.raw_material_id || item.material_id;
-            if (oldMatId === matId) {
-              const qtyPerUnit = Number(item.quantity_needed || item.quantity || 0);
-              availableMatStock += qtyPerUnit * Number(oldProd.qty || 0);
-            }
-          }
-        }
-      }
-
-      if (!matInfo || availableMatStock < neededQty) {
-        showToast(`⚠️ الخامة "${matInfo?.name || 'غير معروفة'}" غير متوفرة بالكمية الكافية في مخزن الخامات! (المتوفر: ${availableMatStock}، المطلوب: ${neededQty})`, 'error');
         return;
       }
     }
@@ -702,6 +813,63 @@ export default function SalesInvoicesPage() {
                 className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 py-2.5 rounded-2xl font-bold text-xs transition"
               >
                 إلغاء
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {returnModal.show && returnModal.invoice && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-6 max-w-lg w-full shadow-2xl space-y-5">
+            <div className="flex justify-between items-center border-b pb-3">
+              <div>
+                <h3 className="text-lg font-black text-gray-900">↩️ مرتجع من الفاتورة</h3>
+                <p className="text-xs text-gray-500 mt-1">اكتب الكمية المرتجعة لكل صنف، واترك الباقي فارغًا.</p>
+              </div>
+              <button type="button" onClick={() => setReturnModal({ show: false, invoice: null, items: [] })} className="text-gray-400 font-bold text-lg">✕</button>
+            </div>
+            <div className="border border-gray-200 rounded-2xl overflow-hidden">
+              <table className="w-full text-right text-xs">
+                <thead className="bg-gray-100 text-gray-600">
+                  <tr><th className="p-3">الصنف</th><th className="p-3">المتاح للمرتجع</th><th className="p-3">كمية المرتجع</th></tr>
+                </thead>
+                <tbody className="divide-y">
+                  {returnModal.items.map((item) => (
+                    <tr key={item.key}>
+                      <td className="p-3 font-bold">{item.itemType === 'material' ? 'خامة: ' : 'منتج: '}{item.name}</td>
+                      <td className="p-3 text-gray-500">{item.remaining}</td>
+                      <td className="p-3">
+                        <input
+                          type="number"
+                          min="0"
+                          max={item.remaining}
+                          step="any"
+                          value={item.qty}
+                          onChange={(event) => setReturnModal((previous) => ({
+                            ...previous,
+                            items: previous.items.map((row) => row.key === item.key ? { ...row, qty: event.target.value } : row),
+                          }))}
+                          className="w-28 border border-gray-200 rounded-xl px-2 py-1.5 text-center font-bold"
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setReturnModal({ show: false, invoice: null, items: [] })} className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-2xl text-xs font-bold">إلغاء</button>
+              <button
+                type="button"
+                disabled={returnInvoiceMutation.isPending}
+                onClick={() => {
+                  returnInvoiceMutation.mutate({ invoice: returnModal.invoice, returnItems: returnModal.items });
+                  setReturnModal({ show: false, invoice: null, items: [] });
+                }}
+                className="flex-1 bg-violet-600 hover:bg-violet-700 text-white py-3 rounded-2xl text-xs font-bold disabled:opacity-50"
+              >
+                {returnInvoiceMutation.isPending ? 'جارٍ تنفيذ المرتجع...' : 'حفظ المرتجع'}
               </button>
             </div>
           </div>
@@ -1136,6 +1304,9 @@ export default function SalesInvoicesPage() {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {filteredInvoices.map((inv) => {
+                  const isReturned = isInvoiceFullyReturned(inv);
+                  const isPartiallyReturned = inv.status === 'مرتجع جزئي';
+                  const isClosed = isReturned || isPartiallyReturned;
                   const invDiscount = Number(inv.discount !== undefined ? inv.discount : (inv.discount_amount || 0));
                   const invSubTotal = (inv.sub_total !== undefined && inv.sub_total !== null && inv.sub_total !== 0) 
                     ? inv.sub_total 
@@ -1161,8 +1332,8 @@ export default function SalesInvoicesPage() {
                       </td>
                       <td className="p-3 font-bold text-emerald-600">{(inv.total_amount || 0).toLocaleString()} ج.م</td>
                       <td className="p-3">
-                        <span className={`px-2 py-1 rounded-xl text-white text-[10px] ${inv.payment_type === 'credit' ? 'bg-amber-600' : 'bg-emerald-600'}`}>
-                          {inv.payment_type === 'credit' ? 'آجل' : 'كاش'}
+                        <span className={`px-2 py-1 rounded-xl text-white text-[10px] ${isReturned || isPartiallyReturned ? 'bg-red-600' : inv.payment_type === 'credit' ? 'bg-amber-600' : 'bg-emerald-600'}`}>
+                          {isReturned ? 'مرتجع' : isPartiallyReturned ? 'مرتجع جزئي' : inv.payment_type === 'credit' ? 'آجل' : 'كاش'}
                         </span>
                       </td>
                       <td className="p-3 text-gray-500">{new Date(inv.created).toLocaleDateString('ar-EG')}</td>
@@ -1175,11 +1346,20 @@ export default function SalesInvoicesPage() {
                         </button>
                         <button
                           onClick={() => handleEditClick(inv)}
+                          disabled={isClosed}
                           className="px-2.5 py-1 bg-amber-50 text-amber-600 hover:bg-amber-100 rounded-xl font-bold transition"
                         >
                           تعديل
                         </button>
                         <button
+                          disabled={isClosed || returnInvoiceMutation.isPending}
+                          onClick={() => handleReturnClick(inv)}
+                          className="px-2.5 py-1 bg-violet-50 text-violet-600 hover:bg-violet-100 rounded-xl font-bold transition disabled:opacity-50"
+                        >
+                          مرتجع
+                        </button>
+                        <button
+                          disabled={isClosed}
                           onClick={() => {
                             setConfirmModal({
                               show: true,
@@ -1191,7 +1371,7 @@ export default function SalesInvoicesPage() {
                               }
                             });
                           }}
-                          className="px-2.5 py-1 bg-red-50 text-red-600 hover:bg-red-100 rounded-xl font-bold transition"
+                          className="px-2.5 py-1 bg-red-50 text-red-600 hover:bg-red-100 rounded-xl font-bold transition disabled:opacity-50"
                         >
                           حذف
                         </button>
