@@ -10,6 +10,9 @@ export default function TreasuryPage() {
   const [depositBankId, setDepositBankId] = useState('');
   const [depositAmount, setDepositAmount] = useState('');
   const [depositNotes, setDepositNotes] = useState('');
+  const [cashDepositFormOpen, setCashDepositFormOpen] = useState(false);
+  const [cashDepositAmount, setCashDepositAmount] = useState('');
+  const [cashDepositDescription, setCashDepositDescription] = useState('');
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [confirmation, setConfirmation] = useState(null);
 
@@ -17,6 +20,7 @@ export default function TreasuryPage() {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [movementTypeFilter, setMovementTypeFilter] = useState('all');
+  const [movementDirectionFilter, setMovementDirectionFilter] = useState('all');
   const [descriptionFilter, setDescriptionFilter] = useState('');
 
   const currentUser = pb.authStore.model;
@@ -177,6 +181,24 @@ export default function TreasuryPage() {
             });
           }
         }
+        if (String(transaction.movement_type || '').toLowerCase() === 'bank_transfer' && String(transaction.title || '').includes('إلى الخزنة')) {
+          const bank = banks.find(item => item.id === transaction.bank_id);
+          if (bank) {
+            await pb.collection('banks').update(bank.id, {
+              balance: Number(bank.balance || 0) + Number(transaction.amount || 0),
+            });
+          }
+          if (treasury?.id) {
+            await pb.collection('treasury').update(treasury.id, {
+              balance: currentBalance - Number(transaction.amount || 0),
+            });
+          }
+        }
+        if (String(transaction.movement_type || '').toLowerCase() === 'cash_deposit' && treasury?.id) {
+          await pb.collection('treasury').update(treasury.id, {
+            balance: Math.max(0, Number(treasury.balance || 0) - Number(transaction.amount || 0)),
+          });
+        }
       }
       return await pb.collection(collectionName).delete(id);
     },
@@ -235,6 +257,44 @@ export default function TreasuryPage() {
     onError: (err) => showToast('❌ فشل الإيداع: ' + err.message, 'error'),
   });
 
+  const cashDepositMutation = useMutation({
+    mutationFn: async () => {
+      const amount = Number(cashDepositAmount);
+      if (!Number.isFinite(amount) || amount <= 0) throw new Error('اكتب مبلغ إيداع صحيح.');
+      if (!cashDepositDescription.trim()) throw new Error('اكتب وصف الإيداع.');
+
+      const actorName = currentUser?.name || currentUser?.email || 'مستخدم النظام';
+      const date = new Date().toISOString();
+      if (treasury?.id) {
+        await pb.collection('treasury').update(treasury.id, {
+          balance: Number(treasury.balance ?? openingBalance) + amount,
+        });
+      } else {
+        await pb.collection('treasury').create({ opening_balance: 0, balance: amount });
+      }
+
+      return await pb.collection('treasury_transactions').create({
+        type: 'purchase',
+        movement_type: 'cash_deposit',
+        source_type: 'treasury',
+        amount,
+        title: cashDepositDescription.trim(),
+        notes: cashDepositDescription.trim(),
+        date,
+        actor_name: actorName,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['treasury'] });
+      queryClient.invalidateQueries({ queryKey: ['treasury_transactions_treasury'] });
+      setCashDepositAmount('');
+      setCashDepositDescription('');
+      setCashDepositFormOpen(false);
+      showToast('تم تسجيل الإيداع وتحديث رصيد الخزنة.');
+    },
+    onError: (err) => showToast('❌ فشل تسجيل الإيداع: ' + err.message, 'error'),
+  });
+
   // تصفية المصروفات
   const formattedExpenses = expenses
     .filter(exp => {
@@ -262,6 +322,7 @@ export default function TreasuryPage() {
       id: exp.id,
       collection: 'expenses',
       date: exp.created || exp.date,
+      created: exp.created,
       movementType: 'expense',
       title: exp.expand?.category_id?.name || 'مصروف خزن عام',
       amount: Number(exp.amount || 0),
@@ -298,6 +359,7 @@ export default function TreasuryPage() {
         id: tx.id,
         collection: 'client_transactions',
         date: tx.date || tx.created,
+        created: tx.created,
         movementType: 'client_payment',
         title: `تحصيل نقدي من عميل: ${clientName}`,
         amount: Number(tx.amount || 0),
@@ -327,6 +389,7 @@ export default function TreasuryPage() {
         id: tx.id,
         collection: 'supplier_transactions',
         date: tx.date || tx.created,
+        created: tx.created,
         movementType: 'supplier_payment',
         title: `سداد نقدي لمورد: ${supplierName}`,
         amount: Number(tx.amount || 0),
@@ -357,6 +420,7 @@ export default function TreasuryPage() {
         id: inv.id,
         collection: 'sales_invoices',
         date: inv.date || inv.created,
+        created: inv.created,
         movementType: 'sales_invoice',
         title: `فاتورة بيع كاش: ${customerName}`,
         amount: Number(inv.total_amount || inv.amount || 0),
@@ -380,6 +444,7 @@ export default function TreasuryPage() {
         id: adv.id,
         collection: 'advances',
         date: adv.date || adv.created,
+        created: adv.created,
         movementType: 'employee_advance',
         title: `صرف سلفة موظف: ${empName}`,
         amount: Number(adv.amount || 0),
@@ -405,6 +470,7 @@ export default function TreasuryPage() {
         id: sal.id,
         collection: 'salaries_payouts',
         date: sal.date || sal.created,
+        created: sal.created,
         movementType: 'salary_payout',
         title: `صرف مرتب: ${empName}`,
         amount: payoutAmount,
@@ -427,6 +493,7 @@ export default function TreasuryPage() {
       id: record.id,
       collection: 'treasury',
       date: record.date || record.created,
+      created: record.created,
       movementType: 'salary_payout',
       title: record.description || 'صرف مرتب',
       amount: Number(record.amount || 0),
@@ -447,6 +514,7 @@ export default function TreasuryPage() {
       id: transaction.id,
       collection: 'treasury_transactions',
       date: transaction.date || transaction.created,
+      created: transaction.created,
       movementType: 'salary_payout',
       title: transaction.title || 'صرف مرتب',
       amount: Number(transaction.amount || 0),
@@ -470,6 +538,7 @@ export default function TreasuryPage() {
         id: transaction.id,
         collection: 'treasury_transactions',
         date: transaction.date || transaction.created,
+        created: transaction.created,
         movementType: isReturn ? 'other_advance_return' : 'other_advance',
         title: transaction.title || (isReturn ? 'رد عهدة' : 'صرف عهدة'),
         amount: Number(transaction.amount || 0),
@@ -491,6 +560,7 @@ export default function TreasuryPage() {
       id: transaction.id,
       collection: 'treasury_transactions',
       date: transaction.date || transaction.created,
+      created: transaction.created,
       movementType: 'bank_deposit',
       title: transaction.title || 'إيداع في بنك',
       amount: Number(transaction.amount || 0),
@@ -498,6 +568,54 @@ export default function TreasuryPage() {
       notes: transaction.notes || 'إيداع بنكي',
       actor: transaction.actor_name || 'غير معروف',
     }));
+
+  const formattedBankTransfers = treasuryTransactions
+    .filter(transaction => String(transaction.movement_type || '').toLowerCase() === 'bank_transfer' && String(transaction.title || '').includes('إلى الخزنة'))
+    .filter(transaction => {
+      const transactionDate = String(transaction.date || transaction.created || '').slice(0, 10);
+      if (startDate && transactionDate < startDate) return false;
+      if (endDate && transactionDate > endDate) return false;
+      return true;
+    })
+    .map(transaction => ({
+      id: transaction.id,
+      collection: 'treasury_transactions',
+      date: transaction.date || transaction.created,
+      created: transaction.created,
+      movementType: 'bank_transfer',
+      title: transaction.title || 'تحويل من بنك إلى الخزنة',
+      amount: Number(transaction.amount || 0),
+      signedAmount: Number(transaction.amount || 0),
+      notes: transaction.notes || 'تحويل من بنك إلى الخزنة',
+      actor: transaction.actor_name || 'غير معروف',
+    }));
+
+  const formattedCashDeposits = treasuryTransactions
+    .filter(transaction => String(transaction.movement_type || '').toLowerCase() === 'cash_deposit' && String(transaction.source_type || '') === 'treasury')
+    .filter(transaction => {
+      const transactionDate = String(transaction.date || transaction.created || '').slice(0, 10);
+      if (startDate && transactionDate < startDate) return false;
+      if (endDate && transactionDate > endDate) return false;
+      return true;
+    })
+    .map(transaction => ({
+      id: transaction.id,
+      collection: 'treasury_transactions',
+      date: transaction.date || transaction.created,
+      created: transaction.created,
+      movementType: 'cash_deposit',
+      title: transaction.title || 'إيداع في الخزنة',
+      amount: Number(transaction.amount || 0),
+      signedAmount: Number(transaction.amount || 0),
+      notes: transaction.notes || 'إيداع نقدي',
+      actor: transaction.actor_name || 'غير معروف',
+    }));
+
+  const getTransactionTimestamp = (transaction) => {
+    const transactionTime = Date.parse(transaction.date || '');
+    const createdTime = Date.parse(transaction.created || '');
+    return Number.isNaN(transactionTime) ? (Number.isNaN(createdTime) ? 0 : createdTime) : transactionTime;
+  };
 
   // دمج وترتيب الحركات (تصاعدياً أولاً لحساب الرصيد التراكمي بدقة)
   const sortedAscTransactions = [
@@ -511,7 +629,9 @@ export default function TreasuryPage() {
     ...formattedTreasuryTransactionSalaries,
     ...formattedOtherAdvanceTransactions,
     ...formattedBankDeposits,
-  ].sort((a, b) => new Date(a.date) - new Date(b.date));
+    ...formattedBankTransfers,
+    ...formattedCashDeposits,
+  ].sort((a, b) => getTransactionTimestamp(a) - getTransactionTimestamp(b));
 
   // حساب الرصيد التراكمي
   const transactionsWithTreasuryBalance = sortedAscTransactions.reduce((transactions, tx) => {
@@ -527,11 +647,19 @@ export default function TreasuryPage() {
     ];
   }, []);
 
-  // عكس الترتيب لعرض الأحدث في الأعلى
-  const allTransactions = [...transactionsWithTreasuryBalance].reverse();
+  const getDisplayTimestamp = (transaction) => {
+    const createdTime = Date.parse(transaction.created || '');
+    return Number.isNaN(createdTime) ? getTransactionTimestamp(transaction) : createdTime;
+  };
+
+  // عرض آخر حركة تم تسجيلها أولاً، حتى لو كان تاريخ الحركة نفسه قديماً أو مستقبلياً.
+  const allTransactions = [...transactionsWithTreasuryBalance]
+    .sort((a, b) => getDisplayTimestamp(b) - getDisplayTimestamp(a));
 
   const filteredTreasuryTransactions = allTransactions.filter(transaction => {
     if (movementTypeFilter !== 'all' && transaction.movementType !== movementTypeFilter) return false;
+    if (movementDirectionFilter === 'deposit' && transaction.signedAmount <= 0) return false;
+    if (movementDirectionFilter === 'withdrawal' && transaction.signedAmount >= 0) return false;
     if (descriptionFilter.trim() && !transaction.title.toLowerCase().includes(descriptionFilter.trim().toLowerCase())) return false;
     return true;
   });
@@ -557,6 +685,10 @@ export default function TreasuryPage() {
           <h1 className="text-2xl md:text-3xl font-black text-gray-800">إدارة الخزنة والنقدية الفعلية</h1>
           <p className="text-xs text-gray-500 mt-1">متابعة النقدية، تحصيلات العملاء، المبيعات، الموردين، المصروفات، السلف، ومرتبات الموظفين</p>
         </div>
+        <div className="flex items-center gap-2">
+        <button onClick={() => setCashDepositFormOpen(true)} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-emerald-700">
+          إيداع في الخزنة
+        </button>
         <button onClick={() => { 
           queryClient.invalidateQueries({ queryKey: ['treasury'] }); 
           queryClient.invalidateQueries({ queryKey: ['expenses'] }); 
@@ -567,7 +699,24 @@ export default function TreasuryPage() {
           queryClient.invalidateQueries({ queryKey: ['salaries_payouts_treasury'] });
           queryClient.invalidateQueries({ queryKey: ['treasury_transactions_treasury'] });
         }} className="bg-gray-100 text-gray-700 px-4 py-2 rounded-xl text-xs font-bold">🔄 تحديث</button>
+        </div>
       </div>
+
+      {cashDepositFormOpen && (
+        <div className="bg-emerald-50 p-6 rounded-3xl shadow-xl border border-emerald-100">
+          <div className="flex items-center justify-between border-b border-emerald-100 pb-3">
+            <h2 className="text-base font-black text-gray-800">إيداع نقدي في الخزنة</h2>
+            <button type="button" onClick={() => setCashDepositFormOpen(false)} className="text-gray-500 hover:text-gray-800 text-sm font-bold">إلغاء</button>
+          </div>
+          <form onSubmit={(event) => { event.preventDefault(); cashDepositMutation.mutate(); }} className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
+            <input type="number" min="0.01" step="0.01" value={cashDepositAmount} onChange={(event) => setCashDepositAmount(event.target.value)} placeholder="مبلغ الإيداع" className="border border-gray-200 bg-white p-3 rounded-xl text-xs font-bold outline-none" required autoFocus />
+            <input type="text" value={cashDepositDescription} onChange={(event) => setCashDepositDescription(event.target.value)} placeholder="وصف الإيداع" className="border border-gray-200 bg-white p-3 rounded-xl text-xs outline-none" required />
+            <button type="submit" disabled={cashDepositMutation.isPending} className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-300 text-white p-3 rounded-xl text-xs font-black">
+              {cashDepositMutation.isPending ? 'جارٍ الحفظ...' : 'حفظ الإيداع'}
+            </button>
+          </form>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className={`p-6 rounded-3xl shadow-xl text-white ${currentBalance < 0 ? 'bg-red-600' : 'bg-blue-600'}`}>
@@ -641,6 +790,20 @@ export default function TreasuryPage() {
             <option value="other_advance">صرف عهدة</option>
             <option value="other_advance_return">رد عهدة</option>
             <option value="bank_deposit">إيداع في بنك</option>
+            <option value="bank_transfer">تحويل من بنك إلى الخزنة</option>
+            <option value="cash_deposit">إيداع في الخزنة</option>
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-bold text-gray-700">اتجاه الحركة</label>
+          <select
+            value={movementDirectionFilter}
+            onChange={(event) => setMovementDirectionFilter(event.target.value)}
+            className="w-full border border-gray-200 bg-gray-50 p-2.5 rounded-xl text-xs font-bold outline-none mt-1"
+          >
+            <option value="all">كل الحركات</option>
+            <option value="deposit">إيداع</option>
+            <option value="withdrawal">سحب</option>
           </select>
         </div>
         <div>
@@ -680,6 +843,7 @@ export default function TreasuryPage() {
             <thead className="bg-gray-100 text-gray-600">
               <tr>
                 <th className="p-3">التاريخ</th>
+                <th className="p-3">الحركة</th>
                 <th className="p-3">نوع الحركة</th>
                 <th className="p-3">البيان / الوصف</th>
                 <th className="p-3">المبلغ</th>
@@ -693,6 +857,11 @@ export default function TreasuryPage() {
               {filteredTreasuryTransactions.map((tx) => (
                 <tr key={tx.id} className="hover:bg-gray-50 transition">
                   <td className="p-3 text-gray-600">{new Date(tx.date).toLocaleString()}</td>
+                  <td className="p-3">
+                    <span className={`px-2.5 py-1 rounded-xl text-[10px] font-bold ${tx.signedAmount > 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'}`}>
+                      {tx.signedAmount > 0 ? 'إيداع' : 'سحب'}
+                    </span>
+                  </td>
                   <td className="p-3">
                     {tx.movementType === 'client_payment' ? (
                       <span className="bg-emerald-100 text-emerald-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
@@ -725,6 +894,14 @@ export default function TreasuryPage() {
                     ) : tx.movementType === 'bank_deposit' ? (
                       <span className="bg-cyan-100 text-cyan-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
                         🏦 إيداع في بنك (-)
+                      </span>
+                    ) : tx.movementType === 'bank_transfer' ? (
+                      <span className="bg-emerald-100 text-emerald-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
+                        ↔️ تحويل من بنك (+)
+                      </span>
+                    ) : tx.movementType === 'cash_deposit' ? (
+                      <span className="bg-teal-100 text-teal-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
+                        📥 إيداع في الخزنة (+)
                       </span>
                     ) : (
                       <span className="bg-red-100 text-red-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
@@ -759,7 +936,7 @@ export default function TreasuryPage() {
               ))}
               {filteredTreasuryTransactions.length === 0 && (
                 <tr>
-                  <td colSpan={isAdmin ? 8 : 7} className="p-8 text-center text-gray-400 font-bold">لا توجد حركات نقدية مسجلة للخزنة في الفترة المحددة.</td>
+                  <td colSpan={isAdmin ? 9 : 8} className="p-8 text-center text-gray-400 font-bold">لا توجد حركات نقدية مسجلة للخزنة في الفترة المحددة.</td>
                 </tr>
               )}
             </tbody>

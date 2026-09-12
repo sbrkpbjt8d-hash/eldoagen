@@ -22,10 +22,23 @@ export default function BanksPage() {
   const [reconciledBalance, setReconciledBalance] = useState('');
   const [reconciliationNotes, setReconciliationNotes] = useState('');
 
+  const [transferModal, setTransferModal] = useState(false);
+  const [transferSourceBankId, setTransferSourceBankId] = useState('');
+  const [transferDestination, setTransferDestination] = useState('treasury');
+  const [transferDestinationBankId, setTransferDestinationBankId] = useState('');
+  const [transferAmount, setTransferAmount] = useState('');
+  const [transferNotes, setTransferNotes] = useState('');
+
+  const [bankDepositModal, setBankDepositModal] = useState(false);
+  const [bankDepositBankId, setBankDepositBankId] = useState('');
+  const [bankDepositAmount, setBankDepositAmount] = useState('');
+  const [bankDepositDescription, setBankDepositDescription] = useState('');
+
   // حالات نافذة عرض سجل حركات البنك
   const [historyModal, setHistoryModal] = useState({ isOpen: false, bank: null });
   const [historyStartDate, setHistoryStartDate] = useState('');
   const [historyEndDate, setHistoryEndDate] = useState('');
+  const [historyDirectionFilter, setHistoryDirectionFilter] = useState('all');
 
   // حالات نموذج إضافة بنك جديد (متاحة للجميع)
   const [bankName, setBankName] = useState('');
@@ -94,6 +107,13 @@ export default function BanksPage() {
       return await pb.collection('treasury_transactions').getFullList({ sort: '-date' }).catch(() => []);
     },
   });
+
+  const { data: treasuryRecords = [] } = useQuery({
+    queryKey: ['treasury'],
+    queryFn: async () => pb.collection('treasury').getFullList().catch(() => []),
+  });
+
+  const treasury = treasuryRecords.find((record) => Object.prototype.hasOwnProperty.call(record, 'opening_balance')) || null;
 
   // إضافة بنك جديد (متاحة للجميع)
   const addBankMutation = useMutation({
@@ -176,6 +196,137 @@ export default function BanksPage() {
       showFeedback('✅ تمت تسوية رصيد البنك وتسجيلها في السجل.', 'success');
     },
     onError: (error) => showFeedback('❌ فشل تنفيذ التسوية: ' + error.message, 'error'),
+  });
+
+  const transferMutation = useMutation({
+    mutationFn: async () => {
+      const sourceBank = banks.find((bank) => bank.id === transferSourceBankId);
+      const destinationBank = transferDestination === 'bank'
+        ? banks.find((bank) => bank.id === transferDestinationBankId)
+        : null;
+      const amount = Number(transferAmount);
+
+      if (!sourceBank) throw new Error('اختر البنك المصدر.');
+      if (transferDestination === 'bank' && (!destinationBank || destinationBank.id === sourceBank.id)) {
+        throw new Error('اختر بنكاً مستقبلاً مختلفاً عن البنك المصدر.');
+      }
+      if (!Number.isFinite(amount) || amount <= 0) throw new Error('اكتب مبلغ تحويل صحيح.');
+      if (amount > Number(sourceBank.balance || 0)) throw new Error('مبلغ التحويل أكبر من رصيد البنك المصدر.');
+      if (transferDestination === 'treasury' && !treasury?.id) throw new Error('لم يتم إعداد سجل الخزنة بعد.');
+
+      const actorName = currentUserName();
+      const date = new Date().toISOString();
+      await pb.collection('banks').update(sourceBank.id, {
+        balance: Number(sourceBank.balance || 0) - amount,
+        actor_name: actorName,
+      });
+
+      if (destinationBank) {
+        await pb.collection('banks').update(destinationBank.id, {
+          balance: Number(destinationBank.balance || 0) + amount,
+          actor_name: actorName,
+        });
+      } else {
+        await pb.collection('treasury').update(treasury.id, {
+          balance: Number(treasury.balance ?? treasury.opening_balance ?? 0) + amount,
+        });
+      }
+
+      try {
+        return await pb.collection('treasury_transactions').create({
+          type: 'purchase',
+          movement_type: 'bank_transfer',
+          source_type: 'bank',
+          destination_type: transferDestination,
+          bank_id: sourceBank.id,
+          destination_bank_id: destinationBank?.id || '',
+          amount,
+          title: destinationBank
+            ? `تحويل من بنك ${sourceBank.name} إلى بنك ${destinationBank.name}`
+            : `تحويل من بنك ${sourceBank.name} إلى الخزنة`,
+          notes: transferNotes.trim() || 'تحويل بين الحسابات',
+          date,
+          actor_name: actorName,
+        });
+      } catch (error) {
+        await pb.collection('banks').update(sourceBank.id, {
+          balance: Number(sourceBank.balance || 0),
+          actor_name: actorName,
+        });
+        if (destinationBank) {
+          await pb.collection('banks').update(destinationBank.id, {
+            balance: Number(destinationBank.balance || 0),
+            actor_name: actorName,
+          });
+        } else {
+          await pb.collection('treasury').update(treasury.id, {
+            balance: Number(treasury.balance ?? treasury.opening_balance ?? 0),
+          });
+        }
+        throw error;
+      }
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['banks'] });
+      await queryClient.invalidateQueries({ queryKey: ['treasury'] });
+      await queryClient.invalidateQueries({ queryKey: ['treasury_transactions_banks'] });
+      setTransferModal(false);
+      setTransferSourceBankId('');
+      setTransferDestination('treasury');
+      setTransferDestinationBankId('');
+      setTransferAmount('');
+      setTransferNotes('');
+      showFeedback('✅ تم التحويل وتحديث الأرصدة وتسجيل الحركة.', 'success');
+    },
+    onError: (error) => showFeedback('❌ فشل تنفيذ التحويل: ' + error.message, 'error'),
+  });
+
+  const bankDepositMutation = useMutation({
+    mutationFn: async () => {
+      const bank = banks.find((item) => item.id === bankDepositBankId);
+      const amount = Number(bankDepositAmount);
+
+      if (!bank) throw new Error('اختر البنك المراد الإيداع فيه.');
+      if (!Number.isFinite(amount) || amount <= 0) throw new Error('اكتب مبلغ إيداع صحيح.');
+      if (!bankDepositDescription.trim()) throw new Error('اكتب وصف الإيداع.');
+
+      const actorName = currentUserName();
+      const previousBalance = Number(bank.balance || 0);
+      await pb.collection('banks').update(bank.id, {
+        balance: previousBalance + amount,
+        actor_name: actorName,
+      });
+
+      try {
+        return await pb.collection('treasury_transactions').create({
+          type: 'purchase',
+          movement_type: 'bank_adjustment',
+          source_type: 'bank',
+          bank_id: bank.id,
+          amount,
+          title: `إيداع في البنك: ${bank.name}`,
+          notes: bankDepositDescription.trim(),
+          date: new Date().toISOString(),
+          actor_name: actorName,
+        });
+      } catch (error) {
+        await pb.collection('banks').update(bank.id, {
+          balance: previousBalance,
+          actor_name: actorName,
+        });
+        throw error;
+      }
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['banks'] });
+      await queryClient.invalidateQueries({ queryKey: ['treasury_transactions_banks'] });
+      setBankDepositModal(false);
+      setBankDepositBankId('');
+      setBankDepositAmount('');
+      setBankDepositDescription('');
+      showFeedback('✅ تم الإيداع وتحديث رصيد البنك وتسجيل الحركة.', 'success');
+    },
+    onError: (error) => showFeedback('❌ فشل تسجيل الإيداع: ' + error.message, 'error'),
   });
 
   // حذف بنك (للمسؤولين فقط)
@@ -284,6 +435,23 @@ export default function BanksPage() {
       }).map(transaction => ({ ...transaction, movementType: 'bank_deposit' }))
     : [];
 
+  const currentBankTransfers = historyModal.bank
+    ? treasuryTransactions.filter(transaction => {
+        const sourceBankId = String(transaction.bank_id || '').trim();
+        const destinationBankId = String(transaction.destination_bank_id || '').trim();
+        const destinationBankName = `إلى بنك ${historyModal.bank.name}`;
+        const transactionDate = String(transaction.date || transaction.created || '').slice(0, 10);
+        return String(transaction.movement_type || '').toLowerCase() === 'bank_transfer' &&
+          (sourceBankId === historyModal.bank.id || destinationBankId === historyModal.bank.id || String(transaction.title || '').includes(destinationBankName)) &&
+          (!historyStartDate || transactionDate >= historyStartDate) &&
+          (!historyEndDate || transactionDate <= historyEndDate);
+      }).map(transaction => ({
+        ...transaction,
+        movementType: 'bank_transfer',
+        isIncoming: String(transaction.destination_bank_id || '').trim() === historyModal.bank.id || String(transaction.title || '').includes(`إلى بنك ${historyModal.bank.name}`),
+      }))
+    : [];
+
   const currentBankAdjustments = historyModal.bank
     ? treasuryTransactions.filter(transaction => {
         const bankId = typeof transaction.bank_id === 'string' ? transaction.bank_id : transaction.bank_id?.id;
@@ -302,8 +470,25 @@ export default function BanksPage() {
     ...currentSupplierPayments,
     ...currentBankOtherAdvanceTransactions,
     ...currentBankDeposits,
+    ...currentBankTransfers,
     ...currentBankAdjustments,
   ].sort((first, second) => new Date(second.date || second.created) - new Date(first.date || first.created));
+
+  const getBankTransactionDirection = (transaction) => {
+    if (transaction.movementType === 'bank_adjustment') {
+      return Number(transaction.amount || 0) >= 0 ? 'deposit' : 'withdrawal';
+    }
+    if (transaction.movementType === 'bank_transfer') {
+      return transaction.isIncoming ? 'deposit' : 'withdrawal';
+    }
+    return ['client_payment', 'other_advance_return', 'bank_deposit'].includes(transaction.movementType)
+      ? 'deposit'
+      : 'withdrawal';
+  };
+
+  const filteredCurrentBankTransactions = currentBankTransactions.filter((transaction) => (
+    historyDirectionFilter === 'all' || getBankTransactionDirection(transaction) === historyDirectionFilter
+  ));
 
   return (
     <div className="p-4 md:p-8 max-w-5xl mx-auto space-y-8 relative" dir="rtl">
@@ -405,12 +590,21 @@ export default function BanksPage() {
                 <label className="text-xs font-bold text-gray-700">إلى تاريخ</label>
                 <input type="date" value={historyEndDate} onChange={(e) => setHistoryEndDate(e.target.value)} className="w-full border border-gray-200 bg-gray-50 p-3 rounded-xl text-xs font-bold outline-none mt-1" />
               </div>
+              <div>
+                <label className="text-xs font-bold text-gray-700">اتجاه الحركة</label>
+                <select value={historyDirectionFilter} onChange={(e) => setHistoryDirectionFilter(e.target.value)} className="w-full border border-gray-200 bg-gray-50 p-3 rounded-xl text-xs font-bold outline-none mt-1">
+                  <option value="all">كل الحركات</option>
+                  <option value="deposit">إيداع</option>
+                  <option value="withdrawal">سحب</option>
+                </select>
+              </div>
             </div>
             <div className="overflow-y-auto flex-1 border border-gray-100 rounded-2xl">
               <table className="w-full text-right text-xs">
                 <thead className="bg-gray-50 text-gray-500 sticky top-0">
                   <tr>
                     <th className="p-3">التاريخ</th>
+                    <th className="p-3">الحركة</th>
                     <th className="p-3">نوع الحركة</th>
                     <th className="p-3">المبلغ</th>
                     <th className="p-3">ملاحظات</th>
@@ -418,22 +612,27 @@ export default function BanksPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {currentBankTransactions.length > 0 ? (
-                    currentBankTransactions.map((tx) => (
+                  {filteredCurrentBankTransactions.length > 0 ? (
+                    filteredCurrentBankTransactions.map((tx) => (
                       <tr key={tx.id} className="hover:bg-gray-50/60">
                         <td className="p-3 text-gray-600">{String(tx.date || tx.created || '').slice(0, 10) || '-'}</td>
-                        <td className="p-3 font-bold text-blue-600">
-                          {tx.movementType === 'client_payment' ? `تحصيل من عميل: ${tx.expand?.client_id?.name || 'عميل'}` : tx.movementType === 'supplier_payment' ? `سداد مورد: ${tx.expand?.supplier_id?.name || 'مورد'}` : tx.movementType === 'other_advance' ? tx.title || 'صرف عهدة' : tx.movementType === 'other_advance_return' ? tx.title || 'رد عهدة' : tx.movementType === 'bank_deposit' ? tx.title || 'إيداع من الخزنة' : tx.movementType === 'bank_adjustment' ? tx.title || 'تسوية رصيد البنك' : tx.expand?.category_id?.name || 'مصروف'}
+                        <td className="p-3">
+                          <span className={`px-2.5 py-1 rounded-xl text-[10px] font-bold ${getBankTransactionDirection(tx) === 'deposit' ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'}`}>
+                            {getBankTransactionDirection(tx) === 'deposit' ? 'إيداع' : 'سحب'}
+                          </span>
                         </td>
-                        <td className={`p-3 font-black ${tx.movementType === 'bank_adjustment' ? (Number(tx.amount || 0) >= 0 ? 'text-emerald-600' : 'text-red-600') : tx.movementType === 'client_payment' || tx.movementType === 'other_advance_return' || tx.movementType === 'bank_deposit' ? 'text-emerald-600' : 'text-red-600'}`}>
-                          {tx.movementType === 'bank_adjustment' ? (Number(tx.amount || 0) >= 0 ? '+' : '-') : tx.movementType === 'client_payment' || tx.movementType === 'other_advance_return' || tx.movementType === 'bank_deposit' ? '+' : '-'} {Math.abs(Number(tx.amount || 0)).toLocaleString()} ج.م
+                        <td className="p-3 font-bold text-blue-600">
+                          {tx.movementType === 'client_payment' ? `تحصيل من عميل: ${tx.expand?.client_id?.name || 'عميل'}` : tx.movementType === 'supplier_payment' ? `سداد مورد: ${tx.expand?.supplier_id?.name || 'مورد'}` : tx.movementType === 'other_advance' ? tx.title || 'صرف عهدة' : tx.movementType === 'other_advance_return' ? tx.title || 'رد عهدة' : tx.movementType === 'bank_deposit' ? tx.title || 'إيداع من الخزنة' : tx.movementType === 'bank_transfer' ? tx.title || 'تحويل بين الحسابات' : tx.movementType === 'bank_adjustment' ? tx.title || 'تسوية رصيد البنك' : tx.expand?.category_id?.name || 'مصروف'}
+                        </td>
+                        <td className={`p-3 font-black ${tx.movementType === 'bank_adjustment' ? (Number(tx.amount || 0) >= 0 ? 'text-emerald-600' : 'text-red-600') : tx.movementType === 'client_payment' || tx.movementType === 'other_advance_return' || tx.movementType === 'bank_deposit' || (tx.movementType === 'bank_transfer' && tx.isIncoming) ? 'text-emerald-600' : 'text-red-600'}`}>
+                          {tx.movementType === 'bank_adjustment' ? (Number(tx.amount || 0) >= 0 ? '+' : '-') : tx.movementType === 'client_payment' || tx.movementType === 'other_advance_return' || tx.movementType === 'bank_deposit' || (tx.movementType === 'bank_transfer' && tx.isIncoming) ? '+' : '-'} {Math.abs(Number(tx.amount || 0)).toLocaleString()} ج.م
                         </td>
                         <td className="p-3 text-gray-500">{tx.notes || '-'}</td>
                         <td className="p-3 font-bold text-gray-700">{tx.actor_name || 'غير معروف'}</td>
                       </tr>
                     ))
                   ) : (
-                    <tr><td colSpan="5" className="p-8 text-center text-gray-400 font-bold">لا توجد حركات مسجلة لهذا البنك في الفترة المحددة.</td></tr>
+                    <tr><td colSpan="6" className="p-8 text-center text-gray-400 font-bold">لا توجد حركات مسجلة لهذا البنك في الفترة المحددة.</td></tr>
                   )}
                 </tbody>
               </table>
@@ -445,13 +644,91 @@ export default function BanksPage() {
         </div>
       )}
 
+      {transferModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4">
+            <div className="flex justify-between items-center border-b pb-3">
+              <div>
+                <h3 className="text-base font-black text-gray-800">↔️ تحويل من بنك</h3>
+                <p className="text-xs text-gray-500 mt-1">إلى الخزنة أو بنك آخر</p>
+              </div>
+              <button type="button" onClick={() => setTransferModal(false)} className="text-gray-400 font-bold text-lg hover:text-gray-700">✕</button>
+            </div>
+            <form onSubmit={(event) => { event.preventDefault(); transferMutation.mutate(); }} className="space-y-3">
+              <div>
+                <label className="text-xs font-bold text-gray-700">البنك المصدر</label>
+                <select value={transferSourceBankId} onChange={(event) => setTransferSourceBankId(event.target.value)} className="w-full border p-3 rounded-xl text-xs mt-1 outline-none focus:border-blue-500" required>
+                  <option value="">اختر البنك المصدر</option>
+                  {banks.map((bank) => <option key={bank.id} value={bank.id}>{bank.name} - {Number(bank.balance || 0).toLocaleString()} ج.م</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-bold text-gray-700">الوجهة</label>
+                <select value={transferDestination} onChange={(event) => { setTransferDestination(event.target.value); setTransferDestinationBankId(''); }} className="w-full border p-3 rounded-xl text-xs mt-1 outline-none focus:border-blue-500">
+                  <option value="treasury">الخزنة</option>
+                  <option value="bank">بنك آخر</option>
+                </select>
+              </div>
+              {transferDestination === 'bank' && (
+                <div>
+                  <label className="text-xs font-bold text-gray-700">البنك المستقبل</label>
+                  <select value={transferDestinationBankId} onChange={(event) => setTransferDestinationBankId(event.target.value)} className="w-full border p-3 rounded-xl text-xs mt-1 outline-none focus:border-blue-500" required>
+                    <option value="">اختر البنك المستقبل</option>
+                    {banks.filter((bank) => bank.id !== transferSourceBankId).map((bank) => <option key={bank.id} value={bank.id}>{bank.name}</option>)}
+                  </select>
+                </div>
+              )}
+              <div>
+                <label className="text-xs font-bold text-gray-700">المبلغ</label>
+                <input type="number" min="0.01" step="0.01" value={transferAmount} onChange={(event) => setTransferAmount(event.target.value)} className="w-full border p-3 rounded-xl text-xs mt-1 outline-none focus:border-blue-500 font-black" placeholder="مبلغ التحويل" required />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-gray-700">ملاحظات</label>
+                <input type="text" value={transferNotes} onChange={(event) => setTransferNotes(event.target.value)} className="w-full border p-3 rounded-xl text-xs mt-1 outline-none focus:border-blue-500" placeholder="اختياري" />
+              </div>
+              <div className="flex gap-2 pt-3">
+                <button type="button" onClick={() => setTransferModal(false)} className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-xl text-xs font-bold">إلغاء</button>
+                <button type="submit" disabled={transferMutation.isPending || banks.length < 1} className="flex-1 bg-blue-600 text-white py-3 rounded-xl text-xs font-bold">{transferMutation.isPending ? 'جارٍ التحويل...' : 'تنفيذ التحويل'}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {bankDepositModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4">
+            <div className="flex justify-between items-center border-b pb-3">
+              <h3 className="text-base font-black text-gray-800">إيداع في البنك</h3>
+              <button type="button" onClick={() => setBankDepositModal(false)} className="text-gray-400 font-bold text-lg hover:text-gray-700">✕</button>
+            </div>
+            <form onSubmit={(event) => { event.preventDefault(); bankDepositMutation.mutate(); }} className="space-y-3">
+              <select value={bankDepositBankId} onChange={(event) => setBankDepositBankId(event.target.value)} className="w-full border p-3 rounded-xl text-xs outline-none focus:border-blue-500" required>
+                <option value="">اختر البنك</option>
+                {banks.map((bank) => <option key={bank.id} value={bank.id}>{bank.name}</option>)}
+              </select>
+              <input type="number" min="0.01" step="0.01" value={bankDepositAmount} onChange={(event) => setBankDepositAmount(event.target.value)} placeholder="مبلغ الإيداع" className="w-full border p-3 rounded-xl text-xs font-bold outline-none focus:border-blue-500" required autoFocus />
+              <input type="text" value={bankDepositDescription} onChange={(event) => setBankDepositDescription(event.target.value)} placeholder="وصف الإيداع" className="w-full border p-3 rounded-xl text-xs outline-none focus:border-blue-500" required />
+              <div className="flex gap-2 pt-2">
+                <button type="button" onClick={() => setBankDepositModal(false)} className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-xl text-xs font-bold">إلغاء</button>
+                <button type="submit" disabled={bankDepositMutation.isPending || banks.length === 0} className="flex-1 bg-emerald-600 text-white py-3 rounded-xl text-xs font-bold">{bankDepositMutation.isPending ? 'جارٍ الحفظ...' : 'حفظ الإيداع'}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* الهيدر */}
       <div className="border-b pb-4 flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-black text-gray-800">💳 إدارة البنوك والمصروفات</h1>
           <p className="text-sm text-gray-500">متابعة الحسابات البنكية، الأرصدة، وسجل الحركات المرتبطة بها</p>
         </div>
-        <button onClick={() => { queryClient.invalidateQueries({ queryKey: ['banks'] }); }} className="bg-gray-100 text-gray-700 px-4 py-2 rounded-xl text-xs font-bold">🔄 تحديث</button>
+        <div className="flex gap-2">
+          <button onClick={() => setBankDepositModal(true)} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold">إيداع</button>
+          <button onClick={() => setTransferModal(true)} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-bold">↔️ تحويل</button>
+          <button onClick={() => { queryClient.invalidateQueries({ queryKey: ['banks'] }); queryClient.invalidateQueries({ queryKey: ['treasury'] }); }} className="bg-gray-100 text-gray-700 px-4 py-2 rounded-xl text-xs font-bold">🔄 تحديث</button>
+        </div>
       </div>
 
       {feedbackMessage.text && (
@@ -558,6 +835,7 @@ export default function BanksPage() {
                         onClick={() => {
                           setHistoryStartDate('');
                           setHistoryEndDate('');
+                          setHistoryDirectionFilter('all');
                           setHistoryModal({ isOpen: true, bank });
                         }}
                         className="bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1"
