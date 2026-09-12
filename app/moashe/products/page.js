@@ -30,6 +30,7 @@ export default function ProductsPage() {
   const [newSellingPrice, setNewSellingPrice] = useState('');
   const [editingMaterialsProd, setEditingMaterialsProd] = useState(null);
   const [editingMaterials, setEditingMaterials] = useState([]);
+  const [editingProductName, setEditingProductName] = useState('');
   const [expandedProductRecipes, setExpandedProductRecipes] = useState({});
 
   // حالة نافذة التأكيد الاحترافية (Modal) للحذف
@@ -133,9 +134,13 @@ export default function ProductsPage() {
   });
 
   const updateRecipeMaterialsMutation = useMutation({
-    mutationFn: async ({ prodName, nextMaterials }) => {
+    mutationFn: async ({ prodName, nextProductName, nextMaterials }) => {
       const prodRecipes = allRecipes.filter(r => normalizeProductName(r.product_name ?? r.name ?? r.product ?? '') === normalizeProductName(prodName));
       if (!prodRecipes.length) throw new Error('لا توجد بيانات لهذا المنتج');
+
+      const cleanProductName = normalizeProductName(nextProductName);
+      if (!cleanProductName) throw new Error('اسم المنتج مطلوب');
+      const cleanedMaterials = nextMaterials;
 
       const firstRow = prodRecipes[0];
       const sellingPriceValue = Number(firstRow.selling_price ?? firstRow.sellingPrice ?? firstRow.price ?? 0);
@@ -145,9 +150,9 @@ export default function ProductsPage() {
         await pb.collection('products_recipes').delete(record.id);
       }
 
-      for (const item of nextMaterials) {
+      for (const item of cleanedMaterials) {
         await pb.collection('products_recipes').create({
-          product_name: normalizeProductName(prodName),
+          product_name: cleanProductName,
           selling_price: sellingPriceValue,
           other_cost: otherCostValue,
           actor_name: pb.authStore.model?.name || pb.authStore.model?.email || 'مستخدم',
@@ -158,9 +163,10 @@ export default function ProductsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products_recipes'] });
-      toast.success('تم تحديث الخامات المستخدمة بنجاح! ✅');
+      toast.success('تم تحديث اسم المنتج والخامات المستخدمة بنجاح! ✅');
       setEditingMaterialsProd(null);
       setEditingMaterials([]);
+      setEditingProductName('');
       setEditMaterialSearchTerm('');
     },
     onError: (error) => {
@@ -487,6 +493,7 @@ export default function ProductsPage() {
                           <button
                             onClick={() => {
                               setEditingMaterialsProd(prodName);
+                              setEditingProductName(prodName);
                               const draft = Object.values(
                                 prodRecipes.reduce((acc, row) => {
                                   const matId = row.raw_material_id || row.material_id;
@@ -549,18 +556,30 @@ export default function ProductsPage() {
                     {isAdmin && editingMaterialsProd === prodName && (
                       <div className="bg-violet-50 border border-violet-200 rounded-xl p-3 space-y-3">
                         <div className="flex items-center justify-between gap-3">
-                          <span className="text-xs font-black text-violet-800">تعديل الخامات المستخدمة</span>
+                          <span className="text-xs font-black text-violet-800">تعديل اسم المنتج والخامات المستخدمة</span>
                           <button
                             type="button"
                             onClick={() => {
                               setEditingMaterialsProd(null);
                               setEditingMaterials([]);
+                              setEditingProductName('');
                               setEditMaterialSearchTerm('');
                             }}
                             className="text-xs font-bold text-violet-700 hover:text-violet-900"
                           >
                             إغلاق
                           </button>
+                        </div>
+
+                        <div>
+                          <label className="text-xs font-bold text-violet-800">اسم المنتج</label>
+                          <input
+                            type="text"
+                            value={editingProductName}
+                            onChange={(e) => setEditingProductName(e.target.value)}
+                            className="w-full border border-violet-200 p-2 rounded-xl text-black bg-white text-sm outline-none focus:ring-2 focus:ring-violet-600"
+                            required
+                          />
                         </div>
 
                         <input
@@ -637,12 +656,16 @@ export default function ProductsPage() {
                               toast.error('يجب إضافة خامة واحدة على الأقل!');
                               return;
                             }
-                            updateRecipeMaterialsMutation.mutate({ prodName, nextMaterials: editingMaterials });
+                            updateRecipeMaterialsMutation.mutate({
+                              prodName,
+                              nextProductName: editingProductName,
+                              nextMaterials: editingMaterials,
+                            });
                           }}
                           disabled={updateRecipeMaterialsMutation.isPending}
                           className="w-full bg-violet-600 hover:bg-violet-700 text-white text-xs font-bold px-3 py-2.5 rounded-xl transition disabled:opacity-50"
                         >
-                          {updateRecipeMaterialsMutation.isPending ? 'جاري حفظ الخامات...' : '💾 حفظ الخامات'}
+                          {updateRecipeMaterialsMutation.isPending ? 'جاري الحفظ...' : '💾 حفظ الاسم والخامات'}
                         </button>
                       </div>
                     )}
