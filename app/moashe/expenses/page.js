@@ -298,7 +298,13 @@ export default function ExpensesPage() {
     return isCash ? sum + Number(invoice.total_amount || invoice.amount || 0) : sum;
   }, 0);
 
-  const cashAdvances = employeeAdvances.reduce((sum, advance) => sum - Number(advance.amount || 0), 0);
+  const employeeAdvanceRecords = employeeAdvances.filter((advance) => {
+    const hasEmployee = Boolean(advance.employee_id);
+    const isOtherAdvance = String(advance.advance_type || '').toLowerCase() === 'other';
+    return hasEmployee && !isOtherAdvance;
+  });
+
+  const cashAdvances = employeeAdvanceRecords.reduce((sum, advance) => sum - Number(advance.amount || 0), 0);
   const cashSalaries = salariesPayouts.reduce((sum, salary) => sum - Number(salary.amount || salary.total_amount || salary.net_salary || 0), 0);
   const treasurySalaryTransactions = treasuryRecords
     .filter(record => String(record.type || '').toLowerCase().includes('مرتبات'))

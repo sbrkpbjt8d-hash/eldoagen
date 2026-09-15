@@ -452,8 +452,14 @@ export default function TreasuryPage() {
       actor: transaction.actor_name || 'غير معروف',
     }));
 
-  // تجهيز سلف الموظفين
-  const formattedAdvances = employeeAdvances
+  // تجهيز سلف الموظفين فقط (استبعاد العهدة/الحسابات الأخرى التي تستخدم نفس الجدول)
+  const employeeAdvanceRecords = employeeAdvances.filter((adv) => {
+    const hasEmployee = Boolean(adv.employee_id);
+    const isOtherAdvance = String(adv.advance_type || '').toLowerCase() === 'other';
+    return hasEmployee && !isOtherAdvance;
+  });
+
+  const formattedAdvances = employeeAdvanceRecords
     .filter(adv => {
       const advDate = String(adv.date || adv.created || '').slice(0, 10);
       if (startDate && advDate < startDate) return false;

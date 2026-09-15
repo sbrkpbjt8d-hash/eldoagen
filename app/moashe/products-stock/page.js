@@ -1,10 +1,15 @@
 'use client';
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
+import toast, { Toaster } from 'react-hot-toast';
 
 export default function ProductionStockPage() {
+  const queryClient = useQueryClient();
+  const isAdmin = pb.authStore.model?.collectionName === '_superusers' || pb.authStore.model?.role === 'admin' || pb.authStore.model?.email === 'mohamedfrf@icloud.com';
   const [searchTerm, setSearchTerm] = useState('');
+  const [adjustmentModal, setAdjustmentModal] = useState({ isOpen: false, product: null });
+  const [adjustmentQuantity, setAdjustmentQuantity] = useState('');
 
   // جلب مخزن المنتجات الجاهزة مع تفعيل التحديث التلقائي عند الرجوع للصفحة
   const { data: productsStock = [], isLoading, refetch } = useQuery({
@@ -63,12 +68,87 @@ export default function ProductionStockPage() {
     item.product_name?.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
+  const adjustmentMutation = useMutation({
+    mutationFn: async () => {
+      if (!isAdmin) throw new Error('عفواً، تسوية مخزن المنتجات متاحة للأدمن فقط!');
+      const product = adjustmentModal.product;
+      const quantity = Number(adjustmentQuantity);
+      if (!product) throw new Error('اختر المنتج أولاً');
+      if (!Number.isFinite(quantity) || quantity === 0) throw new Error('أدخل كمية تسوية صحيحة');
+
+      const newStock = product.stock + quantity;
+      if (newStock < 0) throw new Error('لا يمكن أن تكون كمية المخزون أقل من صفر');
+
+      return pb.collection('products_stock').update(product.id, {
+        stock: newStock,
+        total_cost: product.unit_cost * newStock,
+        actor_name: pb.authStore.model?.name || pb.authStore.model?.email || 'مستخدم',
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['products_stock'] });
+      setAdjustmentModal({ isOpen: false, product: null });
+      setAdjustmentQuantity('');
+      toast.success('تم تنفيذ تسوية مخزن المنتجات بنجاح!');
+    },
+    onError: (error) => toast.error(error.message || 'فشل تنفيذ التسوية'),
+  });
+
+  function handleAdjustmentSubmit(event) {
+    event.preventDefault();
+    adjustmentMutation.mutate();
+  }
+
   // حساب الإجماليات للمنتجات المصفاة
   const totalQuantity = filteredOrders.reduce((sum, item) => sum + item.stock, 0);
   const totalCostSum = filteredOrders.reduce((sum, item) => sum + item.total_cost, 0);
 
   return (
     <div className="p-4 md:p-8 max-w-6xl mx-auto space-y-8" dir="rtl">
+      <Toaster position="top-center" reverseOrder={false} />
+
+      {adjustmentModal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <form onSubmit={handleAdjustmentSubmit} className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4">
+            <div className="flex justify-between items-center border-b pb-3">
+              <h2 className="text-lg font-black text-gray-800">⚖️ تسوية كمية المخزن</h2>
+              <button type="button" onClick={() => setAdjustmentModal({ isOpen: false, product: null })} className="text-gray-400 hover:text-gray-700 text-xl">✕</button>
+            </div>
+            <select
+              required
+              value={adjustmentModal.product?.id || ''}
+              onChange={(event) => setAdjustmentModal({
+                ...adjustmentModal,
+                product: inventoryList.find((item) => item.id === event.target.value) || null,
+              })}
+              className="w-full border border-gray-200 p-3 rounded-xl text-sm bg-white text-black"
+            >
+              <option value="">-- اختر المنتج --</option>
+              {inventoryList.map((item) => (
+                <option key={item.id} value={item.id}>{item.product_name} (الرصيد: {item.stock.toLocaleString()})</option>
+              ))}
+            </select>
+            <p className="text-sm font-bold text-gray-700">{adjustmentModal.product?.product_name}</p>
+            <p className="text-xs text-gray-500">الرصيد الحالي: {adjustmentModal.product?.stock?.toLocaleString()}</p>
+            <input
+              required
+              type="number"
+              step="any"
+              value={adjustmentQuantity}
+              onChange={(event) => setAdjustmentQuantity(event.target.value)}
+              placeholder="كمية التسوية (+ / -)"
+              className="w-full border border-amber-200 p-3 rounded-xl text-sm bg-white text-black"
+            />
+            <div className="flex gap-3">
+              <button type="button" onClick={() => setAdjustmentModal({ isOpen: false, product: null })} className="flex-1 bg-gray-100 text-gray-700 p-3 rounded-xl text-sm font-bold">إلغاء</button>
+              <button type="submit" disabled={adjustmentMutation.isPending} className="flex-1 bg-amber-600 hover:bg-amber-700 text-white p-3 rounded-xl text-sm font-bold disabled:opacity-50">
+                {adjustmentMutation.isPending ? 'جاري التنفيذ...' : 'حفظ التسوية'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       <div className="border-b pb-4 flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-black text-gray-800">📋 مخزن المنتجات المصنعة</h1>
@@ -81,6 +161,19 @@ export default function ProductionStockPage() {
           🔄 تحديث البيانات
         </button>
       </div>
+
+      {isAdmin && (
+        <div className="flex justify-start">
+          <button
+            type="button"
+            onClick={() => setAdjustmentModal({ isOpen: true, product: null })}
+            disabled={!filteredOrders.length}
+            className="bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded-xl text-xs font-bold transition disabled:opacity-50"
+          >
+            ⚖️ تسويه الكميه اللى ف المخزن
+          </button>
+        </div>
+      )}
 
       {/* بطاقات الإجماليات (الكمية والتكلفة) */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -133,7 +226,20 @@ export default function ProductionStockPage() {
                   {filteredOrders.map((item) => (
                     <tr key={item.id} className="hover:bg-gray-50/50 transition">
                       <td className="p-3 font-black text-gray-900">{item.product_name}</td>
-                      <td className="p-3 font-bold text-emerald-700">{item.stock.toLocaleString()}</td>
+                      <td className="p-3 font-bold text-emerald-700">
+                        <div className="flex items-center gap-3">
+                          <span>{item.stock.toLocaleString()}</span>
+                          {isAdmin && (
+                            <button
+                              type="button"
+                              onClick={() => setAdjustmentModal({ isOpen: true, product: item })}
+                              className="text-amber-700 hover:text-amber-900 text-xs font-bold"
+                            >
+                              تسوية
+                            </button>
+                          )}
+                        </div>
+                      </td>
                       <td className="p-3 font-bold text-amber-700">{item.unit_cost.toLocaleString('ar-EG', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ج.م</td>
                       <td className="p-3 font-bold text-gray-700">{item.total_cost.toLocaleString()} ج.م</td>
                     </tr>

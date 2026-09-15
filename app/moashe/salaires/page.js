@@ -345,7 +345,17 @@ export default function SalariesPage() {
   const addAdvance = useMutation({
     mutationFn: () => {
       if (!advanceForm.employee_id || number(advanceForm.amount) <= 0) throw new Error('اختر الموظف واكتب مبلغًا صحيحًا.');
-      return pb.collection('advances').create({ employee_id: advanceForm.employee_id, amount: Math.floor(number(advanceForm.amount)), date: selectedDate, notes: advanceForm.notes.trim() || 'سلفة موظف', is_deducted: false });
+
+      const employee = employees.find((item) => item.id === advanceForm.employee_id);
+      if (!employee) throw new Error('الموظف المختار غير موجود.');
+
+      const requestedAmount = Math.floor(number(advanceForm.amount));
+      const remainingSalaryLimit = Math.max(0, Math.floor(calculate(employee).net));
+      if (requestedAmount > remainingSalaryLimit) {
+        throw new Error(`لا يمكن تسجيل سلفة أكبر من المتبقي من مرتب الموظف (${remainingSalaryLimit.toLocaleString()} ج.م).`);
+      }
+
+      return pb.collection('advances').create({ employee_id: advanceForm.employee_id, amount: requestedAmount, date: selectedDate, notes: advanceForm.notes.trim() || 'سلفة موظف', is_deducted: false });
     },
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['advances'] }); setAdvanceForm({ employee_id: '', amount: '', notes: '' }); setModal(''); notify('تم تسجيل السلفة.'); },
     onError: (error) => notify(`فشل تسجيل السلفة: ${error.message}`, 'error'),
@@ -421,6 +431,8 @@ export default function SalariesPage() {
 
   const filteredRecords = allRecords.filter((record) => { const date = String(record.date || '').slice(0, 10); return (!rangeStart || date >= rangeStart) && (!rangeEnd || date <= rangeEnd); });
   const totalNet = employees.reduce((sum, employee) => sum + calculate(employee).net, 0);
+
+  const getMaxAdvanceForEmployee = (employee) => Math.max(0, Math.floor(calculate(employee).net));
 
   return (
     <main className="min-h-screen bg-slate-100 p-4 md:p-8" dir="rtl">
@@ -683,6 +695,15 @@ export default function SalariesPage() {
               {employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name}</option>)}
             </select>
           </label>
+          {advanceForm.employee_id && (() => {
+            const employee = employees.find((item) => item.id === advanceForm.employee_id);
+            const maxAdvance = employee ? getMaxAdvanceForEmployee(employee) : 0;
+            return (
+              <div className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-[11px] font-bold text-violet-700">
+                أقصى مسموح: {maxAdvance.toLocaleString()} ج.م
+              </div>
+            );
+          })()}
           <Input label="المبلغ" type="number" value={advanceForm.amount} onChange={(value) => setAdvanceForm({ ...advanceForm, amount: value })} />
           <Input label="ملاحظات" value={advanceForm.notes} onChange={(value) => setAdvanceForm({ ...advanceForm, notes: value })} />
           <button onClick={() => addAdvance.mutate()} className="w-full rounded-xl bg-violet-600 p-3 text-xs font-bold text-white">حفظ السلفة</button>
