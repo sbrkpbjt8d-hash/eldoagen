@@ -1,7 +1,8 @@
 'use client';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
+import { useReactToPrint } from 'react-to-print';
 const currentUserName = localStorage.getItem('userName') || 'مسؤول النظام';
 
 export default function SalesInvoicesPage() {
@@ -35,6 +36,10 @@ export default function SalesInvoicesPage() {
   const [viewLogModal, setViewLogModal] = useState({ show: false, log: null });
   const [returnModal, setReturnModal] = useState({ show: false, invoice: null, items: [] });
   const [isSalesHistoryExpanded, setIsSalesHistoryExpanded] = useState(false);
+  const invoicePrintRef = useRef(null);
+  const salesHistoryPrintRef = useRef(null);
+  const printInvoice = useReactToPrint({ contentRef: invoicePrintRef, documentTitle: 'فاتورة بيع' });
+  const printSalesHistory = useReactToPrint({ contentRef: salesHistoryPrintRef, documentTitle: 'سجل فواتير المبيعات' });
 
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [confirmModal, setConfirmModal] = useState({ show: false, title: '', message: '', onConfirm: null });
@@ -879,7 +884,7 @@ export default function SalesInvoicesPage() {
 
       {viewInvoiceModal.show && viewInvoiceModal.invoice && (
         <div className="fixed inset-0 bg-black/65 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-6 max-w-lg w-full shadow-2xl space-y-6 border border-gray-100 animate-in fade-in zoom-in max-h-[90vh] overflow-y-auto">
+          <div ref={invoicePrintRef} className="bg-white rounded-3xl p-6 max-w-lg w-full shadow-2xl space-y-6 border border-gray-100 animate-in fade-in zoom-in max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center border-b pb-3">
               <h3 className="text-lg font-black text-gray-900">📄 تفاصيل الفاتورة: {viewInvoiceModal.invoice.invoice_number || viewInvoiceModal.invoice.id.slice(-6)}</h3>
               <button 
@@ -971,7 +976,7 @@ export default function SalesInvoicesPage() {
 
             <div className="flex justify-end gap-2 pt-2">
               <button
-                onClick={() => window.print()}
+                onClick={printInvoice}
                 className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-md transition"
               >
                 🖨️ طباعة الفاتورة
@@ -1246,7 +1251,7 @@ export default function SalesInvoicesPage() {
       </div>
 
       {/* قسم عرض سجل الفواتير */}
-      <div className={`sales-history-print-area bg-white p-6 rounded-3xl shadow-xl border border-gray-100 space-y-6 ${isSalesHistoryExpanded ? 'sales-history-expanded fixed inset-0 z-40 overflow-auto rounded-none' : ''}`}>
+      <div ref={salesHistoryPrintRef} className={`sales-history-print-area bg-white p-6 rounded-3xl shadow-xl border border-gray-100 space-y-6 ${isSalesHistoryExpanded ? 'sales-history-expanded fixed inset-0 z-40 overflow-auto rounded-none' : ''}`}>
         <div className="flex flex-col md:flex-row justify-between items-center gap-4 border-b pb-4">
           <h2 className="text-xl font-black text-gray-800">📋 سجل فواتير المبيعات</h2>
           <div className="flex flex-wrap gap-2 items-center w-full md:w-auto">
@@ -1272,7 +1277,7 @@ export default function SalesInvoicesPage() {
             />
             </div>
             {isSalesHistoryExpanded && (
-              <button type="button" onClick={() => window.print()} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold print:hidden">
+              <button type="button" onClick={printSalesHistory} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold print:hidden">
                 🖨️ طباعة السجل
               </button>
             )}

@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+.print-only {
+	display: none;
+}
+
 @media print {
 	@page {
 		size: A4 landscape;
@@ -161,6 +165,50 @@
 
 	body:has(.sales-history-expanded) .sales-history-print-area tr,
 	body:has(.purchase-history-expanded) .purchase-history-print-area tr {
+		break-inside: avoid;
+	}
+
+	body:has(.product-recipe-print-document) .products-print-root > * {
+		display: none !important;
+	}
+
+	body:has(.product-recipe-print-document) .products-print-root > .product-recipe-print-document {
+		display: block !important;
+		width: 100% !important;
+		margin: 0 !important;
+		padding: 12mm !important;
+		box-sizing: border-box !important;
+		color: #111827 !important;
+		background: #fff !important;
+	}
+
+	body:has(.product-recipe-print-document) .product-recipe-print-document h1 {
+		margin: 0 0 16px !important;
+		text-align: center !important;
+		font-size: 20px !important;
+		font-weight: 800 !important;
+	}
+
+	body:has(.product-recipe-print-document) .product-recipe-print-document table {
+		display: table !important;
+		width: 100% !important;
+		border-collapse: collapse !important;
+		font-size: 13px !important;
+	}
+
+	body:has(.product-recipe-print-document) .product-recipe-print-document th,
+	body:has(.product-recipe-print-document) .product-recipe-print-document td {
+		padding: 9px !important;
+		border: 1px solid #9ca3af !important;
+		text-align: right !important;
+	}
+
+	body:has(.product-recipe-print-document) .product-recipe-print-document th {
+		background: #eef2ff !important;
+		font-weight: 800 !important;
+	}
+
+	body:has(.product-recipe-print-document) .product-recipe-print-document tr {
 		break-inside: avoid;
 	}
 

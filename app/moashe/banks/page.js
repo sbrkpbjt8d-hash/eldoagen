@@ -1,7 +1,8 @@
 'use client';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
+import { useReactToPrint } from 'react-to-print';
 
 export default function BanksPage() {
   const queryClient = useQueryClient();
@@ -39,6 +40,11 @@ export default function BanksPage() {
   const [historyStartDate, setHistoryStartDate] = useState('');
   const [historyEndDate, setHistoryEndDate] = useState('');
   const [historyDirectionFilter, setHistoryDirectionFilter] = useState('all');
+  const bankHistoryPrintRef = useRef(null);
+  const printBankHistory = useReactToPrint({
+    contentRef: bankHistoryPrintRef,
+    documentTitle: 'سجل البنك',
+  });
 
   // حالات نموذج إضافة بنك جديد (متاحة للجميع)
   const [bankName, setBankName] = useState('');
@@ -573,7 +579,7 @@ export default function BanksPage() {
       {/* نافذة سجل الحركات */}
       {historyModal.isOpen && historyModal.bank && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bank-history-print-area bg-white rounded-3xl p-6 max-w-2xl w-full shadow-2xl space-y-4 max-h-[85vh] flex flex-col">
+          <div ref={bankHistoryPrintRef} className="bank-history-print-area bg-white rounded-3xl p-6 max-w-2xl w-full shadow-2xl space-y-4 max-h-[85vh] flex flex-col">
             <div className="flex justify-between items-center border-b pb-3">
               <div>
                 <h3 className="text-base font-black text-gray-800">📜 سجل حركات البنك: {historyModal.bank.name}</h3>
@@ -638,7 +644,7 @@ export default function BanksPage() {
               </table>
             </div>
             <div className="pt-2 flex justify-end gap-2 print:hidden">
-              <button onClick={() => window.print()} className="bg-emerald-600 text-white px-6 py-2.5 rounded-xl text-xs font-bold">🖨️ طباعة السجل</button>
+              <button onClick={printBankHistory} className="bg-emerald-600 text-white px-6 py-2.5 rounded-xl text-xs font-bold">🖨️ طباعة السجل</button>
               <button onClick={() => setHistoryModal({ isOpen: false, bank: null })} className="bg-gray-900 text-white px-6 py-2.5 rounded-xl text-xs font-bold">إغلاق</button>
             </div>
           </div>

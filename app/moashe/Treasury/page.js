@@ -1,7 +1,8 @@
 'use client';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
+import { useReactToPrint } from 'react-to-print';
 
 export default function TreasuryPage() {
   const queryClient = useQueryClient();
@@ -23,6 +24,11 @@ export default function TreasuryPage() {
   const [movementDirectionFilter, setMovementDirectionFilter] = useState('all');
   const [descriptionFilter, setDescriptionFilter] = useState('');
   const [isHistoryExpanded, setIsHistoryExpanded] = useState(false);
+  const historyPrintRef = useRef(null);
+  const printHistory = useReactToPrint({
+    contentRef: historyPrintRef,
+    documentTitle: 'سجل الخزنة',
+  });
 
   const currentUser = pb.authStore.model;
   const isAdmin = currentUser?.role === 'admin' || currentUser?.isAdmin === true || currentUser?.email === 'mohamedfrf@icloud.com'; 
@@ -868,14 +874,14 @@ export default function TreasuryPage() {
         </div>
       </div>
 
-      <div className={`treasury-history-print-area bg-white p-6 rounded-3xl shadow-xl border border-gray-100 space-y-4 ${isHistoryExpanded ? 'treasury-history-expanded fixed inset-0 z-40 overflow-auto rounded-none' : ''}`}>
+      <div ref={historyPrintRef} className={`treasury-history-print-area bg-white p-6 rounded-3xl shadow-xl border border-gray-100 space-y-4 ${isHistoryExpanded ? 'treasury-history-expanded fixed inset-0 z-40 overflow-auto rounded-none' : ''}`}>
         <div className="flex items-center justify-between gap-3 border-b pb-3">
           <h2 className="text-base font-black text-gray-800">📋 سجل الحركات النقدية الفعلية للخزنة</h2>
           <div className="flex items-center gap-2 print:hidden">
             {isHistoryExpanded && (
               <button
                 type="button"
-                onClick={() => window.print()}
+                onClick={printHistory}
                 className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-emerald-700"
               >
                 🖨️ طباعة

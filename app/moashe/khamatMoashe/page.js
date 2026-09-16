@@ -1,8 +1,9 @@
 'use client';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
 import toast, { Toaster } from 'react-hot-toast';
+import { useReactToPrint } from 'react-to-print';
 
 // دالة مساعدة لعرض الأرقام بدون أصفار عشرية لا داعي لها (مثل 11 بدل 11.0000)
 function formatNumber(value) {
@@ -38,6 +39,11 @@ export default function ProductsPage() {
   const [adjustmentStartDate, setAdjustmentStartDate] = useState('');
   const [adjustmentEndDate, setAdjustmentEndDate] = useState('');
   const [inventorySearchTerm, setInventorySearchTerm] = useState('');
+  const materialsPrintRef = useRef(null);
+  const printMaterials = useReactToPrint({
+    contentRef: materialsPrintRef,
+    documentTitle: 'قائمة الخامات',
+  });
 
   const isAdmin = checkIfAdmin();
 
@@ -363,16 +369,21 @@ export default function ProductsPage() {
         <button disabled={adjustmentMutation.isPending} className="bg-amber-600 hover:bg-amber-700 text-white p-2.5 rounded-xl font-bold text-xs">{adjustmentMutation.isPending ? 'جاري التنفيذ...' : 'حفظ التسوية'}</button>
       </form>
 
-      <div className="bg-white shadow-xl rounded-2xl border border-gray-100 overflow-hidden">
+      <div ref={materialsPrintRef} className="materials-print-area bg-white shadow-xl rounded-2xl border border-gray-100 overflow-hidden">
         <div className="px-6 py-4 bg-gray-50 border-b border-gray-100 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
           <h2 className="text-lg font-bold text-gray-800">قائمة المخزون الحالي</h2>
-          <input
-            type="search"
-            value={inventorySearchTerm}
-            onChange={(event) => setInventorySearchTerm(event.target.value)}
-            placeholder="🔍 ابحث باسم الخامة..."
-            className="w-full md:w-72 border border-gray-200 bg-white p-2.5 rounded-xl text-xs outline-none focus:border-blue-500"
-          />
+          <div className="flex items-center gap-2 print:hidden">
+            <input
+              type="search"
+              value={inventorySearchTerm}
+              onChange={(event) => setInventorySearchTerm(event.target.value)}
+              placeholder="🔍 ابحث باسم الخامة..."
+              className="w-full md:w-72 border border-gray-200 bg-white p-2.5 rounded-xl text-xs outline-none focus:border-blue-500"
+            />
+            <button type="button" onClick={printMaterials} className="shrink-0 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold">
+              🖨️ طباعة الخامات
+            </button>
+          </div>
         </div>
 
         {isLoading ? (
@@ -392,7 +403,7 @@ export default function ProductsPage() {
                   <th className="py-3 px-6">الكمية المتاحة</th>
                   <th className="py-3 px-6">إجمالي القيمة</th>
                   <th className="py-3 px-6">أضيفت بواسطة</th>
-                  <th className="py-3 px-6 text-center">إجراءات</th>
+                  <th className="py-3 px-6 text-center print:hidden">إجراءات</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 text-gray-700 font-medium">
@@ -410,7 +421,7 @@ export default function ProductsPage() {
                       {(Number(p.price) * Number(p.stock)).toLocaleString('ar-EG', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} <span className="text-xs text-gray-400 font-normal">ج.م</span>
                     </td>
                     <td className="py-4 px-6 text-xs font-bold text-gray-700">{p.actor_name || 'غير معروف'}</td>
-                    <td className="py-4 px-6 text-center flex items-center justify-center gap-2">
+                    <td className="py-4 px-6 text-center flex items-center justify-center gap-2 print:hidden">
                       {isAdmin && (
                         <button
                           onClick={() => setEditModal({ isOpen: true, product: p, newName: p.name, stock: p.stock ?? 0, price: p.price ?? 0 })}

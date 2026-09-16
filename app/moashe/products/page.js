@@ -1,8 +1,9 @@
 'use client';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
 import toast, { Toaster } from 'react-hot-toast';
+import { useReactToPrint } from 'react-to-print';
 
 function formatQuantity(value) {
   const numberValue = Number(value);
@@ -32,6 +33,20 @@ export default function ProductsPage() {
   const [editingMaterials, setEditingMaterials] = useState([]);
   const [editingProductName, setEditingProductName] = useState('');
   const [expandedProductRecipes, setExpandedProductRecipes] = useState({});
+  const recipePrintRef = useRef(null);
+  const printRecipe = useReactToPrint({
+    contentRef: recipePrintRef,
+    documentTitle: 'تركيبة المنتج',
+    pageStyle: `
+      @page { size: A4 portrait; margin: 12mm; }
+      html, body { margin: 0; padding: 0; }
+      .print-only { display: block !important; }
+      table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      th, td { padding: 9px; border: 1px solid #9ca3af; text-align: right; }
+      th { background: #eef2ff !important; font-weight: 800; }
+      tr { break-inside: avoid; }
+    `,
+  });
 
   // حالة نافذة التأكيد الاحترافية (Modal) للحذف
   const [confirmModal, setConfirmModal] = useState({
@@ -267,9 +282,33 @@ export default function ProductsPage() {
   }
 
   return (
-    <div className="p-4 md:p-8 max-w-7xl mx-auto space-y-8 relative" dir="rtl">
+    <div className="products-print-root p-4 md:p-8 max-w-7xl mx-auto space-y-8 relative" dir="rtl">
       {/* إشعارات الـ Toasts */}
       <Toaster position="top-center" reverseOrder={false} />
+
+      {editingMaterialsProd && editingMaterials.length > 0 && (
+        <div ref={recipePrintRef} className="product-recipe-print-document print-only" dir="rtl">
+          <h1>تركيبة المنتج: {editingProductName}</h1>
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>الخامة</th>
+                <th>الكمية</th>
+              </tr>
+            </thead>
+            <tbody>
+              {editingMaterials.map((item, index) => (
+                <tr key={item.id}>
+                  <td>{index + 1}</td>
+                  <td>{item.name}</td>
+                  <td>{formatQuantity(item.qtyNeeded)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* نافذة التأكيد المنبثقة (Modal) للحذف */}
       {confirmModal.isOpen && (
@@ -557,18 +596,27 @@ export default function ProductsPage() {
                       <div className="bg-violet-50 border border-violet-200 rounded-xl p-3 space-y-3">
                         <div className="flex items-center justify-between gap-3">
                           <span className="text-xs font-black text-violet-800">تعديل اسم المنتج والخامات المستخدمة</span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditingMaterialsProd(null);
-                              setEditingMaterials([]);
-                              setEditingProductName('');
-                              setEditMaterialSearchTerm('');
-                            }}
-                            className="text-xs font-bold text-violet-700 hover:text-violet-900"
-                          >
-                            إغلاق
-                          </button>
+                          <div className="flex items-center gap-2 print:hidden">
+                            <button
+                              type="button"
+                              onClick={printRecipe}
+                              className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-xl text-xs font-bold"
+                            >
+                              🖨️ طباعة التركيبة
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingMaterialsProd(null);
+                                setEditingMaterials([]);
+                                setEditingProductName('');
+                                setEditMaterialSearchTerm('');
+                              }}
+                              className="text-xs font-bold text-violet-700 hover:text-violet-900"
+                            >
+                              إغلاق
+                            </button>
+                          </div>
                         </div>
 
                         <div>
@@ -619,7 +667,7 @@ export default function ProductsPage() {
                                 <tr>
                                   <th className="p-2">الخامة</th>
                                   <th className="p-2">الكمية</th>
-                                  <th className="p-2">إزالة</th>
+                                  <th className="p-2 print:hidden">إزالة</th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y bg-white">
@@ -639,7 +687,7 @@ export default function ProductsPage() {
                                         className="w-20 border border-violet-200 p-1 rounded text-center text-black font-bold text-xs outline-none"
                                       />
                                     </td>
-                                    <td className="p-2">
+                                    <td className="p-2 print:hidden">
                                       <button type="button" onClick={() => setEditingMaterials((prev) => prev.filter((m) => m.id !== item.id))} className="text-red-500 font-bold">✕</button>
                                     </td>
                                   </tr>

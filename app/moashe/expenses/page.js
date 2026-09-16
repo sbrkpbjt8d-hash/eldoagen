@@ -1,7 +1,8 @@
 'use client';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
+import { useReactToPrint } from 'react-to-print';
 
 export default function ExpensesPage() {
   const queryClient = useQueryClient();
@@ -31,6 +32,11 @@ export default function ExpensesPage() {
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [deleteConfirmModal, setDeleteConfirmModal] = useState({ show: false, type: '', data: null });
   const [isExpenseHistoryExpanded, setIsExpenseHistoryExpanded] = useState(false);
+  const expenseHistoryPrintRef = useRef(null);
+  const printExpenseHistory = useReactToPrint({
+    contentRef: expenseHistoryPrintRef,
+    documentTitle: 'سجل المصروفات',
+  });
 
   const showToast = (message, type = 'success') => {
     setToast({ show: true, message, type });
@@ -640,7 +646,7 @@ export default function ExpensesPage() {
       </div>
 
       {/* جدول سجل المصروفات */}
-      <div className={`expense-history-print-area bg-white p-6 rounded-3xl shadow-xl border border-gray-100 space-y-4 ${isExpenseHistoryExpanded ? 'expense-history-expanded fixed inset-0 z-40 overflow-auto rounded-none' : ''}`}>
+      <div ref={expenseHistoryPrintRef} className={`expense-history-print-area bg-white p-6 rounded-3xl shadow-xl border border-gray-100 space-y-4 ${isExpenseHistoryExpanded ? 'expense-history-expanded fixed inset-0 z-40 overflow-auto rounded-none' : ''}`}>
         <div className="flex justify-between items-center gap-3 border-b pb-3">
           <h2 className="text-base font-black text-gray-800">📋 سجل المصروفات</h2>
           <div className="flex items-center gap-2 print:hidden">
@@ -650,7 +656,7 @@ export default function ExpensesPage() {
             {isExpenseHistoryExpanded && (
               <button
                 type="button"
-                onClick={() => window.print()}
+                onClick={printExpenseHistory}
                 className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-emerald-700"
               >
                 🖨️ طباعة السجل
