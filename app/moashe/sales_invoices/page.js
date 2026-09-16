@@ -34,6 +34,7 @@ export default function SalesInvoicesPage() {
   const [viewInvoiceModal, setViewInvoiceModal] = useState({ show: false, invoice: null });
   const [viewLogModal, setViewLogModal] = useState({ show: false, log: null });
   const [returnModal, setReturnModal] = useState({ show: false, invoice: null, items: [] });
+  const [isSalesHistoryExpanded, setIsSalesHistoryExpanded] = useState(false);
 
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [confirmModal, setConfirmModal] = useState({ show: false, title: '', message: '', onConfirm: null });
@@ -1245,10 +1246,11 @@ export default function SalesInvoicesPage() {
       </div>
 
       {/* قسم عرض سجل الفواتير */}
-      <div className="bg-white p-6 rounded-3xl shadow-xl border border-gray-100 space-y-6">
+      <div className={`sales-history-print-area bg-white p-6 rounded-3xl shadow-xl border border-gray-100 space-y-6 ${isSalesHistoryExpanded ? 'sales-history-expanded fixed inset-0 z-40 overflow-auto rounded-none' : ''}`}>
         <div className="flex flex-col md:flex-row justify-between items-center gap-4 border-b pb-4">
           <h2 className="text-xl font-black text-gray-800">📋 سجل فواتير المبيعات</h2>
-          <div className="flex flex-wrap gap-3 w-full md:w-auto">
+          <div className="flex flex-wrap gap-2 items-center w-full md:w-auto">
+            <div className="flex flex-wrap gap-3 w-full md:w-auto print:hidden">
             <input
               type="text"
               placeholder="بحث برقم الفاتورة أو العميل..."
@@ -1268,6 +1270,15 @@ export default function SalesInvoicesPage() {
               onChange={(e) => setEndDate(e.target.value)}
               className="bg-gray-50 border border-gray-200 rounded-2xl px-3 py-2 text-xs font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
             />
+            </div>
+            {isSalesHistoryExpanded && (
+              <button type="button" onClick={() => window.print()} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold print:hidden">
+                🖨️ طباعة السجل
+              </button>
+            )}
+            <button type="button" onClick={() => setIsSalesHistoryExpanded((expanded) => !expanded)} className="bg-gray-900 text-white px-4 py-2 rounded-xl text-xs font-bold print:hidden">
+              {isSalesHistoryExpanded ? 'إغلاق السجل' : 'عرض السجل'}
+            </button>
           </div>
         </div>
 
@@ -1299,7 +1310,7 @@ export default function SalesInvoicesPage() {
                   <th className="p-3">الصافي النهائي</th>
                   <th className="p-3">طريقة الدفع</th>
                   <th className="p-3">التاريخ</th>
-                  <th className="p-3 text-center">الإجراءات</th>
+                  <th className="p-3 text-center print:hidden">الإجراءات</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -1337,7 +1348,7 @@ export default function SalesInvoicesPage() {
                         </span>
                       </td>
                       <td className="p-3 text-gray-500">{new Date(inv.created).toLocaleDateString('ar-EG')}</td>
-                      <td className="p-3 text-center space-x-2 space-x-reverse">
+                      <td className="p-3 text-center space-x-2 space-x-reverse print:hidden">
                         <button
                           onClick={() => setViewInvoiceModal({ show: true, invoice: inv })}
                           className="px-2.5 py-1 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-xl font-bold transition"

@@ -15,6 +15,7 @@ export default function PurchaseInvoicesPage() {
   const [editingInvoice, setEditingInvoice] = useState(null);
   const [detailsInvoice, setDetailsInvoice] = useState(null);
   const [deleteInvoice, setDeleteInvoice] = useState(null);
+  const [isPurchaseHistoryExpanded, setIsPurchaseHistoryExpanded] = useState(false);
   const [message, setMessage] = useState({ text: '', type: 'success' });
 
   const notify = (text, type = 'success') => {
@@ -276,13 +277,19 @@ export default function PurchaseInvoicesPage() {
         </div>
       </form>
 
-      <section className="bg-white rounded-3xl p-6 shadow-xl border space-y-5">
+      <section className={`purchase-history-print-area bg-white rounded-3xl p-6 shadow-xl border space-y-5 ${isPurchaseHistoryExpanded ? 'purchase-history-expanded fixed inset-0 z-40 overflow-auto rounded-none' : ''}`}>
         <div className="flex flex-col md:flex-row justify-between gap-3 border-b pb-3">
           <h2 className="text-lg font-black">📋 سجل فواتير الشراء</h2>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2 items-center">
+            <div className="flex flex-wrap gap-2 print:hidden">
             <input placeholder="بحث باسم المورد أو رقم الفاتورة" value={search} onChange={e => setSearch(e.target.value)} className="border p-2 rounded-xl text-xs" />
             <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="border p-2 rounded-xl text-xs" />
             <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="border p-2 rounded-xl text-xs" />
+            </div>
+            {isPurchaseHistoryExpanded && <button type="button" onClick={() => window.print()} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold print:hidden">🖨️ طباعة السجل</button>}
+            <button type="button" onClick={() => setIsPurchaseHistoryExpanded((expanded) => !expanded)} className="bg-gray-900 text-white px-4 py-2 rounded-xl text-xs font-bold print:hidden">
+              {isPurchaseHistoryExpanded ? 'إغلاق السجل' : 'عرض السجل'}
+            </button>
           </div>
         </div>
         <div className="bg-blue-50 p-4 rounded-2xl flex justify-between text-xs font-bold">
@@ -299,7 +306,7 @@ export default function PurchaseInvoicesPage() {
                 <th className="p-3">الإجمالي</th>
                 <th className="p-3">التاريخ</th>
                 <th className="p-3">بواسطة</th>
-                <th className="p-3">الإجراءات</th>
+                <th className="p-3 print:hidden">الإجراءات</th>
               </tr>
             </thead>
             <tbody className="divide-y">
@@ -311,7 +318,7 @@ export default function PurchaseInvoicesPage() {
                   <td className="p-3 font-black text-blue-700">{money(invoice.total_amount)}</td>
                   <td className="p-3">{dateValue(invoice.created)}</td>
                   <td className="p-3 font-bold">{invoice.actor_name || 'غير معروف'}</td>
-                  <td className="p-3 flex gap-1">
+                  <td className="p-3 flex gap-1 print:hidden">
                     <button onClick={() => setDetailsInvoice(invoice)} className="bg-blue-50 text-blue-700 px-2.5 py-1.5 rounded-lg font-bold">عرض</button>
                     {isAdmin && (
                       <>

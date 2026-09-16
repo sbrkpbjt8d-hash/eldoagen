@@ -179,24 +179,32 @@ export default function SuppliersPage() {
       const supplier = settlementModal.supplier;
       const amount = Number(settlementAmount);
       const currentBalance = Number(supplier.balance || 0);
+
+      if (!Number.isFinite(amount) || amount <= 0) {
+        throw new Error('اكتب مبلغ تسوية صحيح');
+      }
       
       const newBalance = settlementType === 'minus'
         ? currentBalance - amount
         : currentBalance + amount;
 
-      await pb.collection('suppliers').update(supplier.id, {
-        balance: newBalance,
-      });
-
-      await pb.collection('supplier_transactions').create({
+      const transaction = await pb.collection('supplier_transactions').create({
         supplier_id: supplier.id,
-        type: 'settlement',
+        type: settlementType === 'minus' ? 'payment' : 'opening_balance',
         amount,
-        destination: '-',
         actor_name: currentUserName(),
         notes: `تسوية (${settlementType === 'minus' ? 'خصم/تخفيض مستحق' : 'إضافة/زيادة مستحق'}): ${settlementNotes.trim() || 'تسوية حساب'}`,
         date: new Date().toISOString(),
       });
+
+      try {
+        await pb.collection('suppliers').update(supplier.id, {
+          balance: newBalance,
+        });
+      } catch (error) {
+        await pb.collection('supplier_transactions').delete(transaction.id).catch(() => {});
+        throw error;
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['suppliers'] });
@@ -219,19 +227,18 @@ export default function SuppliersPage() {
   // معالجة وحساب الرصيد التراكمي تصاعدياً (من الأقدم للأحدث)
   const transactionsList = transactions.map(t => {
     let effect = 0;
+    const isSettlement = String(t.notes || '').startsWith('تسوية (');
     if (t.type === 'opening_balance') {
       effect = Number(t.amount || 0);
     } else if (t.type === 'payment') {
       effect = -Number(t.amount || 0);
-    } else if (t.type === 'settlement') {
-      effect = t.notes?.includes('خصم') ? -Number(t.amount || 0) : Number(t.amount || 0);
     } else {
       effect = Number(t.amount || 0);
     }
     return {
       ...t,
       source: 'transaction',
-      displayType: t.type === 'payment' ? 'سداد' : t.type === 'settlement' ? 'تسوية حساب' : 'رصيد افتتاحي',
+      displayType: isSettlement ? 'تسوية حساب' : t.type === 'payment' ? 'سداد' : t.type === 'opening_balance' ? 'رصيد افتتاحي' : 'إضافة على الحساب',
       effectAmount: effect,
       displayAmount: Number(t.amount || 0),
     };

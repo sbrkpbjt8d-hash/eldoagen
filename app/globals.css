@@ -1,1 +1,175 @@
 @import "tailwindcss";
+
+@media print {
+	@page {
+		size: A4 landscape;
+		margin: 8mm;
+	}
+
+	body:has(.treasury-history-expanded) * {
+		visibility: hidden;
+	}
+
+	body:has(.treasury-history-expanded) .treasury-history-print-area,
+	body:has(.treasury-history-expanded) .treasury-history-print-area * {
+		visibility: visible;
+	}
+
+	body:has(.treasury-history-expanded) .treasury-history-print-area {
+		position: absolute !important;
+		inset: 0 !important;
+		width: 100% !important;
+		max-width: none !important;
+		margin: 0 !important;
+		padding: 12px !important;
+		border: 0 !important;
+		border-radius: 0 !important;
+		box-shadow: none !important;
+		overflow: visible !important;
+	}
+
+	body:has(.treasury-history-expanded) .treasury-history-print-area table {
+		width: 100% !important;
+		table-layout: auto !important;
+		font-size: 11px !important;
+	}
+
+	body:has(.treasury-history-expanded) .treasury-history-print-area th,
+	body:has(.treasury-history-expanded) .treasury-history-print-area td {
+		padding: 7px 6px !important;
+		line-height: 1.35 !important;
+	}
+
+	body:has(.treasury-history-expanded) .treasury-history-print-area tr {
+		break-inside: avoid;
+	}
+
+	body:has(.expense-history-expanded) * {
+		visibility: hidden;
+	}
+
+	body:has(.expense-history-expanded) .expense-history-print-area,
+	body:has(.expense-history-expanded) .expense-history-print-area * {
+		visibility: visible;
+	}
+
+	body:has(.expense-history-expanded) .expense-history-print-area {
+		position: absolute !important;
+		inset: 0 !important;
+		width: 100% !important;
+		max-width: none !important;
+		margin: 0 !important;
+		padding: 12px !important;
+		border: 0 !important;
+		border-radius: 0 !important;
+		box-shadow: none !important;
+		overflow: visible !important;
+	}
+
+	body:has(.expense-history-expanded) .expense-history-print-area table {
+		width: 100% !important;
+		table-layout: auto !important;
+		font-size: 11px !important;
+	}
+
+	body:has(.expense-history-expanded) .expense-history-print-area th,
+	body:has(.expense-history-expanded) .expense-history-print-area td {
+		padding: 7px 6px !important;
+		line-height: 1.35 !important;
+	}
+
+	body:has(.expense-history-expanded) .expense-history-print-area tr {
+		break-inside: avoid;
+	}
+
+	body:has(.bank-history-print-area) * {
+		visibility: hidden;
+	}
+
+	body:has(.bank-history-print-area) .bank-history-print-area,
+	body:has(.bank-history-print-area) .bank-history-print-area * {
+		visibility: visible;
+	}
+
+	body:has(.bank-history-print-area) .bank-history-print-area {
+		position: absolute !important;
+		inset: 0 !important;
+		width: 100% !important;
+		max-width: none !important;
+		max-height: none !important;
+		margin: 0 !important;
+		padding: 12px !important;
+		border: 0 !important;
+		border-radius: 0 !important;
+		box-shadow: none !important;
+		overflow: visible !important;
+	}
+
+	body:has(.bank-history-print-area) .bank-history-print-area table {
+		width: 100% !important;
+		table-layout: auto !important;
+		font-size: 11px !important;
+	}
+
+	body:has(.bank-history-print-area) .bank-history-print-area th,
+	body:has(.bank-history-print-area) .bank-history-print-area td {
+		padding: 7px 6px !important;
+		line-height: 1.35 !important;
+	}
+
+	body:has(.bank-history-print-area) .bank-history-print-area tr {
+		break-inside: avoid;
+	}
+
+	body:has(.sales-history-expanded) * {
+		visibility: hidden;
+	}
+
+	body:has(.sales-history-expanded) .sales-history-print-area,
+	body:has(.sales-history-expanded) .sales-history-print-area * {
+		visibility: visible;
+	}
+
+	body:has(.sales-history-expanded) .sales-history-print-area,
+	body:has(.purchase-history-expanded) .purchase-history-print-area {
+		position: absolute !important;
+		inset: 0 !important;
+		width: 100% !important;
+		max-width: none !important;
+		margin: 0 !important;
+		padding: 12px !important;
+		border: 0 !important;
+		border-radius: 0 !important;
+		box-shadow: none !important;
+		overflow: visible !important;
+	}
+
+	body:has(.sales-history-expanded) .sales-history-print-area table,
+	body:has(.purchase-history-expanded) .purchase-history-print-area table {
+		width: 100% !important;
+		table-layout: auto !important;
+		font-size: 11px !important;
+	}
+
+	body:has(.sales-history-expanded) .sales-history-print-area th,
+	body:has(.sales-history-expanded) .sales-history-print-area td,
+	body:has(.purchase-history-expanded) .purchase-history-print-area th,
+	body:has(.purchase-history-expanded) .purchase-history-print-area td {
+		padding: 7px 6px !important;
+		line-height: 1.35 !important;
+	}
+
+	body:has(.sales-history-expanded) .sales-history-print-area tr,
+	body:has(.purchase-history-expanded) .purchase-history-print-area tr {
+		break-inside: avoid;
+	}
+
+	body:has(.purchase-history-expanded) * {
+		visibility: hidden;
+	}
+
+	body:has(.purchase-history-expanded) .purchase-history-print-area,
+	body:has(.purchase-history-expanded) .purchase-history-print-area * {
+		visibility: visible;
+	}
+}

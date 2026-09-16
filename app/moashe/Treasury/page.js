@@ -22,6 +22,7 @@ export default function TreasuryPage() {
   const [movementTypeFilter, setMovementTypeFilter] = useState('all');
   const [movementDirectionFilter, setMovementDirectionFilter] = useState('all');
   const [descriptionFilter, setDescriptionFilter] = useState('');
+  const [isHistoryExpanded, setIsHistoryExpanded] = useState(false);
 
   const currentUser = pb.authStore.model;
   const isAdmin = currentUser?.role === 'admin' || currentUser?.isAdmin === true || currentUser?.email === 'mohamedfrf@icloud.com'; 
@@ -335,7 +336,8 @@ export default function TreasuryPage() {
   const formattedClientPayments = clientTransactions
     .filter(tx => {
       const isOpening = String(tx.type || '').toLowerCase().includes('open') || String(tx.notes || '').toLowerCase().includes('افتتاحي');
-      if (isOpening) return false;
+      const isSettlement = String(tx.notes || '').startsWith('تسوية (');
+      if (isOpening || isSettlement) return false;
 
       const txDate = String(tx.date || tx.created || '').slice(0, 10);
       if (startDate && txDate < startDate) return false;
@@ -866,8 +868,28 @@ export default function TreasuryPage() {
         </div>
       </div>
 
-      <div className="bg-white p-6 rounded-3xl shadow-xl border border-gray-100 space-y-4">
-        <h2 className="text-base font-black text-gray-800 border-b pb-3">📋 سجل الحركات النقدية الفعلية للخزنة</h2>
+      <div className={`treasury-history-print-area bg-white p-6 rounded-3xl shadow-xl border border-gray-100 space-y-4 ${isHistoryExpanded ? 'treasury-history-expanded fixed inset-0 z-40 overflow-auto rounded-none' : ''}`}>
+        <div className="flex items-center justify-between gap-3 border-b pb-3">
+          <h2 className="text-base font-black text-gray-800">📋 سجل الحركات النقدية الفعلية للخزنة</h2>
+          <div className="flex items-center gap-2 print:hidden">
+            {isHistoryExpanded && (
+              <button
+                type="button"
+                onClick={() => window.print()}
+                className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-emerald-700"
+              >
+                🖨️ طباعة
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setIsHistoryExpanded((expanded) => !expanded)}
+              className="bg-gray-900 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-gray-800"
+            >
+              {isHistoryExpanded ? 'إغلاق السجل' : 'عرض السجل'}
+            </button>
+          </div>
+        </div>
         <div className="border border-gray-200 rounded-2xl overflow-hidden overflow-x-auto">
           <table className="w-full text-right text-xs">
             <thead className="bg-gray-100 text-gray-600">
@@ -880,7 +902,7 @@ export default function TreasuryPage() {
                 <th className="p-3 bg-emerald-50 text-emerald-900">قيمة الخزنة (بعد الحركة)</th>
                 <th className="p-3">ملاحظات</th>
                 <th className="p-3">بواسطة</th>
-                {isAdmin && <th className="p-3 text-center">إجراءات</th>}
+                {isAdmin && <th className="p-3 text-center print:hidden">إجراءات</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -953,7 +975,7 @@ export default function TreasuryPage() {
                   <td className="p-3 text-gray-500">{tx.notes}</td>
                   <td className="p-3 font-bold text-gray-700">{tx.actor}</td>
                   {isAdmin && (
-                    <td className="p-3 text-center">
+                    <td className="p-3 text-center print:hidden">
                       <button
                         onClick={async () => {
                           const confirmed = await requestConfirmation('هل أنت متأكد من حذف هذه الحركة نهائياً وتحديث رصيد الخزنة؟');

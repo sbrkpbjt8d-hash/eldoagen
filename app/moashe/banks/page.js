@@ -573,15 +573,15 @@ export default function BanksPage() {
       {/* نافذة سجل الحركات */}
       {historyModal.isOpen && historyModal.bank && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-6 max-w-2xl w-full shadow-2xl space-y-4 max-h-[85vh] flex flex-col">
+          <div className="bank-history-print-area bg-white rounded-3xl p-6 max-w-2xl w-full shadow-2xl space-y-4 max-h-[85vh] flex flex-col">
             <div className="flex justify-between items-center border-b pb-3">
               <div>
                 <h3 className="text-base font-black text-gray-800">📜 سجل حركات البنك: {historyModal.bank.name}</h3>
                 <p className="text-[11px] text-gray-500 mt-0.5">الرصيد الحالي: <span className="font-black text-emerald-600">{Number(historyModal.bank.balance || 0).toLocaleString()} ج.م</span></p>
               </div>
-              <button onClick={() => setHistoryModal({ isOpen: false, bank: null })} className="text-gray-400 font-bold text-lg hover:text-gray-700">✕</button>
+              <button onClick={() => setHistoryModal({ isOpen: false, bank: null })} className="text-gray-400 font-bold text-lg hover:text-gray-700 print:hidden">✕</button>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 print:hidden">
               <div>
                 <label className="text-xs font-bold text-gray-700">من تاريخ</label>
                 <input type="date" value={historyStartDate} onChange={(e) => setHistoryStartDate(e.target.value)} className="w-full border border-gray-200 bg-gray-50 p-3 rounded-xl text-xs font-bold outline-none mt-1" />
@@ -637,7 +637,8 @@ export default function BanksPage() {
                 </tbody>
               </table>
             </div>
-            <div className="pt-2 flex justify-end">
+            <div className="pt-2 flex justify-end gap-2 print:hidden">
+              <button onClick={() => window.print()} className="bg-emerald-600 text-white px-6 py-2.5 rounded-xl text-xs font-bold">🖨️ طباعة السجل</button>
               <button onClick={() => setHistoryModal({ isOpen: false, bank: null })} className="bg-gray-900 text-white px-6 py-2.5 rounded-xl text-xs font-bold">إغلاق</button>
             </div>
           </div>

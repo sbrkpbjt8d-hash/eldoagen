@@ -14,6 +14,8 @@ export default function ExpensesPage() {
   const [catType, setCatType] = useState('operational');
 
   const [selectedCategory, setSelectedCategory] = useState('');
+  const [categorySearch, setCategorySearch] = useState('');
+  const [categoryPickerOpen, setCategoryPickerOpen] = useState(false);
   const [amount, setAmount] = useState('');
   const [paymentSource, setPaymentSource] = useState('treasury'); // 'treasury' أو id البنك
   const [notes, setNotes] = useState('');
@@ -28,6 +30,7 @@ export default function ExpensesPage() {
   // حالات النوافذ التأكيديه والإشعارات الداخلية
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [deleteConfirmModal, setDeleteConfirmModal] = useState({ show: false, type: '', data: null });
+  const [isExpenseHistoryExpanded, setIsExpenseHistoryExpanded] = useState(false);
 
   const showToast = (message, type = 'success') => {
     setToast({ show: true, message, type });
@@ -276,6 +279,10 @@ export default function ExpensesPage() {
     return true;
   });
 
+  const filteredCategories = categories.filter((category) =>
+    category.name?.toLowerCase().includes(categorySearch.trim().toLowerCase())
+  );
+
   const cashExpensesTotal = expenses.reduce((sum, expense) => {
     const bankId = String(expense.bank_id || '').trim().toLowerCase();
     const bankName = String(expense.bank || '').trim().toLowerCase();
@@ -461,18 +468,47 @@ export default function ExpensesPage() {
           <form onSubmit={handleExpenseSubmit} className="space-y-4">
             <div className="space-y-1.5">
               <label className="text-xs font-bold text-gray-700">اختر المصروف الفرعي</label>
-              <select
-                value={selectedCategory}
-                onChange={(e) => setSelectedCategory(e.target.value)}
-                className="w-full bg-gray-50 border border-gray-200 rounded-2xl p-3 text-xs font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="">-- اختر التصنيف الفرعي --</option>
-                {categories.map((cat) => (
-                  <option key={cat.id} value={cat.id}>
-                    {cat.name} ({cat.type === 'operational' ? 'تشغيلية' : 'غير تشغيلية'})
-                  </option>
-                ))}
-              </select>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setCategoryPickerOpen((open) => !open)}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-2xl p-3 text-xs font-bold text-gray-800 text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {categories.find((category) => category.id === selectedCategory)?.name || '-- اختر التصنيف الفرعي --'}
+                  <span className="float-left text-gray-400">▾</span>
+                </button>
+                {categoryPickerOpen && (
+                  <div className="absolute top-full right-0 left-0 z-30 mt-2 rounded-2xl border border-gray-200 bg-white p-2 shadow-2xl">
+                    <input
+                      type="search"
+                      value={categorySearch}
+                      onChange={(e) => setCategorySearch(e.target.value)}
+                      placeholder="ابحث عن نوع المصروف..."
+                      autoFocus
+                      className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 text-xs font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <div className="mt-2 max-h-48 overflow-y-auto">
+                      {filteredCategories.map((cat) => (
+                        <button
+                          key={cat.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedCategory(cat.id);
+                            setCategorySearch('');
+                            setCategoryPickerOpen(false);
+                          }}
+                          className="block w-full rounded-xl px-3 py-2 text-right text-xs font-bold text-gray-700 hover:bg-blue-50 hover:text-blue-700"
+                        >
+                          {cat.name} ({cat.type === 'operational' ? 'تشغيلية' : 'غير تشغيلية'})
+                        </button>
+                      ))}
+                      {filteredCategories.length === 0 && (
+                        <p className="p-3 text-center text-xs text-gray-400">لا توجد أنواع مطابقة للبحث.</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -604,12 +640,30 @@ export default function ExpensesPage() {
       </div>
 
       {/* جدول سجل المصروفات */}
-      <div className="bg-white p-6 rounded-3xl shadow-xl border border-gray-100 space-y-4">
-        <div className="flex justify-between items-center border-b pb-3">
+      <div className={`expense-history-print-area bg-white p-6 rounded-3xl shadow-xl border border-gray-100 space-y-4 ${isExpenseHistoryExpanded ? 'expense-history-expanded fixed inset-0 z-40 overflow-auto rounded-none' : ''}`}>
+        <div className="flex justify-between items-center gap-3 border-b pb-3">
           <h2 className="text-base font-black text-gray-800">📋 سجل المصروفات</h2>
-          <span className="text-xs font-bold bg-gray-100 px-3 py-1 rounded-xl text-gray-600">
-            عدد النتائج: {filteredExpenses.length}
-          </span>
+          <div className="flex items-center gap-2 print:hidden">
+            <span className="text-xs font-bold bg-gray-100 px-3 py-1 rounded-xl text-gray-600">
+              عدد النتائج: {filteredExpenses.length}
+            </span>
+            {isExpenseHistoryExpanded && (
+              <button
+                type="button"
+                onClick={() => window.print()}
+                className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-emerald-700"
+              >
+                🖨️ طباعة السجل
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setIsExpenseHistoryExpanded((expanded) => !expanded)}
+              className="bg-gray-900 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-gray-800"
+            >
+              {isExpenseHistoryExpanded ? 'إغلاق السجل' : 'عرض السجل'}
+            </button>
+          </div>
         </div>
 
         <div className="border border-gray-200 rounded-2xl overflow-hidden">
@@ -623,7 +677,7 @@ export default function ExpensesPage() {
                 <th className="p-3">المبلغ</th>
                 <th className="p-3">ملاحظات</th>
                 <th className="p-3">بواسطة</th>
-                <th className="p-3 text-center">إجراءات</th>
+                <th className="p-3 text-center print:hidden">إجراءات</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -651,7 +705,7 @@ export default function ExpensesPage() {
                     <td className="p-3 font-black text-red-600">- {Number(exp.amount || 0).toLocaleString()} ج.م</td>
                     <td className="p-3 text-gray-500">{exp.notes || '-'}</td>
                     <td className="p-3 font-bold text-gray-700">{exp.actor_name || 'غير معروف'}</td>
-                    <td className="p-3 text-center">
+                    <td className="p-3 text-center print:hidden">
                       <button
                         onClick={() => setDeleteConfirmModal({ show: true, type: 'expense', data: exp })}
                         className="bg-red-50 hover:bg-red-600 text-red-600 hover:text-white px-3 py-1.5 rounded-xl font-bold text-[11px] transition shadow-sm"
