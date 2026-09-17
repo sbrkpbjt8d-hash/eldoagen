@@ -71,8 +71,20 @@ export default function ReportsPage() {
   const { data: salesInvoices = [] } = useQuery({ queryKey: ['report_sales'], queryFn: () => fetchRecords('sales_invoices') });
   const { data: purchaseInvoices = [] } = useQuery({ queryKey: ['report_purchases'], queryFn: () => fetchRecords('purchase_invoices') });
   const { data: expenses = [] } = useQuery({ queryKey: ['report_expenses'], queryFn: () => fetchRecords('expenses') });
-  const { data: clientTransactions = [] } = useQuery({ queryKey: ['report_client_transactions'], queryFn: () => fetchRecords('client_transactions') });
-  const { data: supplierTransactions = [] } = useQuery({ queryKey: ['report_supplier_transactions'], queryFn: () => fetchRecords('supplier_transactions') });
+  const { data: advances = [] } = useQuery({ queryKey: ['report_advances'], queryFn: () => fetchRecords('advances') });
+  const { data: salariesPayouts = [] } = useQuery({ queryKey: ['report_salaries_payouts'], queryFn: () => fetchRecords('salaries_payouts') });
+  const { data: clientTransactions = [] } = useQuery({
+    queryKey: ['report_client_transactions'],
+    queryFn: () => fetchRecords('client_transactions', {
+      filter: '(destination = "treasury" || destination = "خزنة" || destination = "كاش" || destination = "") && type != "opening_balance" && type != "opening"',
+    }),
+  });
+  const { data: supplierTransactions = [] } = useQuery({
+    queryKey: ['report_supplier_transactions'],
+    queryFn: () => fetchRecords('supplier_transactions', {
+      filter: '(destination = "treasury" || destination = "خزنة" || destination = "كاش" || destination = "") && type != "opening_balance" && type != "opening"',
+    }),
+  });
   const { data: treasuryTransactions = [] } = useQuery({ queryKey: ['report_treasury_transactions'], queryFn: () => fetchRecords('treasury_transactions') });
 
   const treasury = [...treasuryRecords].sort((first, second) => {
@@ -107,14 +119,16 @@ export default function ReportsPage() {
         amount: -Number(expense.amount || 0),
         date: expense.date || expense.created || '',
       })),
-    ...clientTransactions
-      .filter((transaction) => {
-        const isOpening = String(transaction.type || '').toLowerCase().includes('open') || String(transaction.notes || '').toLowerCase().includes('افتتاحي') || String(transaction.notes || '').startsWith('تسوية (');
-        return !isOpening && ['treasury', 'خزنة', 'كاش', ''].includes(String(transaction.destination || ''));
-      })
-      .map((transaction) => ({
-        amount: Number(transaction.amount || 0),
-        date: transaction.date || transaction.created || '',
+    ...advances
+      .filter((advance) => !(String(advance.advance_type || '').toLowerCase() === 'other'))
+      .map((advance) => ({
+        amount: -Number(advance.amount || 0),
+        date: advance.date || advance.created || '',
+      })),
+    ...salariesPayouts
+      .map((salary) => ({
+        amount: -Number(salary.amount || salary.total_amount || salary.net_salary || 0),
+        date: salary.date || salary.created || '',
       })),
     ...supplierTransactions
       .filter((transaction) => {
@@ -136,19 +150,49 @@ export default function ReportsPage() {
         date: invoice.date || invoice.created || '',
       })),
     ...treasuryTransactions
+      .filter((transaction) => [
+        'bank_deposit',
+        'bank_transfer',
+        'cash_deposit',
+        'sales_return',
+        'salary',
+        'other_advance',
+        'other_advance_return',
+      ].includes(String(transaction.movement_type || '').toLowerCase()) || String(transaction.type || '').toLowerCase() === 'salary')
       .map((transaction) => {
         const movementType = String(transaction.movement_type || '').toLowerCase();
         const transactionType = String(transaction.type || '').toLowerCase();
+        const title = String(transaction.title || '').toLowerCase();
         let amount = Number(transaction.amount || 0);
-        if (movementType === 'bank_deposit' || movementType === 'other_advance' || movementType === 'salary' || movementType === 'sales_return' || transactionType === 'salary') {
+
+        if (movementType === 'other_advance') {
           amount *= -1;
         }
-        if (movementType === 'bank_transfer' && String(transaction.title || '').includes('إلى الخزنة')) {
+
+        if (movementType === 'other_advance_return') {
           amount *= 1;
         }
+
+        if (movementType === 'bank_deposit' || movementType === 'salary' || movementType === 'sales_return' || transactionType === 'salary') {
+          amount *= -1;
+        }
+
+        if (movementType === 'bank_transfer' && title.includes('إلى الخزنة')) {
+          amount *= 1;
+        }
+
+        if (movementType === 'bank_transfer' && title.includes('من الخزنة')) {
+          amount *= -1;
+        }
+
         if (movementType === 'cash_deposit') {
           amount *= 1;
         }
+
+        if (movementType === 'cash_withdrawal' || movementType === 'withdrawal') {
+          amount *= -1;
+        }
+
         return { amount, date: transaction.date || transaction.created || '' };
       })
       .filter((transaction) => transaction.date && (transaction.amount !== 0 || String(transaction.amount || '').trim() !== '')),
