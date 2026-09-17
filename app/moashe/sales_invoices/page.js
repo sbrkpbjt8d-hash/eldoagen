@@ -154,7 +154,7 @@ export default function SalesInvoicesPage() {
     } else {
       setSelectedProducts([
         ...selectedProducts,
-        { name: productName, price, qty: 1, itemKey: `product:${productName}` }
+        { name: productName, price, qty: 1, note: '', itemKey: `product:${productName}` }
       ]);
     }
   }
@@ -180,6 +180,7 @@ export default function SalesInvoicesPage() {
         qty: 1,
         itemType: 'material',
         materialId: material.id,
+        note: '',
         itemKey,
       },
     ]);
@@ -191,6 +192,12 @@ export default function SalesInvoicesPage() {
     (p.itemKey || p.name) === productName ? { ...p, qty: isNaN(val) || val < 0 ? 0 : val } : p
   ));
 }
+
+  function handleItemNoteChange(itemKey, note) {
+    setSelectedProducts(selectedProducts.map((item) => (
+      (item.itemKey || item.name) === itemKey ? { ...item, note } : item
+    )));
+  }
 
   function handleRemoveProduct(productName) {
     setSelectedProducts(selectedProducts.filter((p) => (p.itemKey || p.name) !== productName));
@@ -940,6 +947,7 @@ export default function SalesInvoicesPage() {
                       <th className="p-2.5">المنتج</th>
                       <th className="p-2.5">السعر</th>
                       <th className="p-2.5">الكمية</th>
+                      <th className="p-2.5">ملاحظة</th>
                       <th className="p-2.5">الإجمالي</th>
                     </tr>
                   </thead>
@@ -949,6 +957,7 @@ export default function SalesInvoicesPage() {
                         <td className="p-2.5 font-bold text-gray-800">{it.name}</td>
                         <td className="p-2.5 text-gray-600">{it.price} ج.م</td>
                         <td className="p-2.5 text-gray-600 font-bold">{it.qty}</td>
+                        <td className="p-2.5 text-gray-500">{it.note || '-'}</td>
                         <td className="p-2.5 font-bold text-emerald-600">{(it.price * it.qty).toLocaleString()} ج.م</td>
                       </tr>
                     ))}
@@ -1170,6 +1179,7 @@ export default function SalesInvoicesPage() {
                     <th className="p-3">المنتج</th>
                     <th className="p-3">السعر</th>
                     <th className="p-3">الكمية</th>
+                      <th className="p-3">ملاحظة</th>
                     <th className="p-3">الإجمالي</th>
                     <th className="p-3 text-center">حذف</th>
                   </tr>
@@ -1189,6 +1199,15 @@ export default function SalesInvoicesPage() {
                           value={p.qty}
                           onChange={(e) => handleQtyChange(itemKey, e.target.value)}
                           className="w-20 bg-gray-50 border border-gray-200 rounded-xl px-2 py-1 text-xs font-bold text-center focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                        />
+                      </td>
+                      <td className="p-3">
+                        <input
+                          type="text"
+                          value={p.note || ''}
+                          onChange={(e) => handleItemNoteChange(itemKey, e.target.value)}
+                          placeholder="اكتب ملاحظة..."
+                          className="w-36 bg-gray-50 border border-gray-200 rounded-xl px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500"
                         />
                       </td>
                       <td className="p-3 font-bold text-emerald-600">{(p.price * p.qty).toLocaleString()} ج.م</td>

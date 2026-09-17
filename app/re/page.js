@@ -73,9 +73,92 @@ export default function ReportsPage() {
   const { data: expenses = [] } = useQuery({ queryKey: ['report_expenses'], queryFn: () => fetchRecords('expenses') });
   const { data: clientTransactions = [] } = useQuery({ queryKey: ['report_client_transactions'], queryFn: () => fetchRecords('client_transactions') });
   const { data: supplierTransactions = [] } = useQuery({ queryKey: ['report_supplier_transactions'], queryFn: () => fetchRecords('supplier_transactions') });
+  const { data: treasuryTransactions = [] } = useQuery({ queryKey: ['report_treasury_transactions'], queryFn: () => fetchRecords('treasury_transactions') });
 
-  const treasury = treasuryRecords[0] || {};
-  const openingCapital = Number(treasury.opening_balance || 0);
+  const treasury = [...treasuryRecords].sort((first, second) => {
+    const firstScore = Math.abs(Number(first.opening_balance ?? first.balance ?? 0)) + Math.abs(Number(first.balance ?? 0));
+    const secondScore = Math.abs(Number(second.opening_balance ?? second.balance ?? 0)) + Math.abs(Number(second.balance ?? 0));
+
+    if (secondScore !== firstScore) {
+      return secondScore - firstScore;
+    }
+
+    const firstTime = new Date(first.updated || first.created || 0).getTime();
+    const secondTime = new Date(second.updated || second.created || 0).getTime();
+    return secondTime - firstTime;
+  })[0] || {};
+
+  const openingCapital = Number(treasury.opening_balance ?? treasury.balance ?? 0);
+
+  const treasuryMovementEntries = [
+    ...expenses
+      .filter((expense) => {
+        const itemBankId = String(expense.bank_id || '').trim().toLowerCase();
+        const itemBank = String(expense.bank || '').trim().toLowerCase();
+        const itemNotes = String(expense.notes || '').toLowerCase();
+        const categoryName = String(expense.category_name || expense.expand?.category_id?.name || '').toLowerCase();
+        const isBankExpense = itemBankId !== '' && itemBankId !== 'null' && itemBankId !== 'treasury' && itemBankId !== 'الخزنة';
+        const isBankNamed = itemBank !== '' && itemBank !== 'null' && !itemBank.includes('خزن');
+        const isBankNote = itemNotes.includes('بنك') || itemNotes.includes('تحويل بنكي') || itemNotes.includes('visa');
+        const isBankCategory = categoryName.includes('بنك');
+        return !(isBankExpense || isBankNamed || isBankNote || isBankCategory);
+      })
+      .map((expense) => ({
+        amount: -Number(expense.amount || 0),
+        date: expense.date || expense.created || '',
+      })),
+    ...clientTransactions
+      .filter((transaction) => {
+        const isOpening = String(transaction.type || '').toLowerCase().includes('open') || String(transaction.notes || '').toLowerCase().includes('افتتاحي') || String(transaction.notes || '').startsWith('تسوية (');
+        return !isOpening && ['treasury', 'خزنة', 'كاش', ''].includes(String(transaction.destination || ''));
+      })
+      .map((transaction) => ({
+        amount: Number(transaction.amount || 0),
+        date: transaction.date || transaction.created || '',
+      })),
+    ...supplierTransactions
+      .filter((transaction) => {
+        const isOpening = String(transaction.type || '').toLowerCase().includes('open') || String(transaction.notes || '').toLowerCase().includes('افتتاحي');
+        return !isOpening && ['treasury', 'خزنة', 'كاش', ''].includes(String(transaction.destination || ''));
+      })
+      .map((transaction) => ({
+        amount: -Number(transaction.amount || 0),
+        date: transaction.date || transaction.created || '',
+      })),
+    ...salesInvoices
+      .filter((invoice) => {
+        if (String(invoice.status || '') === 'مرتجع') return false;
+        const paymentType = String(invoice.payment_type || invoice.payment_method || invoice.type || '').toLowerCase();
+        return paymentType.includes('cash') || paymentType.includes('كاش') || paymentType.includes('نقدي') || paymentType === '';
+      })
+      .map((invoice) => ({
+        amount: Number(invoice.total_amount || invoice.amount || 0),
+        date: invoice.date || invoice.created || '',
+      })),
+    ...treasuryTransactions
+      .map((transaction) => {
+        const movementType = String(transaction.movement_type || '').toLowerCase();
+        const transactionType = String(transaction.type || '').toLowerCase();
+        let amount = Number(transaction.amount || 0);
+        if (movementType === 'bank_deposit' || movementType === 'other_advance' || movementType === 'salary' || movementType === 'sales_return' || transactionType === 'salary') {
+          amount *= -1;
+        }
+        if (movementType === 'bank_transfer' && String(transaction.title || '').includes('إلى الخزنة')) {
+          amount *= 1;
+        }
+        if (movementType === 'cash_deposit') {
+          amount *= 1;
+        }
+        return { amount, date: transaction.date || transaction.created || '' };
+      })
+      .filter((transaction) => transaction.date && (transaction.amount !== 0 || String(transaction.amount || '').trim() !== '')),
+  ].filter((entry) => entry.date).sort((first, second) => new Date(first.date) - new Date(second.date));
+
+  const derivedTreasuryBalance = openingCapital + treasuryMovementEntries.reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+  const storedTreasuryBalance = Number(treasury.balance ?? treasury.opening_balance ?? 0);
+  const treasuryBalance = Math.abs(storedTreasuryBalance - derivedTreasuryBalance) > 1
+    ? derivedTreasuryBalance
+    : storedTreasuryBalance || derivedTreasuryBalance;
 
   const saveOpeningCapitalMutation = useMutation({
     mutationFn: async () => {
@@ -106,7 +189,6 @@ export default function ReportsPage() {
   })).map(item => ({ ...item, value: item.quantity * item.unitCost }));
 
   const productValue = productRows.reduce((sum, item) => sum + item.value, 0);
-  const treasuryBalance = Number(treasury.balance || 0);
   const banksBalance = banks.reduce((sum, bank) => sum + Number(bank.balance || 0), 0);
   const customerDebts = clients.reduce((sum, item) => sum + Number(item.balance || 0), 0);
   const supplierDebts = suppliers.reduce((sum, item) => sum + Number(item.balance || 0), 0);
