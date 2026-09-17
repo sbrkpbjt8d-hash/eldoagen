@@ -444,8 +444,8 @@ export default function ClientsPage() {
 
   const filteredClients = clients
     .filter(client =>
-      client.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      client.phone?.includes(searchTerm)
+      String(client.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      String(client.phone || '').includes(searchTerm)
     )
     .sort((first, second) => {
       const firstInfo = getClientCollectionInfo(first);
