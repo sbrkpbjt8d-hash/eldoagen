@@ -9,6 +9,10 @@ const money = value => `${Number(value || 0).toLocaleString('ar-EG', { maximumFr
 export default function PurchaseInvoicesPage() {
   const queryClient = useQueryClient();
   const [form, setForm] = useState(emptyForm);
+  const [supplierSearch, setSupplierSearch] = useState('');
+  const [supplierDropdownOpen, setSupplierDropdownOpen] = useState(false);
+  const [materialSearch, setMaterialSearch] = useState('');
+  const [materialDropdownOpen, setMaterialDropdownOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -35,6 +39,10 @@ export default function PurchaseInvoicesPage() {
     queryKey: ['purchase_invoices'],
     queryFn: () => pb.collection('purchase_invoices').getFullList().catch(() => []),
   });
+
+  const selectedSupplierName = suppliers.find(supplier => supplier.id === form.supplierId)?.name || '';
+  const filteredSuppliers = suppliers.filter(supplier => String(supplier.name || '').toLowerCase().includes(supplierSearch.toLowerCase().trim()));
+  const filteredMaterials = materials.filter(material => String(material.name || '').toLowerCase().includes(materialSearch.toLowerCase().trim()));
 
   const subtotal = form.items.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.qty || 0), 0);
   const discount = Number(form.discount || 0);
@@ -121,6 +129,10 @@ export default function PurchaseInvoicesPage() {
       queryClient.invalidateQueries({ queryKey: ['khamat_moashe'] });
       queryClient.invalidateQueries({ queryKey: ['suppliers'] });
       setForm(emptyForm);
+      setSupplierSearch('');
+      setMaterialSearch('');
+      setSupplierDropdownOpen(false);
+      setMaterialDropdownOpen(false);
       setEditingInvoice(null);
       notify('تم حفظ فاتورة الشراء وتحديث المخزون بنجاح.');
     },
@@ -179,7 +191,9 @@ export default function PurchaseInvoicesPage() {
     }
     setEditingInvoice(invoice);
     setDetailsInvoice(null);
+    const selectedSupplier = suppliers.find(supplier => supplier.id === invoice.supplier_id);
     setForm({ supplierId: invoice.supplier_id || '', items: invoice.items || [], discount: String(invoice.discount || ''), paymentType: 'credit' });
+    setSupplierSearch(selectedSupplier?.name || invoice.supplier_name || '');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -222,14 +236,41 @@ export default function PurchaseInvoicesPage() {
       <form onSubmit={submit} className="bg-white rounded-3xl p-6 shadow-xl border space-y-5">
         <h2 className="text-lg font-black border-b pb-3">{editingInvoice ? '✏️ تعديل فاتورة شراء' : '➕ فاتورة شراء جديدة'}</h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <select required value={form.supplierId} onChange={e => setForm({ ...form, supplierId: e.target.value })} className="border p-3 rounded-xl text-xs font-bold">
-            <option value="">اختر المورد</option>
-            {suppliers.map(supplier => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}
-          </select>
-          <select value="" onChange={e => { addMaterial(e.target.value); e.target.value = ''; }} className="border p-3 rounded-xl text-xs font-bold">
-            <option value="">اختر خامة مسجلة</option>
-            {materials.map(material => <option key={material.id} value={material.id}>{material.name}</option>)}
-          </select>
+          <div className="relative">
+            <input
+              required
+              type="text"
+              value={supplierDropdownOpen ? supplierSearch : selectedSupplierName}
+              onFocus={() => { setSupplierSearch(''); setSupplierDropdownOpen(true); }}
+              onChange={e => { setSupplierSearch(e.target.value); setForm({ ...form, supplierId: '' }); setSupplierDropdownOpen(true); }}
+              placeholder="ابحث عن المورد..."
+              className="w-full border p-3 rounded-xl text-xs font-bold"
+            />
+            {supplierDropdownOpen && (
+              <div className="absolute z-30 mt-1 w-full max-h-52 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-xl">
+                {filteredSuppliers.length ? filteredSuppliers.map(supplier => (
+                  <button key={supplier.id} type="button" onClick={() => { setForm({ ...form, supplierId: supplier.id }); setSupplierSearch(supplier.name || ''); setSupplierDropdownOpen(false); }} className="block w-full px-4 py-2.5 text-right text-xs font-bold hover:bg-blue-50">{supplier.name}</button>
+                )) : <p className="p-3 text-xs text-gray-400">لا يوجد مورد بهذا الاسم.</p>}
+              </div>
+            )}
+          </div>
+          <div className="relative">
+            <input
+              type="text"
+              value={materialDropdownOpen ? materialSearch : ''}
+              onFocus={() => { setMaterialSearch(''); setMaterialDropdownOpen(true); }}
+              onChange={e => { setMaterialSearch(e.target.value); setMaterialDropdownOpen(true); }}
+              placeholder="ابحث عن الخامة المسجلة..."
+              className="w-full border p-3 rounded-xl text-xs font-bold"
+            />
+            {materialDropdownOpen && (
+              <div className="absolute z-30 mt-1 w-full max-h-52 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-xl">
+                {filteredMaterials.length ? filteredMaterials.map(material => (
+                  <button key={material.id} type="button" onClick={() => { addMaterial(material.id); setMaterialSearch(''); setMaterialDropdownOpen(false); }} className="block w-full px-4 py-2.5 text-right text-xs font-bold hover:bg-amber-50">{material.name}</button>
+                )) : <p className="p-3 text-xs text-gray-400">لا توجد خامة بهذا الاسم.</p>}
+              </div>
+            )}
+          </div>
           <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 p-3 rounded-xl text-xs font-bold text-amber-700">
             <span>⏳</span><span>فاتورة آجل - تُسجل كمستحقات على المورد</span>
           </div>

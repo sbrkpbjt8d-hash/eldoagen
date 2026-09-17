@@ -424,10 +424,36 @@ export default function ClientsPage() {
     return true;
   });
 
-  const filteredClients = clients.filter(client =>
-    client.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    client.phone?.includes(searchTerm)
-  );
+  const getClientCollectionInfo = (client) => {
+    const clientPayments = allTransactions
+      .filter(transaction => transaction.client_id === client.id && transaction.type === 'payment')
+      .sort((first, second) => new Date(second.created || second.date || 0) - new Date(first.created || first.date || 0));
+    const clientInvoices = allInvoices
+      .filter(invoice => invoice.customer_name === client.name)
+      .sort((first, second) => new Date(second.created || 0) - new Date(first.created || 0));
+    const lastPayment = clientPayments[0] || null;
+    const lastInvoice = clientInvoices[0] || null;
+    const lastActivityDate = lastPayment?.created || lastPayment?.date || lastInvoice?.created || client.created || '';
+    const daysSinceCollection = lastActivityDate
+      ? Math.floor((Date.now() - new Date(lastActivityDate).getTime()) / (1000 * 60 * 60 * 24))
+      : 0;
+    const isOverdue = Number(client.balance || 0) > 0 && daysSinceCollection > 20;
+
+    return { lastPayment, lastInvoice, lastActivityDate, daysSinceCollection, isOverdue };
+  };
+
+  const filteredClients = clients
+    .filter(client =>
+      client.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      client.phone?.includes(searchTerm)
+    )
+    .sort((first, second) => {
+      const firstInfo = getClientCollectionInfo(first);
+      const secondInfo = getClientCollectionInfo(second);
+      if (firstInfo.isOverdue !== secondInfo.isOverdue) return firstInfo.isOverdue ? -1 : 1;
+      if (firstInfo.isOverdue && secondInfo.isOverdue) return secondInfo.daysSinceCollection - firstInfo.daysSinceCollection;
+      return 0;
+    });
 
   const totalBalances = clients.reduce((sum, client) => sum + Number(client.balance || 0), 0);
 
@@ -768,21 +794,21 @@ export default function ClientsPage() {
             </thead>
             <tbody className="divide-y text-sm">
               {filteredClients.map((client) => {
-                // إيجاد آخر تحصيل للعميل
-                const lastPayment = allTransactions.find(
-                  (tx) => tx.client_id === client.id && tx.type === 'payment'
-                );
-                // إيجاد آخر فاتورة للعميل
-                const lastInvoice = allInvoices.find(
-                  (inv) => inv.customer_name === client.name
-                );
+                const { lastPayment, lastInvoice, lastActivityDate, isOverdue } = getClientCollectionInfo(client);
 
                 const lastPaymentDate = lastPayment ? formatLastDate(lastPayment.created || lastPayment.date) : 'لا يوجد';
                 const lastInvoiceDate = lastInvoice ? formatLastDate(lastInvoice.created) : 'لا يوجد';
 
                 return (
                   <tr key={client.id} className="hover:bg-gray-50/50 transition">
-                    <td className="p-3 font-black text-gray-900">{client.name}</td>
+                    <td className="p-3 font-black text-gray-900">
+                      <div>{client.name}</div>
+                      {isOverdue && (
+                        <span className="inline-block mt-1 bg-red-100 text-red-700 px-2 py-1 rounded-md text-[10px] font-black">
+                          متأخر - لم يحصل منذ {formatLastDate(lastActivityDate)}
+                        </span>
+                      )}
+                    </td>
                     <td className="p-3 font-bold text-gray-700">{client.phone || '-'}</td>
                     <td className="p-3 text-gray-600">{client.address || '-'}</td>
                     <td className="p-3 font-black text-red-600">{Number(client.balance || 0).toLocaleString()} ج.م</td>

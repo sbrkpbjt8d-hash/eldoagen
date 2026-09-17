@@ -10,6 +10,8 @@ export default function SalesInvoicesPage() {
   
   const [customerType, setCustomerType] = useState('walk-in');
   const [selectedCustomer, setSelectedCustomer] = useState('');
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [customerDropdownOpen, setCustomerDropdownOpen] = useState(false);
   const [selectedSalesAgent, setSelectedSalesAgent] = useState('');
   const [walkInName, setWalkInName] = useState('عميل فوري');
   const [selectedProducts, setSelectedProducts] = useState([]);
@@ -94,6 +96,8 @@ export default function SalesInvoicesPage() {
   });
 
   const customers = clientsList;
+  const selectedCustomerName = customers.find(customer => customer.id === selectedCustomer)?.name || '';
+  const filteredCustomers = customers.filter(customer => String(customer.name || '').toLowerCase().includes(customerSearch.toLowerCase().trim()));
 
   const { data: salesInvoices = [], isLoading: loadingInvoices } = useQuery({
     queryKey: ['sales_invoices'],
@@ -634,10 +638,12 @@ export default function SalesInvoicesPage() {
     if (invoice.customer_type === 'registered') {
       const matchedCustomer = customers.find(c => c.name === invoice.customer_name);
       setSelectedCustomer(matchedCustomer ? matchedCustomer.id : '');
+      setCustomerSearch(matchedCustomer?.name || invoice.customer_name || '');
       setWalkInName('عميل فوري');
     } else {
       setWalkInName(invoice.customer_name || 'عميل فوري');
       setSelectedCustomer('');
+      setCustomerSearch('');
     }
     setSelectedProducts(invoice.items || []);
     const invDiscount = invoice.discount !== undefined ? invoice.discount : (invoice.discount_amount || 0);
@@ -653,6 +659,8 @@ export default function SalesInvoicesPage() {
     setCustomerType('walk-in');
     setWalkInName('عميل فوري');
     setSelectedCustomer('');
+    setCustomerSearch('');
+    setCustomerDropdownOpen(false);
     setSelectedSalesAgent('');
     setDiscountAmount('');
     setPaymentType('cash');
@@ -1061,6 +1069,8 @@ export default function SalesInvoicesPage() {
                   setCustomerType(e.target.value);
                   if (e.target.value === 'walk-in') {
                     setSelectedCustomer('');
+                    setCustomerSearch('');
+                    setCustomerDropdownOpen(false);
                   } else {
                     setWalkInName('عميل فوري');
                   }
@@ -1100,16 +1110,30 @@ export default function SalesInvoicesPage() {
             ) : (
               <div>
                 <label className="block text-xs font-bold text-gray-700 mb-2">اختر العميل المسجل:</label>
-                <select
-                  value={selectedCustomer}
-                  onChange={(e) => setSelectedCustomer(e.target.value)}
-                  className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-2.5 text-xs font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                >
-                  <option value="">-- اختر العميل --</option>
-                  {customers.map(c => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                  ))}
-                </select>
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={customerDropdownOpen ? customerSearch : selectedCustomerName}
+                    onFocus={() => { setCustomerSearch(''); setCustomerDropdownOpen(true); }}
+                    onChange={(e) => { setCustomerSearch(e.target.value); setSelectedCustomer(''); setCustomerDropdownOpen(true); }}
+                    placeholder="ابحث عن اسم العميل..."
+                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-2.5 text-xs font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                  {customerDropdownOpen && (
+                    <div className="absolute z-30 mt-1 w-full max-h-52 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-xl">
+                      {filteredCustomers.length ? filteredCustomers.map(customer => (
+                        <button
+                          key={customer.id}
+                          type="button"
+                          onClick={() => { setSelectedCustomer(customer.id); setCustomerSearch(customer.name || ''); setCustomerDropdownOpen(false); }}
+                          className="block w-full px-4 py-2.5 text-right text-xs font-bold hover:bg-emerald-50"
+                        >
+                          {customer.name}
+                        </button>
+                      )) : <p className="p-3 text-xs text-gray-400">لا يوجد عميل بهذا الاسم.</p>}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 

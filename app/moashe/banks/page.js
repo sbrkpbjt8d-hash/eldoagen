@@ -478,7 +478,32 @@ export default function BanksPage() {
     ...currentBankDeposits,
     ...currentBankTransfers,
     ...currentBankAdjustments,
-  ].sort((first, second) => new Date(second.date || second.created) - new Date(first.date || first.created));
+  ];
+
+  const getBankTransactionSignedAmount = (transaction) => {
+    if (transaction.movementType === 'bank_adjustment') return Number(transaction.amount || 0);
+    if (transaction.movementType === 'bank_transfer') return transaction.isIncoming ? Number(transaction.amount || 0) : -Number(transaction.amount || 0);
+    return ['client_payment', 'other_advance_return', 'bank_deposit'].includes(transaction.movementType)
+      ? Number(transaction.amount || 0)
+      : -Number(transaction.amount || 0);
+  };
+
+  const transactionsWithBankBalance = [...currentBankTransactions]
+    .sort((first, second) => new Date(first.date || first.created) - new Date(second.date || second.created))
+    .reduce((transactions, transaction) => {
+      const previousBalance = transactions.length
+        ? transactions[transactions.length - 1].bankBalance
+        : Number(historyModal.bank?.opening_balance || 0);
+
+      return [
+        ...transactions,
+        {
+          ...transaction,
+          bankBalance: previousBalance + getBankTransactionSignedAmount(transaction),
+        },
+      ];
+    }, [])
+    .sort((first, second) => new Date(second.date || second.created) - new Date(first.date || first.created));
 
   const getBankTransactionDirection = (transaction) => {
     if (transaction.movementType === 'bank_adjustment') {
@@ -492,7 +517,7 @@ export default function BanksPage() {
       : 'withdrawal';
   };
 
-  const filteredCurrentBankTransactions = currentBankTransactions.filter((transaction) => (
+  const filteredCurrentBankTransactions = transactionsWithBankBalance.filter((transaction) => (
     historyDirectionFilter === 'all' || getBankTransactionDirection(transaction) === historyDirectionFilter
   ));
 
@@ -613,6 +638,7 @@ export default function BanksPage() {
                     <th className="p-3">الحركة</th>
                     <th className="p-3">نوع الحركة</th>
                     <th className="p-3">المبلغ</th>
+                    <th className="p-3">رصيد البنك بعد الحركة</th>
                     <th className="p-3">ملاحظات</th>
                     <th className="p-3">بواسطة</th>
                   </tr>
@@ -633,12 +659,13 @@ export default function BanksPage() {
                         <td className={`p-3 font-black ${tx.movementType === 'bank_adjustment' ? (Number(tx.amount || 0) >= 0 ? 'text-emerald-600' : 'text-red-600') : tx.movementType === 'client_payment' || tx.movementType === 'other_advance_return' || tx.movementType === 'bank_deposit' || (tx.movementType === 'bank_transfer' && tx.isIncoming) ? 'text-emerald-600' : 'text-red-600'}`}>
                           {tx.movementType === 'bank_adjustment' ? (Number(tx.amount || 0) >= 0 ? '+' : '-') : tx.movementType === 'client_payment' || tx.movementType === 'other_advance_return' || tx.movementType === 'bank_deposit' || (tx.movementType === 'bank_transfer' && tx.isIncoming) ? '+' : '-'} {Math.abs(Number(tx.amount || 0)).toLocaleString()} ج.م
                         </td>
+                        <td className="p-3 font-black text-blue-700">{Number(tx.bankBalance || 0).toLocaleString()} ج.م</td>
                         <td className="p-3 text-gray-500">{tx.notes || '-'}</td>
                         <td className="p-3 font-bold text-gray-700">{tx.actor_name || 'غير معروف'}</td>
                       </tr>
                     ))
                   ) : (
-                    <tr><td colSpan="6" className="p-8 text-center text-gray-400 font-bold">لا توجد حركات مسجلة لهذا البنك في الفترة المحددة.</td></tr>
+                    <tr><td colSpan="7" className="p-8 text-center text-gray-400 font-bold">لا توجد حركات مسجلة لهذا البنك في الفترة المحددة.</td></tr>
                   )}
                 </tbody>
               </table>
