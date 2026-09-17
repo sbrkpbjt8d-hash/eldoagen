@@ -289,6 +289,7 @@ export default function SalesInvoicesPage() {
 
       const invoiceData = {
         customer_name: customerName,
+        customer_id: customerType === 'registered' ? selectedCustomer : '',
         customer_type: customerType,
         sales_agent_id: selectedSalesAgent || '',
         sales_agent_name: selectedAgent?.name || '',
@@ -395,7 +396,7 @@ export default function SalesInvoicesPage() {
     }
   });
 
-  const deleteInvoiceMutation = useMutation({
+const deleteInvoiceMutation = useMutation({
     mutationFn: async (invoice) => {
       const itemsList = Array.isArray(invoice.items) ? invoice.items : [];
       const returnedQuantities = getReturnedQuantities(invoice);
@@ -412,16 +413,26 @@ export default function SalesInvoicesPage() {
         await updateFinishedProductStock(prod.name, Number(prod.qty || 0));
       }
 
-      if (invoice.payment_type === 'credit' && invoice.customer_type === 'registered') {
-        const matchedCust = customers.find(c => normalizeCustomerName(c.name) === normalizeCustomerName(invoice.customer_name));
-        if (matchedCust) {
-          const freshCustomer = await pb.collection('clientsmoashe').getOne(matchedCust.id).catch(() => null);
-          const currentDebt = Number(freshCustomer?.balance || freshCustomer?.debt || freshCustomer?.total_debt || 0);
-          const invAmount = Number(invoice.total_amount || 0);
-          await pb.collection('clientsmoashe').update(matchedCust.id, {
-            balance: Math.max(0, currentDebt - invAmount)
-          }).catch(() => {});
-        }
+      // التعديل هنا: دعمنا اللغة الإنجليزية والعربية لأنواع الدفع الآجل
+      if (invoice.payment_type === 'credit' || invoice.payment_type === 'آجل' || invoice.payment_type === 'اجل') {
+        const matchedCustomerId = invoice.customer_id || customers.find(c => normalizeCustomerName(c.name) === normalizeCustomerName(invoice.customer_name))?.id || (await pb.collection('clientsmoashe').getFullList({ requestKey: null }).catch(() => [])).find(c => normalizeCustomerName(c.name) === normalizeCustomerName(invoice.customer_name))?.id;
+        if (!matchedCustomerId) throw new Error('تعذر تحديد العميل المرتبط بالفاتورة المحذوفة');
+
+        const freshCustomer = await pb.collection('clientsmoashe').getOne(matchedCustomerId);
+        const currentDebt = Number(freshCustomer.balance ?? freshCustomer.debt ?? freshCustomer.total_debt ?? 0);
+        const originalSubtotal = Number(invoice.sub_total || 0) || itemsList.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.qty || 0), 0);
+        const remainingSubtotal = itemsToRestore.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.qty || 0), 0);
+        const invoiceRatio = originalSubtotal > 0 ? Number(invoice.total_amount || 0) / originalSubtotal : 1;
+        const remainingAmount = Number((remainingSubtotal * invoiceRatio).toFixed(6));
+        const newDebt = Math.max(0, currentDebt - remainingAmount);
+
+        // التحديث الديناميكي لأي حقل مديونية موجود في الجدول لضمان نجاح العملية
+        const updateData = {};
+        if ('balance' in freshCustomer) updateData.balance = newDebt;
+        if ('debt' in freshCustomer) updateData.debt = newDebt;
+        if ('total_debt' in freshCustomer) updateData.total_debt = newDebt;
+
+        await pb.collection('clientsmoashe').update(matchedCustomerId, updateData);
       }
 
       const deletedRes = await pb.collection('sales_invoices').delete(invoice.id);
@@ -451,6 +462,7 @@ export default function SalesInvoicesPage() {
       queryClient.invalidateQueries({ queryKey: ['khamat_moashe'] });
       queryClient.invalidateQueries({ queryKey: ['products_stock'] });
       queryClient.invalidateQueries({ queryKey: ['customers'] });
+      queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
       queryClient.invalidateQueries({ queryKey: ['invoices_logs'] });
       showToast('🗑️ تم حذف الفاتورة واسترجاع المخزون وتحديث حساب العميل وتسجيل حركة الحذف بنجاح.');
     },
@@ -458,6 +470,19 @@ export default function SalesInvoicesPage() {
       showToast('❌ فشل الحذف: ' + error.message, 'error');
     }
   });
+
+
+
+
+
+
+
+
+
+
+
+
+
 
   const getReturnItemKey = (item) => item.itemType === 'material'
     ? `material:${item.materialId}`
