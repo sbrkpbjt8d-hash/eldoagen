@@ -161,7 +161,7 @@ export default function ClientsPage() {
 
     return [...statement, { ...tx, accountValue: previousBalance + amountChange }];
   }, []);
-  const combinedStatement = statementWithBalance.reverse();
+const combinedStatement = [...statementWithBalance].reverse();
 
   // تنسيق التاريخ للجدول الرئيسي
   const formatLastDate = (dateString) => {
@@ -505,7 +505,7 @@ export default function ClientsPage() {
       )}
 
       {/* نافذة التحصيل */}
-      {paymentModal.isOpen && (
+ {paymentModal.isOpen && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4">
             <div className="flex justify-between items-center border-b pb-3">
@@ -515,7 +515,9 @@ export default function ClientsPage() {
             <form onSubmit={handlePaymentSubmit} className="space-y-3">
               <div>
                 <label className="text-xs font-bold text-gray-600">المديونية الحالية:</label>
-                <p className="text-lg font-black text-red-600">{Number(paymentModal.client?.balance || 0).toLocaleString()} ج.م</p>
+                <p className="text-lg font-black text-red-600">
+                  {Number(paymentModal.client?.totalDebt || paymentModal.client?.balance || 0).toLocaleString()} ج.م
+                </p>
               </div>
               <div>
                 <label className="text-xs font-bold text-gray-700">المندوب المسئول عن التحصيل</label>
@@ -585,7 +587,6 @@ export default function ClientsPage() {
           </div>
         </div>
       )}
-
       {/* نافذة تسوية الحساب */}
       {settlementModal.isOpen && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -833,7 +834,7 @@ export default function ClientsPage() {
                       <div className="flex justify-center gap-1.5 flex-wrap">
                         <button
                           onClick={() => setStatementModal({ isOpen: true, client })}
-                          className="bg-blue-50 hover:bg-blue-100 text-blue-600 border border-blue-200 px-2.5 py-1 rounded-lg text-xs font-bold transition"
+                          className="bg-blue-50 hover:bg-blue-100 text-blue-600 border border-blue-200 px-2.5 py-1 rounded-lg text-xs font-bold transit"
                         >
                           📄 كشف حساب
                         </button>
