@@ -273,7 +273,7 @@ export default function SalesInvoicesPage() {
 
       let matchedCustomerById = null;
       if (customerType === 'registered' && selectedCustomer) {
-        matchedCustomerById = clientsList.find(c => c.id === selectedCustomer) || await pb.collection('clientsmoashe').getOne(selectedCustomer).catch(() => null);
+        matchedCustomerById = await pb.collection('clientsmoashe').getOne(selectedCustomer).catch(() => null);
       }
 
       const currentCustomer = matchedCustomerById || clientsList.find(c => {
@@ -792,6 +792,28 @@ const deleteInvoiceMutation = useMutation({
     }
   };
 
+  const getInvoicePreviousBalance = (invoice) => {
+    if (invoice.previous_balance !== undefined && invoice.previous_balance !== null) {
+      return Number(invoice.previous_balance || 0);
+    }
+
+    const customer = clientsList.find((client) => (
+      client?.name && invoice?.customer_name &&
+      normalizeCustomerName(client.name) === normalizeCustomerName(invoice.customer_name)
+    ));
+    const currentBalance = Number(customer?.balance ?? customer?.debt ?? customer?.total_debt ?? 0);
+    const invoiceDate = new Date(invoice.created || 0).getTime();
+    const debtFromInvoiceAndLater = salesInvoices
+      .filter((sale) => (
+        sale.customer_name === invoice.customer_name &&
+        ['credit', 'آجل', 'اجل'].includes(sale.payment_type) &&
+        new Date(sale.created || 0).getTime() >= invoiceDate
+      ))
+      .reduce((sum, sale) => sum + Number(sale.total_amount || 0), 0);
+
+    return Math.max(0, currentBalance - debtFromInvoiceAndLater);
+  };
+
   return (
     <div className="p-4 md:p-8 max-w-7xl mx-auto space-y-8 relative" dir="rtl">
       
@@ -906,19 +928,20 @@ const deleteInvoiceMutation = useMutation({
                 <span className="font-bold text-gray-800">{viewInvoiceModal.invoice.customer_type === 'walk-in' ? 'عميل فوري' : 'عميل مسجل'}</span>
               </div>
               {(() => {
-                const modalCustomer = clientsList.find(c =>
-                  c?.name && viewInvoiceModal.invoice?.customer_name && normalizeCustomerName(c.name) === normalizeCustomerName(viewInvoiceModal.invoice.customer_name)
-                );
-                const modalPreviousBalance = Number(
-                  viewInvoiceModal.invoice.previous_balance ?? modalCustomer?.balance ?? modalCustomer?.debt ?? modalCustomer?.total_debt ?? 0
-                );
+                const modalPreviousBalance = getInvoicePreviousBalance(viewInvoiceModal.invoice);
 
-                return modalPreviousBalance > 0 ? (
-                  <div className="flex justify-between bg-red-50 p-3 rounded-2xl border border-red-200">
-                    <span className="text-red-600 font-bold">💳 المديونية السابقة:</span>
-                    <span className="font-bold text-red-700">{modalPreviousBalance.toLocaleString()} ج.م</span>
+                return (
+                  <div className="space-y-2">
+                    <div className="flex justify-between bg-red-50 p-3 rounded-2xl border border-red-200">
+                      <span className="text-red-600 font-bold">💳 الحساب السابق:</span>
+                      <span className="font-bold text-red-700">{modalPreviousBalance.toLocaleString()} ج.م</span>
+                    </div>
+                    <div className="flex justify-between bg-amber-50 p-3 rounded-2xl border border-amber-200">
+                      <span className="text-amber-700 font-bold">📊 إجمالي المديونية:</span>
+                      <span className="font-bold text-amber-800">{(modalPreviousBalance + Number(viewInvoiceModal.invoice.total_amount || 0)).toLocaleString()} ج.م</span>
+                    </div>
                   </div>
-                ) : null;
+                );
               })()}
               <div className="flex justify-between bg-gray-50 p-3 rounded-2xl">
                 <span className="text-gray-500">طريقة الدفع:</span>
@@ -1338,7 +1361,8 @@ const deleteInvoiceMutation = useMutation({
                 <tr>
                   <th className="p-3">رقم الفاتورة</th>
                   <th className="p-3">اسم العميل</th>
-                  <th className="p-3">المديونية السابقة</th>
+                  <th className="p-3">الحساب السابق</th>
+                  <th className="p-3">إجمالي المديونية</th>
                   <th className="p-3">الإجمالي الفرعي</th>
                   <th className="p-3">الخصم</th>
                   <th className="p-3">الصافي النهائي</th>
@@ -1357,12 +1381,8 @@ const deleteInvoiceMutation = useMutation({
                     ? inv.sub_total 
                     : (Array.isArray(inv.items) ? inv.items.reduce((s, item) => s + (Number(item.price || 0) * Number(item.qty || 0)), 0) : 0);
 
-                  const customerMatch = clientsList.find(c =>
-                    c?.name && inv?.customer_name && normalizeCustomerName(c.name) === normalizeCustomerName(inv.customer_name)
-                  );
-                  const previousBalance = Number(
-                    inv.previous_balance ?? customerMatch?.balance ?? customerMatch?.debt ?? customerMatch?.total_debt ?? 0
-                  );
+                  const previousBalance = getInvoicePreviousBalance(inv);
+                  const totalDebt = previousBalance + Number(inv.total_amount || 0);
 
                   return (
                     <tr key={inv.id} className="hover:bg-gray-50/50 transition">
@@ -1371,6 +1391,7 @@ const deleteInvoiceMutation = useMutation({
                       <td className="p-3 font-bold" style={{ color: previousBalance > 0 ? '#dc2626' : '#059669' }}>
                         {previousBalance > 0 ? '💳 ' + previousBalance.toLocaleString() + ' جنيه' : 'نظيف'}
                       </td>
+                      <td className="p-3 font-bold text-amber-700">{totalDebt.toLocaleString()} جنيه</td>
                       <td className="p-3 text-gray-600">{invSubTotal.toLocaleString()} ج.م</td>
                       <td className="p-3 font-bold text-red-600">
                         {invDiscount > 0 ? `- ${invDiscount.toLocaleString()} ج.م` : '0 ج.م'}
