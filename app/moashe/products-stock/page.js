@@ -167,11 +167,15 @@ export default function ProductionStockPage() {
       }),
     ].filter(item => item.quantity !== 0).sort((first, second) => new Date(first.date || 0) - new Date(second.date || 0));
 
-    let runningStock = 0;
-    return history.map(item => {
-      runningStock += item.quantity;
-      return { ...item, balance: runningStock };
-    }).reverse().filter(item => {
+    const currentStock = Number(product.stock || 0);
+    let runningStock = currentStock;
+    const historyWithBalance = [...history].reverse().map((item) => {
+      const balance = runningStock;
+      runningStock -= item.quantity;
+      return { ...item, balance };
+    }).reverse();
+
+    return historyWithBalance.reverse().filter(item => {
       const itemDate = String(item.date || '').slice(0, 10);
       return (!historyStartDate || itemDate >= historyStartDate) && (!historyEndDate || itemDate <= historyEndDate);
     });
