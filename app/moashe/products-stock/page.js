@@ -167,8 +167,7 @@ export default function ProductionStockPage() {
       }),
     ].filter(item => item.quantity !== 0).sort((first, second) => new Date(first.date || 0) - new Date(second.date || 0));
 
-    const movementTotal = history.reduce((sum, item) => sum + item.quantity, 0);
-    let runningStock = product.stock - movementTotal;
+    let runningStock = 0;
     return history.map(item => {
       runningStock += item.quantity;
       return { ...item, balance: runningStock };
