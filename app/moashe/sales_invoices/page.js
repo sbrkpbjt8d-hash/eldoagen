@@ -208,10 +208,24 @@ export default function SalesInvoicesPage() {
   }
 
   const updateMaterialStock = async (materialId, quantityChange) => {
-    const material = materials.find((item) => item.id === materialId);
+    const material = await pb.collection('khamat_moashe').getOne(materialId).catch(() => null);
     if (!material) return;
     const currentStock = Number(material.stock ?? material.quantity ?? 0);
     await pb.collection('khamat_moashe').update(materialId, {
+      stock: currentStock + quantityChange,
+    });
+  };
+
+  const normalizeProductName = value => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+  const updateFinishedProductStock = async (productName, quantityChange) => {
+    const stockRecords = await pb.collection('products_stock').getFullList({ requestKey: null }).catch(() => []);
+    const normalizedName = normalizeProductName(productName);
+    const stockRecord = stockRecords.find(record => normalizeProductName(record.product_name || record.name) === normalizedName);
+    if (!stockRecord) return;
+
+    const currentStock = Number(stockRecord.stock || 0);
+    await pb.collection('products_stock').update(stockRecord.id, {
       stock: currentStock + quantityChange,
     });
   };
@@ -228,36 +242,14 @@ export default function SalesInvoicesPage() {
             await updateMaterialStock(oldProd.materialId, Number(oldProd.qty || 0));
             continue;
           }
-          const matchedStockProd = productsStock.find(p => (p.product_name || p.name) === oldProd.name);
-          if (matchedStockProd) {
-            const currentStock = Number(matchedStockProd.stock || 0);
-            await pb.collection('products_stock').update(matchedStockProd.id, {
-              stock: currentStock + Number(oldProd.qty || 0)
-            });
-          }
-        }
-
-        for (const oldProd of oldInvoiceItems) {
-          const prodRecipe = allRecipes.filter(r => (r.product_name || r.name) === oldProd.name);
-          for (const item of prodRecipe) {
-            const matId = item.raw_material_id || item.material_id;
-            const matInfo = materials.find(m => m.id === matId);
-            if (matInfo) {
-              const qtyPerUnit = Number(item.quantity_needed || item.quantity || 0);
-              const totalToRestore = qtyPerUnit * Number(oldProd.qty || 0);
-              const currentStock = Number(matInfo.stock || matInfo.quantity || 0);
-              
-              await pb.collection('khamat_moashe').update(matId, {
-                stock: currentStock + totalToRestore
-              });
-            }
-          }
+          await updateFinishedProductStock(oldProd.name, Number(oldProd.qty || 0));
         }
 
         if (oldInvoiceData?.payment_type === 'credit' && oldInvoiceData?.customer_type === 'registered') {
-          const oldCustId = customers.find(c => c.name === oldInvoiceData.customer_name)?.id;
+          const oldCustId = customers.find(c => normalizeCustomerName(c.name) === normalizeCustomerName(oldInvoiceData.customer_name))?.id;
           if (oldCustId) {
-            const custRecord = await pb.collection('clientsmoashe').getOne(oldCustId);
+            const custRecord = await pb.collection('clientsmoashe').getOne(oldCustId).catch(() => null);
+            if (!custRecord) throw new Error('تعذر قراءة رصيد العميل القديم');
             const currentDebt = Number(custRecord.balance || custRecord.debt || custRecord.total_debt || 0);
             const oldAmount = Number(oldInvoiceData.total_amount || 0);
             await pb.collection('clientsmoashe').update(oldCustId, {
@@ -272,13 +264,7 @@ export default function SalesInvoicesPage() {
           await updateMaterialStock(prod.materialId, -Number(prod.qty || 0));
           continue;
         }
-        const matchedStockProd = productsStock.find(p => (p.product_name || p.name) === prod.name);
-        if (matchedStockProd) {
-          const currentStock = Number(matchedStockProd.stock || 0);
-          await pb.collection('products_stock').update(matchedStockProd.id, {
-            stock: currentStock - Number(prod.qty || 0)
-          });
-        }
+        await updateFinishedProductStock(prod.name, -Number(prod.qty || 0));
       }
 
       const customerName = customerType === 'walk-in' 
@@ -357,7 +343,7 @@ export default function SalesInvoicesPage() {
       }
 
       if (paymentType === 'credit' && customerType === 'registered' && selectedCustomer) {
-        const custRecord = customers.find(c => c.id === selectedCustomer);
+        const custRecord = await pb.collection('clientsmoashe').getOne(selectedCustomer).catch(() => null);
         if (custRecord) {
           const currentDebt = Number(custRecord.balance || custRecord.debt || custRecord.total_debt || 0);
           await pb.collection('clientsmoashe').update(selectedCustomer, {
@@ -412,43 +398,25 @@ export default function SalesInvoicesPage() {
   const deleteInvoiceMutation = useMutation({
     mutationFn: async (invoice) => {
       const itemsList = Array.isArray(invoice.items) ? invoice.items : [];
+      const returnedQuantities = getReturnedQuantities(invoice);
+      const itemsToRestore = itemsList.map((item) => ({
+        ...item,
+        qty: Math.max(0, Number(item.qty || 0) - Number(returnedQuantities[getReturnItemKey(item)] || 0)),
+      })).filter(item => item.qty > 0);
       
-      for (const prod of itemsList) {
+      for (const prod of itemsToRestore) {
         if (prod.itemType === 'material' && prod.materialId) {
           await updateMaterialStock(prod.materialId, Number(prod.qty || 0));
           continue;
         }
-        const matchedStockProd = productsStock.find(p => (p.product_name || p.name) === prod.name);
-        if (matchedStockProd) {
-          const currentStock = Number(matchedStockProd.stock || 0);
-          await pb.collection('products_stock').update(matchedStockProd.id, {
-            stock: currentStock + Number(prod.qty || 0)
-          });
-        }
-      }
-
-      for (const prod of itemsList) {
-        if (prod.itemType === 'material') continue;
-        const prodRecipe = allRecipes.filter(r => (r.product_name || r.name) === prod.name);
-        for (const item of prodRecipe) {
-          const matId = item.raw_material_id || item.material_id;
-          const matInfo = materials.find(m => m.id === matId);
-          if (matInfo) {
-            const qtyPerUnit = Number(item.quantity_needed || item.quantity || 0);
-            const totalToRestore = qtyPerUnit * Number(prod.qty || 0);
-            const currentStock = Number(matInfo.stock || matInfo.quantity || 0);
-            
-            await pb.collection('khamat_moashe').update(matId, {
-              stock: currentStock + totalToRestore
-            });
-          }
-        }
+        await updateFinishedProductStock(prod.name, Number(prod.qty || 0));
       }
 
       if (invoice.payment_type === 'credit' && invoice.customer_type === 'registered') {
-        const matchedCust = customers.find(c => c.name === invoice.customer_name);
+        const matchedCust = customers.find(c => normalizeCustomerName(c.name) === normalizeCustomerName(invoice.customer_name));
         if (matchedCust) {
-          const currentDebt = Number(matchedCust.balance || matchedCust.debt || matchedCust.total_debt || 0);
+          const freshCustomer = await pb.collection('clientsmoashe').getOne(matchedCust.id).catch(() => null);
+          const currentDebt = Number(freshCustomer?.balance || freshCustomer?.debt || freshCustomer?.total_debt || 0);
           const invAmount = Number(invoice.total_amount || 0);
           await pb.collection('clientsmoashe').update(matchedCust.id, {
             balance: Math.max(0, currentDebt - invAmount)
@@ -468,11 +436,11 @@ export default function SalesInvoicesPage() {
           customer_name: invoice.customer_name,
           customer_type: invoice.customer_type,
           payment_type: invoice.payment_type || 'cash',
-          items: invoice.items || [],
+          items: itemsToRestore,
           sub_total: invoice.sub_total || 0,
           discount: invDiscount,
           total_amount: invoice.total_amount || 0,
-          message: `تم حذف الفاتورة الخاصة بالعميل: ${invoice.customer_name} بقيمة: ${invoice.total_amount} ج.م وتم استرجاع المنتجات والخامات وتعديل المديونية.`
+          message: `تم حذف الفاتورة الخاصة بالعميل: ${invoice.customer_name} بقيمة: ${invoice.total_amount} ج.م وتم استرجاع الكميات المتبقية للمخزن وتعديل المديونية.`
         })
       }).catch(() => {});
 
@@ -547,14 +515,7 @@ export default function SalesInvoicesPage() {
           continue;
         }
 
-        const matchedStockProduct = productsStock.find((product) => (
-          (product.product_name || product.name) === item.name
-        ));
-        if (matchedStockProduct) {
-          await pb.collection('products_stock').update(matchedStockProduct.id, {
-            stock: Number(matchedStockProduct.stock || 0) + item.qty,
-          });
-        }
+        await updateFinishedProductStock(item.name, item.qty);
       }
 
       const originalSubtotal = Number(invoice.sub_total || 0) || originalItems.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.qty || 0), 0);
