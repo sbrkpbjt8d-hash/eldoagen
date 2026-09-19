@@ -10,7 +10,12 @@ export default function ProductionStockPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [adjustmentModal, setAdjustmentModal] = useState({ isOpen: false, product: null });
   const [adjustmentQuantity, setAdjustmentQuantity] = useState('');
+  const [editStockModal, setEditStockModal] = useState({ isOpen: false, product: null });
+  const [editStockQuantity, setEditStockQuantity] = useState('');
+  const [deleteConfirmModal, setDeleteConfirmModal] = useState({ isOpen: false, title: '', message: '', onConfirm: null });
   const [historyModal, setHistoryModal] = useState({ isOpen: false, product: null });
+  const [historyEditModal, setHistoryEditModal] = useState({ isOpen: false, item: null, product: null });
+  const [historyEditQuantity, setHistoryEditQuantity] = useState('');
   const [historyStartDate, setHistoryStartDate] = useState('');
   const [historyEndDate, setHistoryEndDate] = useState('');
 
@@ -126,6 +131,22 @@ export default function ProductionStockPage() {
             quantity: Number(details.quantity || 0),
             actor: log.actor_name || 'غير معروف',
             notes: details.message || 'تسوية كمية المخزن',
+            editable: true,
+            sourceType: 'stock-adjustment',
+            sourceId: log.id,
+          }];
+        }
+        if (log.action_type === 'تعديل كمية منتج') {
+          if (normalizeName(details.product_name) !== productName) return [];
+          const quantity = Number(details.quantity || 0);
+          return [{
+            id: log.id,
+            date: log.created,
+            type: quantity >= 0 ? 'تعديل إضافة' : 'تعديل سحب',
+            title: 'تعديل الكمية الحالية',
+            quantity,
+            actor: log.actor_name || 'غير معروف',
+            notes: details.message || 'تعديل مباشر لكمية المنتج',
           }];
         }
         if (log.action_type === 'مرتجع' || log.action_type === 'حذف') {
@@ -167,13 +188,12 @@ export default function ProductionStockPage() {
       }),
     ].filter(item => item.quantity !== 0).sort((first, second) => new Date(first.date || 0) - new Date(second.date || 0));
 
-    const currentStock = Number(product.stock || 0);
-    let runningStock = currentStock;
-    const historyWithBalance = [...history].reverse().map((item) => {
+    let runningStock = 0;
+    const historyWithBalance = history.map((item) => {
+      runningStock += item.quantity;
       const balance = runningStock;
-      runningStock -= item.quantity;
       return { ...item, balance };
-    }).reverse();
+    });
 
     return historyWithBalance.reverse().filter(item => {
       const itemDate = String(item.date || '').slice(0, 10);
@@ -218,6 +238,118 @@ export default function ProductionStockPage() {
       toast.success('تم تنفيذ تسوية مخزن المنتجات بنجاح!');
     },
     onError: (error) => toast.error(error.message || 'فشل تنفيذ التسوية'),
+  });
+
+  const editStockMutation = useMutation({
+    mutationFn: async () => {
+      if (!isAdmin) throw new Error('تعديل كمية المنتج متاح للأدمن فقط');
+      const product = editStockModal.product;
+      const nextStock = Number(editStockQuantity);
+      if (!product || !Number.isFinite(nextStock) || nextStock < 0) {
+        throw new Error('أدخل كمية صحيحة لا تقل عن صفر');
+      }
+
+      const previousStock = Number(product.stock || 0);
+      const updatedProduct = await pb.collection('products_stock').update(product.id, {
+        stock: nextStock,
+        total_cost: product.unit_cost * nextStock,
+        actor_name: pb.authStore.model?.name || pb.authStore.model?.email || 'مستخدم',
+      });
+      await pb.collection('invoices_logs').create({
+        action_type: 'تعديل كمية منتج',
+        actor_name: pb.authStore.model?.name || pb.authStore.model?.email || 'مستخدم',
+        invoice_number: `PRODUCT-STOCK-EDIT-${product.id}`,
+        details: JSON.stringify({
+          product_name: product.product_name,
+          quantity: nextStock - previousStock,
+          old_stock: previousStock,
+          new_stock: nextStock,
+          message: `تم تعديل كمية المنتج من ${previousStock} إلى ${nextStock}`,
+        }),
+      });
+      return updatedProduct;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['products_stock'] });
+      setEditStockModal({ isOpen: false, product: null });
+      setEditStockQuantity('');
+      toast.success('تم تعديل كمية المنتج الحالية بنجاح!');
+    },
+    onError: (error) => toast.error(error.message || 'فشل تعديل كمية المنتج'),
+  });
+
+  const deleteProductMutation = useMutation({
+    mutationFn: async (product) => {
+      if (!isAdmin) throw new Error('حذف المنتج متاح للأدمن فقط');
+      const deleted = await pb.collection('products_stock').delete(product.id);
+      queryClient.setQueryData(['products_stock'], (records = []) => records.filter((record) => record.id !== product.id));
+      return deleted;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['products_stock'] });
+      setHistoryModal({ isOpen: false, product: null });
+      toast.success('تم حذف المنتج من مخزن المنتجات!');
+    },
+    onError: (error) => toast.error(error?.data?.message || error.message || 'فشل حذف المنتج'),
+  });
+
+  const editHistoryMutation = useMutation({
+    mutationFn: async () => {
+      if (!isAdmin) throw new Error('تعديل سجل المخزن متاح للأدمن فقط');
+      const item = historyEditModal.item;
+      const product = historyEditModal.product;
+      const nextQuantity = Number(historyEditQuantity);
+      if (!item || !product || !Number.isFinite(nextQuantity) || nextQuantity === 0) {
+        throw new Error('أدخل كمية صحيحة غير صفرية');
+      }
+
+      const log = await pb.collection('invoices_logs').getOne(item.sourceId);
+      const details = JSON.parse(log.details || '{}');
+      const delta = nextQuantity - Number(details.quantity || 0);
+      const nextStock = Number(product.stock || 0) + delta;
+      if (nextStock < 0) throw new Error('لا يمكن أن تصبح كمية المخزن أقل من صفر');
+
+      await pb.collection('products_stock').update(product.id, {
+        stock: nextStock,
+        total_cost: product.unit_cost * nextStock,
+      });
+      await pb.collection('invoices_logs').update(item.sourceId, {
+        details: JSON.stringify({
+          ...details,
+          quantity: nextQuantity,
+          new_stock: nextStock,
+          message: `تم تعديل تسوية مخزن المنتج إلى كمية ${nextQuantity > 0 ? '+' : ''}${nextQuantity}`,
+        }),
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['products_stock'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices_logs_products_stock_history'] });
+      setHistoryEditModal({ isOpen: false, item: null, product: null });
+      setHistoryEditQuantity('');
+      toast.success('تم تعديل كمية حركة المخزن بنجاح!');
+    },
+    onError: (error) => toast.error(error.message || 'فشل تعديل حركة المخزن'),
+  });
+
+  const deleteHistoryMutation = useMutation({
+    mutationFn: async (item) => {
+      if (!isAdmin) throw new Error('حذف سجل المخزن متاح للأدمن فقط');
+      const product = historyModal.product;
+      const nextStock = Number(product.stock || 0) - Number(item.quantity || 0);
+      if (nextStock < 0) throw new Error('لا يمكن حذف الحركة لأن ذلك سيجعل المخزن بالسالب');
+      await pb.collection('products_stock').update(product.id, {
+        stock: nextStock,
+        total_cost: product.unit_cost * nextStock,
+      });
+      await pb.collection('invoices_logs').delete(item.sourceId);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['products_stock'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices_logs_products_stock_history'] });
+      toast.success('تم حذف حركة المخزن وتحديث الكمية!');
+    },
+    onError: (error) => toast.error(error.message || 'فشل حذف حركة المخزن'),
   });
 
   function handleAdjustmentSubmit(event) {
@@ -270,6 +402,38 @@ export default function ProductionStockPage() {
               <button type="submit" disabled={adjustmentMutation.isPending} className="flex-1 bg-amber-600 hover:bg-amber-700 text-white p-3 rounded-xl text-sm font-bold disabled:opacity-50">
                 {adjustmentMutation.isPending ? 'جاري التنفيذ...' : 'حفظ التسوية'}
               </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {editStockModal.isOpen && editStockModal.product && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              editStockMutation.mutate();
+            }}
+            className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4"
+          >
+            <div className="flex justify-between items-center border-b pb-3">
+              <h2 className="text-lg font-black text-gray-800">تعديل الكمية الحالية</h2>
+              <button type="button" onClick={() => setEditStockModal({ isOpen: false, product: null })} className="text-gray-400 hover:text-gray-700 text-xl">✕</button>
+            </div>
+            <p className="text-sm font-bold text-gray-700">{editStockModal.product.product_name}</p>
+            <p className="text-xs text-gray-500">الكمية الحالية: {editStockModal.product.stock.toLocaleString()} طن</p>
+            <input
+              type="number"
+              min="0"
+              step="any"
+              value={editStockQuantity}
+              onChange={(event) => setEditStockQuantity(event.target.value)}
+              className="w-full border border-gray-200 p-3 rounded-xl text-sm bg-white text-black"
+              required
+            />
+            <div className="flex gap-3">
+              <button type="button" onClick={() => setEditStockModal({ isOpen: false, product: null })} className="flex-1 bg-gray-100 text-gray-700 p-3 rounded-xl text-sm font-bold">إلغاء</button>
+              <button type="submit" disabled={editStockMutation.isPending} className="flex-1 bg-amber-600 hover:bg-amber-700 text-white p-3 rounded-xl text-sm font-bold">حفظ الكمية</button>
             </div>
           </form>
         </div>
@@ -346,39 +510,57 @@ export default function ProductionStockPage() {
                     <th className="p-3 font-bold">الكمية المتوفرة بالمخزن</th>
                     <th className="p-3 font-bold">تكلفة الوحدة</th>
                     <th className="p-3 font-bold">إجمالي التكلفة</th>
+                    <th className="p-3 font-bold">إجراءات</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y text-sm">
                   {filteredOrders.map((item) => (
                     <tr key={item.id} className="hover:bg-gray-50/50 transition">
                       <td className="p-3 font-black text-gray-900">{item.product_name}</td>
-                      <td className="p-3 font-bold text-emerald-700">
-                        <div className="flex items-center gap-3">
-                          <span>{item.stock.toLocaleString()}</span>
-                          {isAdmin && (
-                            <button
-                              type="button"
-                              onClick={() => setAdjustmentModal({ isOpen: true, product: item })}
-                              className="text-amber-700 hover:text-amber-900 text-xs font-bold"
-                            >
-                              تسوية
-                            </button>
-                          )}
-                          <button
+                      <td className="p-3 font-bold text-emerald-700">{item.stock.toLocaleString()}</td>
+                      <td className="p-3 font-bold text-amber-700">{item.unit_cost.toLocaleString('ar-EG', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ج.م</td>
+                      <td className="p-3 font-bold text-gray-700">{item.total_cost.toLocaleString()} ج.م</td>
+                      <td className="p-3">
+                        <div className="flex flex-wrap items-center gap-3 text-xs font-bold">
+                          {/* <button
                             type="button"
                             onClick={() => {
                               setHistoryStartDate('');
                               setHistoryEndDate('');
                               setHistoryModal({ isOpen: true, product: item });
                             }}
-                            className="text-blue-700 hover:text-blue-900 text-xs font-bold"
+                            className="bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-100 px-3 py-1 rounded-xl transition"
                           >
                             عرض السجل
-                          </button>
+                          </button> */}
+                          {isAdmin && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditStockModal({ isOpen: true, product: item });
+                                  setEditStockQuantity(String(item.stock));
+                                }}
+                                className="bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-100 px-3 py-1 rounded-xl transition"
+                              >
+                                تعديل الكمية
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setDeleteConfirmModal({
+                                  isOpen: true,
+                                  title: 'حذف المنتج من المخزن',
+                                  message: `هل تريد حذف المنتج ${item.product_name} بالكامل من المخزن؟`,
+                                  onConfirm: () => deleteProductMutation.mutate(item),
+                                })}
+                                className="bg-red-50 text-red-600 hover:bg-red-100 border border-red-100 px-3 py-1 rounded-xl transition"
+                              >
+                                حذف
+                              </button>
+                            </>
+                          )}
                         </div>
                       </td>
-                      <td className="p-3 font-bold text-amber-700">{item.unit_cost.toLocaleString('ar-EG', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ج.م</td>
-                      <td className="p-3 font-bold text-gray-700">{item.total_cost.toLocaleString()} ج.م</td>
                     </tr>
                   ))}
                 </tbody>
@@ -428,7 +610,37 @@ export default function ProductionStockPage() {
                       <td className="p-3 font-bold text-blue-700">{item.title}<div className="text-[10px] text-gray-500 mt-1">{item.notes}</div></td>
                       <td className={`p-3 font-black ${item.quantity >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>{item.quantity >= 0 ? '+' : '-'} {Math.abs(item.quantity).toLocaleString()} طن</td>
                       <td className="p-3 font-black text-indigo-700">{item.balance.toLocaleString()} طن</td>
-                      <td className="p-3 font-bold text-gray-700">{item.actor}</td>
+                      <td className="p-3 font-bold text-gray-700">
+                        <div>{item.actor}</div>
+                        {isAdmin && item.editable && (
+                          <div className="flex gap-2 mt-2 whitespace-nowrap">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setHistoryEditModal({ isOpen: true, item, product: historyModal.product });
+                                setHistoryEditQuantity(String(item.quantity));
+                              }}
+                              className="text-amber-700 hover:text-amber-900 font-bold"
+                            >
+                              تعديل الكمية
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDeleteConfirmModal({
+                                  isOpen: true,
+                                  title: 'حذف حركة تسوية المخزن',
+                                  message: 'هل تريد حذف هذه الحركة وتحديث كمية المنتج؟',
+                                  onConfirm: () => deleteHistoryMutation.mutate(item),
+                                });
+                              }}
+                              className="text-red-700 hover:text-red-900 font-bold"
+                            >
+                              حذف
+                            </button>
+                          </div>
+                        )}
+                      </td>
                     </tr>
                   )) : <tr><td colSpan="6" className="p-8 text-center text-gray-400">لا توجد حركات مسجلة لهذا المنتج.</td></tr>}
                 </tbody>
@@ -436,6 +648,56 @@ export default function ProductionStockPage() {
             </div>
             <div className="flex justify-end">
               <button type="button" onClick={() => setHistoryModal({ isOpen: false, product: null })} className="bg-gray-900 text-white px-5 py-2 rounded-xl text-xs font-bold">إغلاق</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {historyEditModal.isOpen && historyEditModal.item && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              editHistoryMutation.mutate();
+            }}
+            className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl space-y-4"
+          >
+            <h2 className="text-lg font-black text-gray-800">تعديل كمية حركة المخزن</h2>
+            <p className="text-xs text-gray-500">{historyEditModal.product?.product_name}</p>
+            <input
+              type="number"
+              step="any"
+              value={historyEditQuantity}
+              onChange={(event) => setHistoryEditQuantity(event.target.value)}
+              className="w-full border border-gray-200 p-3 rounded-xl text-sm text-black"
+              required
+            />
+            <div className="flex gap-3">
+              <button type="button" onClick={() => setHistoryEditModal({ isOpen: false, item: null, product: null })} className="flex-1 bg-gray-100 text-gray-700 p-3 rounded-xl text-sm font-bold">إلغاء</button>
+              <button type="submit" disabled={editHistoryMutation.isPending} className="flex-1 bg-amber-600 text-white p-3 rounded-xl text-sm font-bold">حفظ التعديل</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {deleteConfirmModal.isOpen && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl space-y-4 text-center">
+            <h2 className="text-lg font-black text-gray-800">{deleteConfirmModal.title}</h2>
+            <p className="text-sm text-gray-600">{deleteConfirmModal.message}</p>
+            <div className="flex gap-3">
+              <button type="button" onClick={() => setDeleteConfirmModal({ isOpen: false, title: '', message: '', onConfirm: null })} className="flex-1 bg-gray-100 text-gray-700 p-3 rounded-xl text-sm font-bold">إلغاء</button>
+              <button
+                type="button"
+                onClick={() => {
+                  const confirmAction = deleteConfirmModal.onConfirm;
+                  setDeleteConfirmModal({ isOpen: false, title: '', message: '', onConfirm: null });
+                  confirmAction?.();
+                }}
+                className="flex-1 bg-red-600 hover:bg-red-700 text-white p-3 rounded-xl text-sm font-bold"
+              >
+                حذف
+              </button>
             </div>
           </div>
         </div>

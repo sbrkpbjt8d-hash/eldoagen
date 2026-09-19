@@ -328,6 +328,7 @@ export default function ExpensesPage() {
     if (movementType === 'salary' || (sourceType === 'treasury' && movementType === 'other_advance')) return sum - Number(transaction.amount || 0);
     if (sourceType === 'treasury' && movementType === 'other_advance_return') return sum + Number(transaction.amount || 0);
     if (sourceType === 'treasury' && movementType === 'bank_deposit') return sum - Number(transaction.amount || 0);
+    if (sourceType === 'treasury' && movementType === 'cash_deposit') return sum + Number(transaction.amount || 0);
     return sum;
   }, 0);
 

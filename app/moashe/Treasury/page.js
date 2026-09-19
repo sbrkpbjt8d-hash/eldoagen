@@ -152,6 +152,7 @@ export default function TreasuryPage() {
       if (treasury) {
         return await pb.collection('treasury').update(treasury.id, {
           opening_balance: val,
+          balance: val,
         });
       } else {
         return await pb.collection('treasury').create({
