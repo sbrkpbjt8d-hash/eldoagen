@@ -357,7 +357,7 @@ export default function SalesInvoicesPage() {
         }
       }
 
-      if (!editingInvoiceId && paymentType === 'cash') {
+      if (!editingInvoiceId && paymentType === 'cash' && netTotal > 0) {
         const treasuryRecords = await pb.collection('treasury').getFullList().catch(() => []);
         const treasury = treasuryRecords[0];
         const newBalance = Number(treasury?.balance || 0) + netTotal;
@@ -1267,6 +1267,9 @@ const deleteInvoiceMutation = useMutation({
               <input
                 type="number"
                 min="0"
+                step="any"
+                inputMode="decimal"
+              
                 value={discountAmount}
                 onChange={(e) => setDiscountAmount(e.target.value)}
                 placeholder="0"
