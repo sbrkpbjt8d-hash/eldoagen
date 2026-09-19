@@ -85,7 +85,7 @@ export default function OtherAccountsPage() {
         amount: numericAmount,
         title: `صرف عهدة: ${recipientName.trim()}`,
         notes: notes.trim() || 'صرف عهدة',
-        date,
+        date: new Date().toISOString(),
         actor_name: actorName,
         advance_id: advance.id,
       });
@@ -129,7 +129,7 @@ export default function OtherAccountsPage() {
         amount: numericReturn,
         title: `رد عهدة: ${advance.recipient_name || 'غير معروف'}`,
         notes: nextRemaining === 0 ? 'رد كامل للعهدة' : `رد جزئي، المتبقي ${nextRemaining}`,
-        date: today,
+        date: new Date().toISOString(),
         actor_name: actorName,
         advance_id: advance.id,
       });
