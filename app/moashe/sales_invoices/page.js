@@ -7,6 +7,7 @@ const currentUserName = localStorage.getItem('userName') || 'مسؤول النظ
 
 export default function SalesInvoicesPage() {
   const queryClient = useQueryClient();
+  const isAdmin = pb.authStore.model?.collectionName === '_superusers' || pb.authStore.model?.role === 'admin' || pb.authStore.model?.email === 'mohamedfrf@icloud.com';
   
   const [customerType, setCustomerType] = useState('walk-in');
   const [selectedCustomer, setSelectedCustomer] = useState('');
@@ -196,6 +197,15 @@ export default function SalesInvoicesPage() {
     (p.itemKey || p.name) === productName ? { ...p, qty: isNaN(val) || val < 0 ? 0 : val } : p
   ));
 }
+
+  function handlePriceChange(itemKey, price) {
+    const val = parseFloat(price);
+    setSelectedProducts(selectedProducts.map((item) => (
+      (item.itemKey || item.name) === itemKey
+        ? { ...item, price: isNaN(val) || val < 0 ? 0 : val }
+        : item
+    )));
+  }
 
   function handleItemNoteChange(itemKey, note) {
     setSelectedProducts(selectedProducts.map((item) => (
@@ -1223,7 +1233,20 @@ const deleteInvoiceMutation = useMutation({
                     return (
                     <tr key={itemKey || index}>
                       <td className="p-3 font-bold text-gray-800">{p.itemType === 'material' ? 'خامة: ' : 'منتج: '}{p.name}</td>
-                      <td className="p-3 text-gray-600">{p.price} ج.م</td>
+                      <td className="p-3 text-gray-600">
+                        {isAdmin ? (
+                          <input
+                            type="number"
+                            step="any"
+                            min="0"
+                            value={p.price}
+                            onChange={(e) => handlePriceChange(itemKey, e.target.value)}
+                            className="w-24 bg-gray-50 border border-gray-200 rounded-xl px-2 py-1 text-xs font-bold text-center focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                          />
+                        ) : (
+                          `${p.price} ج.م`
+                        )}
+                      </td>
                       <td className="p-3">
                         <input
                           type="number"
