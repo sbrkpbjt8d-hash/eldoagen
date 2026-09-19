@@ -654,45 +654,43 @@ export default function TreasuryPage() {
     return Number.isNaN(transactionTime) ? (Number.isNaN(createdTime) ? 0 : createdTime) : transactionTime;
   };
 
-  // دمج وترتيب الحركات (تصاعدياً أولاً لحساب الرصيد التراكمي بدقة)
-  const sortedAscTransactions = [
-    ...formattedExpenses,
-    ...formattedClientPayments,
-    ...formattedSupplierPayments,
-    ...formattedSalesInvoices,
-    ...formattedSalesReturns,
-    ...formattedAdvances,
-    ...formattedSalaries,
-    ...formattedTreasurySalaries,
-    ...formattedTreasuryTransactionSalaries,
-    ...formattedOtherAdvanceTransactions,
-    ...formattedBankDeposits,
-    ...formattedBankTransfers,
-    ...formattedCashDeposits,
-  ].sort((a, b) => getTransactionTimestamp(a) - getTransactionTimestamp(b));
 
-  // حساب الرصيد التراكمي
-  const transactionsWithTreasuryBalance = sortedAscTransactions.reduce((transactions, tx) => {
-    const previousBalance = transactions.length
-      ? transactions[transactions.length - 1].treasuryBalance
-      : openingBalance;
-    return [
-      ...transactions,
-      {
-        ...tx,
-        treasuryBalance: previousBalance + tx.signedAmount,
-      },
-    ];
-  }, []);
 
-  const getDisplayTimestamp = (transaction) => {
-    const createdTime = Date.parse(transaction.created || '');
-    return Number.isNaN(createdTime) ? getTransactionTimestamp(transaction) : createdTime;
+
+// 1. ترتيب الحركات زمنياً من الأقدم للأحدث لبناء الرصيد التراكمي بدقة
+const sortedAscTransactions = [
+  ...formattedExpenses,
+  ...formattedClientPayments,
+  ...formattedSupplierPayments,
+  ...formattedSalesInvoices,
+  ...formattedSalesReturns,
+  ...formattedAdvances,
+  ...formattedSalaries,
+  ...formattedTreasurySalaries,
+  ...formattedTreasuryTransactionSalaries,
+  ...formattedOtherAdvanceTransactions,
+  ...formattedBankDeposits,
+  ...formattedBankTransfers,
+  ...formattedCashDeposits,
+].sort((a, b) => getTransactionTimestamp(a) - getTransactionTimestamp(b));
+
+// 2. حساب الرصيد التراكمي خطوة بخطوة بالترتيب الصحيح
+let runningBalance = openingBalance;
+const transactionsWithTreasuryBalance = sortedAscTransactions.map((tx) => {
+  runningBalance += tx.signedAmount;
+  return {
+    ...tx,
+    treasuryBalance: runningBalance,
   };
+});
 
-  // عرض آخر حركة تم تسجيلها أولاً، حتى لو كان تاريخ الحركة نفسه قديماً أو مستقبلياً.
-  const allTransactions = [...transactionsWithTreasuryBalance]
-    .sort((a, b) => getDisplayTimestamp(b) - getDisplayTimestamp(a));
+// 3. عكس الترتيب لعرض الأحدث في الأعلى مع الاحتفاظ بالأرصدة الصحيحة لكل حركة
+const allTransactions = [...transactionsWithTreasuryBalance].reverse();
+    
+
+
+
+
 
   const filteredTreasuryTransactions = allTransactions.filter(transaction => {
     if (movementTypeFilter !== 'all' && transaction.movementType !== movementTypeFilter) return false;
