@@ -649,9 +649,7 @@ export default function TreasuryPage() {
     }));
 
   const getTransactionDate = (transaction) => {
-    const dateValue = String(transaction.date || '');
-    const hasTime = /T\d{2}:\d{2}/.test(dateValue) || /\d{2}:\d{2}/.test(dateValue);
-    return hasTime || !transaction.created ? transaction.date : transaction.created;
+    return transaction.created || transaction.date;
   };
 
   const getTransactionTimestamp = (transaction) => {
