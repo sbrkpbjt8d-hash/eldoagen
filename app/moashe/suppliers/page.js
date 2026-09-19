@@ -407,7 +407,7 @@ export default function SuppliersPage() {
             <thead className="bg-gray-100 text-gray-600">
               <tr>
                 <th className="p-3">المورد</th>
-                <th className="p-3">الهاتف</th>
+                {/* <th className="p-3">الهاتف</th> */}
                 <th className="p-3">العنوان</th>
                 <th className="p-3">آخر فاتورة شراء</th>
                 <th className="p-3">آخر ميعاد سداد</th>
@@ -423,7 +423,7 @@ export default function SuppliersPage() {
                 return (
                   <tr key={supplier.id} className="hover:bg-gray-50">
                     <td className="p-3 font-bold">{supplier.name}</td>
-                    <td className="p-3">{supplier.phone || '-'}</td>
+                    {/* <td className="p-3">{supplier.phone || '-'}</td> */}
                     <td className="p-3">{supplier.address || '-'}</td>
                     <td className="p-3">
                       {lastPurchase ? (

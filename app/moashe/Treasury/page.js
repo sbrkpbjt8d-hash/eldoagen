@@ -329,7 +329,7 @@ export default function TreasuryPage() {
     .map(exp => ({
       id: exp.id,
       collection: 'expenses',
-      date: exp.created || exp.date,
+      date: exp.date || exp.created,
       created: exp.created,
       movementType: 'expense',
       title: exp.expand?.category_id?.name || 'مصروف خزن عام',
@@ -648,10 +648,16 @@ export default function TreasuryPage() {
       actor: transaction.actor_name || 'غير معروف',
     }));
 
+  const getTransactionDate = (transaction) => {
+    const dateValue = String(transaction.date || '');
+    const hasTime = /T\d{2}:\d{2}/.test(dateValue) || /\d{2}:\d{2}/.test(dateValue);
+    return hasTime || !transaction.created ? transaction.date : transaction.created;
+  };
+
   const getTransactionTimestamp = (transaction) => {
-    const transactionTime = Date.parse(transaction.date || '');
+    const movementTime = Date.parse(getTransactionDate(transaction) || '');
     const createdTime = Date.parse(transaction.created || '');
-    return Number.isNaN(transactionTime) ? (Number.isNaN(createdTime) ? 0 : createdTime) : transactionTime;
+    return Number.isNaN(movementTime) ? (Number.isNaN(createdTime) ? 0 : createdTime) : movementTime;
   };
 
 
@@ -672,17 +678,29 @@ const sortedAscTransactions = [
   ...formattedBankDeposits,
   ...formattedBankTransfers,
   ...formattedCashDeposits,
-].sort((a, b) => getTransactionTimestamp(a) - getTransactionTimestamp(b));
+].map((transaction) => ({
+  ...transaction,
+  date: getTransactionDate(transaction),
+})).sort((a, b) => {
+  const timestampDifference = getTransactionTimestamp(a) - getTransactionTimestamp(b);
+  if (timestampDifference !== 0) return timestampDifference;
+  return String(a.id || '').localeCompare(String(b.id || ''));
+});
 
 // 2. حساب الرصيد التراكمي خطوة بخطوة بالترتيب الصحيح
-let runningBalance = openingBalance;
-const transactionsWithTreasuryBalance = sortedAscTransactions.map((tx) => {
-  runningBalance += tx.signedAmount;
-  return {
-    ...tx,
-    treasuryBalance: runningBalance,
-  };
-});
+const transactionsWithTreasuryBalance = sortedAscTransactions.reduce((transactions, tx) => {
+  const previousBalance = transactions.length > 0
+    ? transactions[transactions.length - 1].treasuryBalance
+    : openingBalance;
+  const treasuryBalance = previousBalance + tx.signedAmount;
+  return [
+    ...transactions,
+    {
+      ...tx,
+      treasuryBalance,
+    },
+  ];
+}, []);
 
 // 3. عكس الترتيب لعرض الأحدث في الأعلى مع الاحتفاظ بالأرصدة الصحيحة لكل حركة
 const allTransactions = [...transactionsWithTreasuryBalance].reverse();

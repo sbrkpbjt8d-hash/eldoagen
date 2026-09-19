@@ -783,12 +783,12 @@ const combinedStatement = [...statementWithBalance].reverse();
             <thead>
               <tr className="border-b text-xs text-gray-500 bg-gray-50">
                 <th className="p-3">اسم العميل</th>
-                <th className="p-3">الهاتف</th>
+                {/* <th className="p-3">الهاتف</th> */}
                 <th className="p-3">العنوان</th>
                 <th className="p-3">المديونية</th>
                 <th className="p-3">آخر تحصيل</th>
                 <th className="p-3">آخر فاتورة</th>
-                <th className="p-3">ملاحظات</th>
+                {/* <th className="p-3">ملاحظات</th> */}
                 <th className="p-3">بواسطة</th>
                 <th className="p-3 text-center">الإجراءات</th>
               </tr>
@@ -810,7 +810,7 @@ const combinedStatement = [...statementWithBalance].reverse();
                         </span>
                       )}
                     </td>
-                    <td className="p-3 font-bold text-gray-700">{client.phone || '-'}</td>
+                    {/* <td className="p-3 font-bold text-gray-700">{client.phone || '-'}</td> */}
                     <td className="p-3 text-gray-600">{client.address || '-'}</td>
                     <td className="p-3 font-black text-red-600">{Number(client.balance || 0).toLocaleString()} ج.م</td>
                     
@@ -828,7 +828,7 @@ const combinedStatement = [...statementWithBalance].reverse();
                       </span>
                     </td>
 
-                    <td className="p-3 text-xs text-gray-500">{client.notes || '-'}</td>
+                    {/* <td className="p-3 text-xs text-gray-500">{client.notes || '-'}</td> */}
                     <td className="p-3 text-xs font-bold text-gray-700">{client.actor_name || 'غير معروف'}</td>
                     <td className="p-3 text-center">
                       <div className="flex justify-center gap-1.5 flex-wrap">
