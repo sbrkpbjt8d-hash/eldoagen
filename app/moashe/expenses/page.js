@@ -3,7 +3,22 @@ import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
 
+const EGYPT_TIME_ZONE = 'Africa/Cairo';
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+const getEgyptDate = () => new Intl.DateTimeFormat('en-CA', {
+  timeZone: EGYPT_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+}).format(new Date());
+const formatExpenseDateTime = (expense) => {
+  if (!expense?.created) return expense?.date || '-';
+
+  const createdDate = new Date(expense.created);
+  return Number.isNaN(createdDate.getTime())
+    ? expense.date || '-'
+    : createdDate.toLocaleString('ar-EG', { timeZone: EGYPT_TIME_ZONE });
+};
 import { useReactToPrint } from 'react-to-print';
 
 export default function ExpensesPage() {
@@ -22,7 +37,7 @@ export default function ExpensesPage() {
   const [amount, setAmount] = useState('');
   const [paymentSource, setPaymentSource] = useState('treasury'); // 'treasury' أو id البنك
   const [notes, setNotes] = useState('');
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [date, setDate] = useState(getEgyptDate);
 
   // حالات الفلترة والبحث
   const [filterType, setFilterType] = useState('all'); // 'all', 'operational', 'non_operational'
@@ -699,7 +714,7 @@ export default function ExpensesPage() {
 
                 return (
                   <tr key={exp.id} className="hover:bg-gray-50/50 transition">
-                    <td className="p-3 text-gray-600">{exp.date}</td>
+                    <td className="p-3 text-gray-600">{formatExpenseDateTime(exp)}</td>
                     <td className="p-3 font-bold text-gray-900">{catInfo?.name || 'مصروف محذوف'}</td>
                     <td className="p-3">
                       <span className={`px-2.5 py-1 rounded-xl text-[10px] font-bold ${

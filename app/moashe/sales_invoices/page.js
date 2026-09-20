@@ -5,6 +5,14 @@ import { pb } from '../../lib/pocketbase';
 import { useReactToPrint } from 'react-to-print';
 const currentUserName = localStorage.getItem('userName') || 'مسؤول النظام';
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+const getInvoiceSubtotal = (invoice) => {
+  const storedSubtotal = Number(invoice?.sub_total || 0);
+  if (storedSubtotal !== 0) return roundMoney(storedSubtotal);
+
+  return roundMoney(Array.isArray(invoice?.items)
+    ? invoice.items.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.qty || 0), 0)
+    : 0);
+};
 
 export default function SalesInvoicesPage() {
   const queryClient = useQueryClient();
@@ -1042,12 +1050,12 @@ const deleteInvoiceMutation = useMutation({
             <div className="bg-gray-50 p-4 rounded-2xl space-y-2 text-xs border border-gray-200/60">
               <div className="flex justify-between text-gray-600">
                 <span>إجمالي المنتجات:</span>
-                <span className="font-bold">{roundMoney(viewInvoiceModal.invoice.sub_total || 0).toLocaleString()} ج.م</span>
+                <span className="font-bold">{getInvoiceSubtotal(viewInvoiceModal.invoice).toLocaleString()} ج.م</span>
               </div>
-              {Number(viewInvoiceModal.invoice.discount !== undefined ? viewInvoiceModal.invoice.discount : (viewInvoiceModal.invoice.discount_amount || 0)) > 0 && (
+              {Number(viewInvoiceModal.invoice.discount ?? viewInvoiceModal.invoice.discount_amount ?? 0) > 0 && (
                 <div className="flex justify-between text-red-600">
                   <span>الخصم المطبق:</span>
-                  <span className="font-bold">- {roundMoney(viewInvoiceModal.invoice.discount !== undefined ? viewInvoiceModal.invoice.discount : (viewInvoiceModal.invoice.discount_amount || 0)).toLocaleString()} ج.م</span>
+                  <span className="font-bold">- {roundMoney(viewInvoiceModal.invoice.discount ?? viewInvoiceModal.invoice.discount_amount ?? 0).toLocaleString()} ج.م</span>
                 </div>
               )}
               <div className="flex justify-between pt-2 border-t text-emerald-800 font-black text-sm">

@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
 import { useReactToPrint } from 'react-to-print';
 
+const EGYPT_TIME_ZONE = 'Africa/Cairo';
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 
 export default function TreasuryPage() {
@@ -349,6 +350,7 @@ export default function TreasuryPage() {
       id: exp.id,
       collection: 'expenses',
       date: exp.date || exp.created,
+      displayDate: exp.created || exp.date,
       created: exp.created,
       movementType: 'expense',
       title: exp.expand?.category_id?.name || 'مصروف خزن عام',
@@ -977,7 +979,7 @@ const allTransactions = [...transactionsWithTreasuryBalance].reverse();
             <tbody className="divide-y divide-gray-100">
               {filteredTreasuryTransactions.map((tx) => (
                 <tr key={tx.id} className="hover:bg-gray-50 transition">
-                  <td className="p-3 text-gray-600">{new Date(tx.date).toLocaleString()}</td>
+                  <td className="p-3 text-gray-600">{new Date(tx.displayDate || tx.date).toLocaleString('ar-EG', { timeZone: EGYPT_TIME_ZONE })}</td>
                   <td className="p-3">
                     <span className={`px-2.5 py-1 rounded-xl text-[10px] font-bold ${tx.signedAmount > 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'}`}>
                       {tx.signedAmount > 0 ? 'إيداع' : 'سحب'}

@@ -192,7 +192,8 @@ export default function PurchaseInvoicesPage() {
     setEditingInvoice(invoice);
     setDetailsInvoice(null);
     const selectedSupplier = suppliers.find(supplier => supplier.id === invoice.supplier_id);
-    setForm({ supplierId: invoice.supplier_id || '', items: invoice.items || [], discount: String(invoice.discount || ''), paymentType: 'credit' });
+    const invoiceDiscount = invoice.discount ?? invoice.discount_amount ?? 0;
+    setForm({ supplierId: invoice.supplier_id || '', items: invoice.items || [], discount: String(invoiceDiscount || ''), paymentType: 'credit' });
     setSupplierSearch(selectedSupplier?.name || invoice.supplier_name || '');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -410,7 +411,10 @@ export default function PurchaseInvoicesPage() {
 
             <div className="bg-gray-50 p-4 rounded-2xl space-y-1 text-xs font-bold flex flex-col items-end">
               <div>المجموع الفرعي: {money(detailsInvoice.sub_total)}</div>
-              {Number(detailsInvoice.discount || 0) > 0 && <div className="text-red-600">الخصم: -{money(detailsInvoice.discount)}</div>}
+              {(() => {
+                const invoiceDiscount = detailsInvoice.discount ?? detailsInvoice.discount_amount ?? 0;
+                return Number(invoiceDiscount) > 0 && <div className="text-red-600">الخصم: -{money(invoiceDiscount)}</div>;
+              })()}
               <div className="text-sm font-black text-blue-800 border-t pt-2">الصافي الإجمالي: {money(detailsInvoice.total_amount)}</div>
             </div>
           </div>
