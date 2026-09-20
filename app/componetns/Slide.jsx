@@ -66,11 +66,11 @@ export default function Sidebar() {
 
       {/* سايدبار التنقل */}
       <aside className={`
-        fixed md:sticky top-0 h-screen w-72 shrink-0 flex-col overflow-hidden border-l border-slate-800 bg-slate-950 text-slate-300 shadow-[0_0_40px_rgba(15,23,42,0.8)] z-50 transition-transform duration-300
+        fixed md:sticky top-0 h-screen w-72 shrink-0 flex flex-col overflow-hidden border-l border-slate-800 bg-slate-950 text-slate-300 shadow-[0_0_40px_rgba(15,23,42,0.8)] z-50 transition-transform duration-300
         ${isMobileOpen ? 'translate-x-0' : 'translate-x-full md:translate-x-0'}
       `} dir="rtl">
-        <div className="mb-5 border-b border-slate-800 bg-gradient-to-br from-slate-900 via-slate-900 to-slate-950 p-4">
-          <div className="mt-4 flex items-center justify-between">
+        <div className="shrink-0 mb-2 border-b border-slate-800 bg-gradient-to-br from-slate-900 via-slate-900 to-slate-950 p-4">
+          <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-[11px] font-bold text-emerald-400">
               <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.9)]" />
               النظام يعمل
@@ -85,6 +85,7 @@ export default function Sidebar() {
           </div>
         </div>
 
+        {/* منطقة اللينكات قابلة للنزول والطلوع (Scrollable) */}
         <nav className="flex-1 space-y-3 overflow-y-auto overflow-x-hidden px-3 py-3">
           {isAhmed ? (
             <div className="space-y-1">
@@ -104,7 +105,7 @@ export default function Sidebar() {
               </button>
 
               {openRaw && (
-                <div className="mr-3 mt-2 space-y-1 border-r-2 border-blue-500/70 pr-3">
+                <div className="mr-3 mt-2 space-y-1 border-r-2 border-blue-500/70 pr-3 pb-2">
                   <Link href="/moashe/khamatMoashe" className={navLinkClass('/moashe/khamatMoashe')}>الخامات </Link>
                   <Link href="/moashe/products" className={navLinkClass('/moashe/products')}>المنتجات </Link>
                   <Link href="/moashe/orders" className={navLinkClass('/moashe/orders')}>امر تصنيع</Link>
@@ -126,7 +127,7 @@ export default function Sidebar() {
           )}
         </nav>
 
-        <div className="border-t border-slate-800 bg-slate-950/90 px-3 pb-4 pt-4">
+        <div className="shrink-0 border-t border-slate-800 bg-slate-950/90 px-3 pb-4 pt-4">
           <div className="mb-3 rounded-xl bg-slate-900/80 p-2.5 border border-slate-800/80 flex items-center gap-3">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-600/20 text-blue-400 font-black text-sm border border-blue-500/30">
               {userName.charAt(0).toUpperCase()}
