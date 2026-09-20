@@ -672,9 +672,9 @@ export default function TreasuryPage() {
   };
 
   const getTransactionTimestamp = (transaction) => {
-    const movementTime = Date.parse(getTransactionDate(transaction) || '');
     const createdTime = Date.parse(transaction.created || '');
-    return Number.isNaN(movementTime) ? (Number.isNaN(createdTime) ? 0 : createdTime) : movementTime;
+    const movementTime = Date.parse(getTransactionDate(transaction) || '');
+    return Number.isNaN(createdTime) ? (Number.isNaN(movementTime) ? 0 : movementTime) : createdTime;
   };
 
 
