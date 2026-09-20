@@ -740,18 +740,22 @@ const allTransactions = [...transactionsWithTreasuryBalance].reverse();
     ? transactionsWithTreasuryBalance[transactionsWithTreasuryBalance.length - 1].treasuryBalance 
     : openingBalance;
 
-  const today = new Date();
-  const todayTransactions = allTransactions.filter((transaction) => {
+  const periodTransactions = allTransactions.filter((transaction) => {
     const transactionDate = new Date(transaction.date);
-    return !Number.isNaN(transactionDate.getTime()) &&
-      transactionDate.getFullYear() === today.getFullYear() &&
-      transactionDate.getMonth() === today.getMonth() &&
-      transactionDate.getDate() === today.getDate();
+    if (Number.isNaN(transactionDate.getTime())) return false;
+
+    const transactionDay = [
+      transactionDate.getFullYear(),
+      String(transactionDate.getMonth() + 1).padStart(2, '0'),
+      String(transactionDate.getDate()).padStart(2, '0'),
+    ].join('-');
+
+    return (!startDate || transactionDay >= startDate) && (!endDate || transactionDay <= endDate);
   });
-  const todayDeposits = todayTransactions
+  const periodDeposits = periodTransactions
     .filter((transaction) => transaction.signedAmount > 0)
     .reduce((total, transaction) => total + transaction.signedAmount, 0);
-  const todayWithdrawals = todayTransactions
+  const periodWithdrawals = periodTransactions
     .filter((transaction) => transaction.signedAmount < 0)
     .reduce((total, transaction) => total + Math.abs(transaction.signedAmount), 0);
 
@@ -811,13 +815,13 @@ const allTransactions = [...transactionsWithTreasuryBalance].reverse();
         </div>
 
         <div className="bg-emerald-600 p-6 rounded-3xl shadow-xl text-white">
-          <h2 className="text-xs font-bold opacity-80 uppercase tracking-wider">إجمالي إيداعات اليوم</h2>
-          <p className="text-3xl font-black mt-2">{todayDeposits.toLocaleString()} ج.م</p>
+          <h2 className="text-xs font-bold opacity-80 uppercase tracking-wider">إجمالي الإيداعات</h2>
+          <p className="text-3xl font-black mt-2">{periodDeposits.toLocaleString()} ج.م</p>
         </div>
 
         <div className="bg-rose-600 p-6 rounded-3xl shadow-xl text-white">
-          <h2 className="text-xs font-bold opacity-80 uppercase tracking-wider">إجمالي مسحوبات اليوم</h2>
-          <p className="text-3xl font-black mt-2">{todayWithdrawals.toLocaleString()} ج.م</p>
+          <h2 className="text-xs font-bold opacity-80 uppercase tracking-wider">إجمالي المسحوبات</h2>
+          <p className="text-3xl font-black mt-2">{periodWithdrawals.toLocaleString()} ج.م</p>
         </div>
 
         <div className="bg-white p-6 rounded-3xl shadow-xl border border-gray-100 flex flex-col justify-between">

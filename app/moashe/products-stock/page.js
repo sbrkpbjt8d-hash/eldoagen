@@ -55,26 +55,29 @@ export default function ProductionStockPage() {
   });
 
   // تجهيز وتنظيف البيانات المأخوذة من جدول الـ Stock (مع دعم حقول التكلفة)
-  const inventoryList = productsStock.map(item => ({
-    id: item.id,
-    product_name: item.product_name || item.name || 'منتج بدون اسم',
-    stock: Number(item.stock ?? productionOrders
-      .filter(order => (order.product_name || order.name) === (item.product_name || item.name))
-      .reduce((sum, order) => sum + Number(order.batch_quantity || order.quantity || 0), 0)),
-    unit_cost: (() => {
-      const productRecipes = recipes.filter(recipe => (recipe.product_name || recipe.name) === (item.product_name || item.name));
-      const recipeCost = productRecipes.reduce((sum, recipe) => {
-        const materialId = recipe.raw_material_id || recipe.material_id;
-        const material = materials.find(record => record.id === materialId);
-        const quantity = Number(recipe.quantity_needed || recipe.quantity || 0);
-        return sum + Number(material?.price || 0) * quantity;
-      }, 0);
-      return recipeCost + Number(productRecipes[0]?.other_cost || 0);
-    })(),
-  })).map(item => ({
-    ...item,
-    total_cost: item.unit_cost * item.stock,
-  }));
+  const inventoryList = productsStock.map(item => {
+    const productName = item.product_name || item.name || 'منتج بدون اسم';
+    const stock = Number(item.stock ?? productionOrders
+      .filter(order => (order.product_name || order.name) === productName)
+      .reduce((sum, order) => sum + Number(order.batch_quantity || order.quantity || 0), 0));
+    const productRecipes = recipes.filter(recipe => (recipe.product_name || recipe.name) === productName);
+    const recipeUnitCost = productRecipes.reduce((sum, recipe) => {
+      const materialId = recipe.raw_material_id || recipe.material_id;
+      const material = materials.find(record => record.id === materialId);
+      const quantity = Number(recipe.quantity_needed || recipe.quantity || 0);
+      return sum + Number(material?.price || 0) * quantity;
+    }, 0) + Number(productRecipes[0]?.other_cost || 0);
+    const hasStoredTotalCost = item.total_cost !== undefined && item.total_cost !== null;
+    const totalCost = hasStoredTotalCost ? Number(item.total_cost) : recipeUnitCost * stock;
+
+    return {
+      id: item.id,
+      product_name: productName,
+      stock,
+      unit_cost: stock > 0 ? totalCost / stock : recipeUnitCost,
+      total_cost: totalCost,
+    };
+  });
 
   // تصفية المنتجات بناءً على البحث بالاسم
   const filteredOrders = inventoryList.filter(item =>
@@ -244,9 +247,31 @@ export default function ProductionStockPage() {
       await pb.collection('product_stock_transactions').update(item.sourceId, {
         quantity: nextQuantity,
         notes: `تم تعديل حركة المخزن إلى كمية ${nextQuantity > 0 ? '+' : ''}${nextQuantity}`,
-        movement_at: new Date().toISOString(),
-        balance_after: nextStock,
+        balance_after: Number(transaction.balance_after || 0) + delta,
       });
+
+      const normalizeName = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      const relatedTransactions = (await pb.collection('product_stock_transactions').getFullList())
+        .filter((record) => record.product_stock_id === product.id || (
+          !record.product_stock_id && normalizeName(record.product_name) === normalizeName(product.product_name)
+        ))
+        .sort((first, second) => {
+          const firstDate = new Date(first.movement_at || first.updated || first.created || 0).getTime();
+          const secondDate = new Date(second.movement_at || second.updated || second.created || 0).getTime();
+          return firstDate - secondDate || String(first.id).localeCompare(String(second.id));
+        });
+      let targetFound = false;
+      for (const record of relatedTransactions) {
+        if (record.id === item.sourceId) {
+          targetFound = true;
+          continue;
+        }
+        if (targetFound) {
+          await pb.collection('product_stock_transactions').update(record.id, {
+            balance_after: Number(record.balance_after || 0) + delta,
+          });
+        }
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products_stock'] });
@@ -262,6 +287,14 @@ export default function ProductionStockPage() {
     mutationFn: async (item) => {
       if (!isAdmin) throw new Error('حذف سجل المخزن متاح للأدمن فقط');
       const product = historyModal.product;
+      if (!product) throw new Error('لم يتم اختيار منتج');
+      const nextStock = Number(product.stock || 0) - Number(item.quantity || 0);
+      if (nextStock < 0) throw new Error('لا يمكن أن تصبح كمية المخزن أقل من صفر');
+
+      await pb.collection('products_stock').update(product.id, {
+        stock: nextStock,
+        total_cost: product.unit_cost * nextStock,
+      });
       await pb.collection('product_stock_transactions').delete(item.sourceId);
     },
     onSuccess: () => {

@@ -41,8 +41,9 @@ export default function Providers({ children }) {
   const [queryClient] = useState(() => new QueryClient({
     defaultOptions: {
       queries: {
-        staleTime: 1000 * 60 * 5, // البيانات تفضل تازه لمدة 5 دقائق
-        refetchOnWindowFocus: false,
+        staleTime: 0,
+        refetchOnMount: true,
+        refetchOnWindowFocus: true,
       },
     },
   }));
