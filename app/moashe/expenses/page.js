@@ -2,6 +2,8 @@
 import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
+
+const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 import { useReactToPrint } from 'react-to-print';
 
 export default function ExpensesPage() {
@@ -172,17 +174,17 @@ export default function ExpensesPage() {
         if (treasury) {
           const currentBalance = Number(treasury.balance || 0);
           const newBalance = currentBalance - expenseAmount;
-          await pb.collection('treasury').update(treasury.id, { balance: newBalance });
+          await pb.collection('treasury').update(treasury.id, { balance: roundMoney(newBalance) });
         } else {
           // إذا لم يكن سجل الخزنة موجوداً، ننشئه بالرصيد بالسالب
-          await pb.collection('treasury').create({ balance: -expenseAmount, opening_balance: 0 });
+          await pb.collection('treasury').create({ balance: roundMoney(-expenseAmount), opening_balance: 0 });
         }
       } else {
         const targetBank = banks.find(b => b.id === paymentSource);
         if (targetBank) {
           const currentBankBalance = Number(targetBank.balance || 0);
           const newBankBalance = currentBankBalance - expenseAmount;
-          await pb.collection('banks').update(targetBank.id, { balance: newBankBalance });
+          await pb.collection('banks').update(targetBank.id, { balance: roundMoney(newBankBalance) });
         } else {
           throw new Error('البنك المختار غير موجود.');
         }
@@ -220,16 +222,16 @@ export default function ExpensesPage() {
         const targetBank = banks.find(b => b.id === bankId);
         if (targetBank) {
           const restoredBalance = Number(targetBank.balance || 0) + expenseAmount;
-          await pb.collection('banks').update(targetBank.id, { balance: restoredBalance });
+          await pb.collection('banks').update(targetBank.id, { balance: roundMoney(restoredBalance) });
         }
       } else {
         // إذا لم يكن بنك إذن فهو خزنة رئيسية
         if (treasury) {
           const currentBalance = Number(treasury.balance || 0);
           const restoredBalance = currentBalance + expenseAmount;
-          await pb.collection('treasury').update(treasury.id, { balance: restoredBalance });
+          await pb.collection('treasury').update(treasury.id, { balance: roundMoney(restoredBalance) });
         } else {
-          await pb.collection('treasury').create({ balance: expenseAmount, opening_balance: 0 });
+          await pb.collection('treasury').create({ balance: roundMoney(expenseAmount), opening_balance: 0 });
         }
       }
     },

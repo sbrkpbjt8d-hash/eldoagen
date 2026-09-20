@@ -3,6 +3,8 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
 
+const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+
 export default function ClientsPage() {
   const queryClient = useQueryClient();
   const [searchTerm, setSearchTerm] = useState('');
@@ -13,7 +15,6 @@ export default function ClientsPage() {
   // نافذة التحصيل
   const [paymentModal, setPaymentModal] = useState({ isOpen: false, client: null });
   const [payAmount, setPayAmount] = useState('');
-  const [selectedSalesAgent, setSelectedSalesAgent] = useState('');
   const [payDestination, setPayDestination] = useState('treasury');
   const [payBankId, setPayBankId] = useState('');
   const [payNotes, setPayNotes] = useState('');
@@ -39,6 +40,7 @@ export default function ClientsPage() {
   const [address, setAddress] = useState('');
   const [notes, setNotes] = useState('');
   const [balance, setBalance] = useState('');
+  const [clientSalesAgent, setClientSalesAgent] = useState('');
 
   // فحص صلاحيات الأدمن
   const isAdmin = pb.authStore.model?.collectionName === '_superusers' || pb.authStore.model?.role === 'admin';
@@ -197,6 +199,7 @@ const combinedStatement = [...statementWithBalance].reverse();
       setAddress('');
       setNotes('');
       setBalance('');
+      setClientSalesAgent('');
       showFeedback('تم إضافة العميل بنجاح! 👤', 'success');
     },
     onError: () => {
@@ -204,22 +207,36 @@ const combinedStatement = [...statementWithBalance].reverse();
     },
   });
 
+  const updateClientAgentMutation = useMutation({
+    mutationFn: async ({ clientId, agentId }) => {
+      if (!isAdmin) throw new Error('تعديل مندوب العميل متاح للأدمن فقط');
+      const agent = salesAgents.find((item) => item.id === agentId);
+      return await pb.collection('clientsmoashe').update(clientId, {
+        sales_agent_id: agentId,
+        sales_agent_name: agent?.name || '',
+        sales_agent_region: agent?.region || '',
+      });
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
+      showFeedback('تم تعديل مندوب العميل بنجاح.', 'success');
+    },
+    onError: (error) => showFeedback('فشل تعديل مندوب العميل: ' + error.message, 'error'),
+  });
+
   // تنفيذ عملية التحصيل
   const payMutation = useMutation({
     mutationFn: async ({ client, amount, destination, notes }) => {
       const numericAmount = Number(amount);
       const currentClientBalance = Number(client.balance || 0);
-      const newClientBalance = currentClientBalance - numericAmount;
-
-      if (!selectedSalesAgent) {
-        throw new Error('اختر المندوب الذي قام بالتحصيل');
-      }
+      const newClientBalance = roundMoney(currentClientBalance - numericAmount);
+      const paymentAgentId = client.sales_agent_id || '';
+      const paymentAgent = salesAgents.find((agent) => agent.id === paymentAgentId);
+      if (!paymentAgentId) throw new Error('العميل ليس له مندوب محدد بعد');
 
       if (destination === 'banks' && !payBankId) {
         throw new Error('اختر البنك الذي تم استلام التحصيل عليه');
       }
-
-      const agentInfo = salesAgents.find((agent) => agent.id === selectedSalesAgent);
 
       await pb.collection('clientsmoashe').update(client.id, {
         balance: newClientBalance,
@@ -231,9 +248,9 @@ const combinedStatement = [...statementWithBalance].reverse();
         amount: numericAmount,
         destination: destination,
         bank_id: destination === 'banks' ? payBankId : '',
-        sales_agent_id: selectedSalesAgent,
-        sales_agent_name: agentInfo?.name || '',
-        sales_agent_region: agentInfo?.region || '',
+        sales_agent_id: paymentAgentId,
+        sales_agent_name: paymentAgent?.name || client.sales_agent_name || '',
+        sales_agent_region: paymentAgent?.region || client.sales_agent_region || '',
         actor_name: currentUserName(),
         notes: notes || 'تحصيل مديونية',
         date: new Date().toISOString()
@@ -244,15 +261,15 @@ const combinedStatement = [...statementWithBalance].reverse();
         const newTreasuryBalance = currentTreasuryBalance + numericAmount;
 
         if (treasury) {
-          await pb.collection('treasury').update(treasury.id, { balance: newTreasuryBalance });
+          await pb.collection('treasury').update(treasury.id, { balance: roundMoney(newTreasuryBalance) });
         } else {
-          await pb.collection('treasury').create({ balance: newTreasuryBalance, opening_balance: 0 });
+          await pb.collection('treasury').create({ balance: roundMoney(newTreasuryBalance), opening_balance: 0 });
         }
       } else {
         const bank = banks.find(item => item.id === payBankId);
         if (!bank) throw new Error('البنك المختار غير موجود');
         await pb.collection('banks').update(bank.id, {
-          balance: Number(bank.balance || 0) + numericAmount,
+          balance: roundMoney(Number(bank.balance || 0) + numericAmount),
         });
       }
     },
@@ -264,7 +281,6 @@ const combinedStatement = [...statementWithBalance].reverse();
       showFeedback('💵 تم تسجيل التحصيل وتحديث الحسابات بنجاح!', 'success');
       setPaymentModal({ isOpen: false, client: null });
       setPayAmount('');
-      setSelectedSalesAgent('');
       setPayNotes('');
       setPayDestination('treasury');
       setPayBankId('');
@@ -319,7 +335,7 @@ const combinedStatement = [...statementWithBalance].reverse();
       const numericAmount = Number(amount);
       
       await pb.collection('clientsmoashe').update(client.id, {
-        balance: numericAmount,
+        balance: roundMoney(numericAmount),
       });
 
       await pb.collection('client_transactions').create({
@@ -364,12 +380,19 @@ const combinedStatement = [...statementWithBalance].reverse();
       showFeedback('يرجى إدخال اسم العميل على الأقل.', 'error');
       return;
     }
+    if (!clientSalesAgent) {
+      showFeedback('يرجى اختيار المندوب المسؤول عن العميل.', 'error');
+      return;
+    }
     addClientMutation.mutate({
       name: name.trim(),
       phone: phone.trim(),
       address: address.trim(),
       notes: notes.trim(),
       balance: balance === '' ? 0 : Number(balance),
+      sales_agent_id: clientSalesAgent,
+      sales_agent_name: salesAgents.find((agent) => agent.id === clientSalesAgent)?.name || '',
+      sales_agent_region: salesAgents.find((agent) => agent.id === clientSalesAgent)?.region || '',
       actor_name: currentUserName()
     });
   };
@@ -378,10 +401,6 @@ const combinedStatement = [...statementWithBalance].reverse();
     e.preventDefault();
     if (!payAmount || Number(payAmount) <= 0) {
       showFeedback('الرجاء إدخال مبلغ صحيح للتحصيل', 'error');
-      return;
-    }
-    if (!selectedSalesAgent) {
-      showFeedback('اختر المندوب الذي قام بالتحصيل أولاً', 'error');
       return;
     }
     payMutation.mutate({
@@ -519,18 +538,9 @@ const combinedStatement = [...statementWithBalance].reverse();
                   {Number(paymentModal.client?.totalDebt || paymentModal.client?.balance || 0).toLocaleString()} ج.م
                 </p>
               </div>
-              <div>
-                <label className="text-xs font-bold text-gray-700">المندوب المسئول عن التحصيل</label>
-                <select
-                  value={selectedSalesAgent}
-                  onChange={(e) => setSelectedSalesAgent(e.target.value)}
-                  className="w-full border p-3 rounded-xl text-xs font-bold bg-white outline-none mt-1"
-                >
-                  <option value="">-- اختر المندوب --</option>
-                  {salesAgents.map((agent) => (
-                    <option key={agent.id} value={agent.id}>{agent.name}</option>
-                  ))}
-                </select>
+              <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
+                <label className="text-xs font-bold text-gray-700">المندوب المسؤول عن التحصيل</label>
+                <p className="mt-1 text-sm font-black text-emerald-800">{paymentModal.client?.sales_agent_name || 'غير محدد'}</p>
               </div>
               <div>
                 <label className="text-xs font-bold text-gray-700">المبلغ المراد تحصيله</label>
@@ -765,6 +775,10 @@ const combinedStatement = [...statementWithBalance].reverse();
           <input type="text" placeholder="العنوان" value={address} onChange={(e) => setAddress(e.target.value)} className="border p-2.5 rounded-xl text-xs" />
           <input type="number" step="0.01" placeholder="رصيد افتتاحى (مديونية)" value={balance} onChange={(e) => setBalance(e.target.value)} className="border p-2.5 rounded-xl text-xs font-bold" />
           <input type="text" placeholder="ملاحظات" value={notes} onChange={(e) => setNotes(e.target.value)} className="border p-2.5 rounded-xl text-xs" />
+          <select value={clientSalesAgent} onChange={(e) => setClientSalesAgent(e.target.value)} className="border bg-white p-2.5 rounded-xl text-xs font-bold" required>
+            <option value="">اختر المندوب المسؤول *</option>
+            {salesAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+          </select>
           <div className="md:col-span-2 lg:col-span-5 flex justify-end">
             <button type="submit" disabled={addClientMutation.isPending} className="bg-blue-600 text-white font-bold px-6 py-2.5 rounded-xl text-xs">حفظ وإضافة العميل</button>
           </div>
@@ -783,6 +797,7 @@ const combinedStatement = [...statementWithBalance].reverse();
             <thead>
               <tr className="border-b text-xs text-gray-500 bg-gray-50">
                 <th className="p-3">اسم العميل</th>
+                <th className="p-3">المندوب</th>
                 {/* <th className="p-3">الهاتف</th> */}
                 <th className="p-3">العنوان</th>
                 <th className="p-3">المديونية</th>
@@ -808,6 +823,21 @@ const combinedStatement = [...statementWithBalance].reverse();
                         <span className="inline-block mt-1 bg-red-100 text-red-700 px-2 py-1 rounded-md text-[10px] font-black">
                           متأخر - لم يحصل منذ {formatLastDate(lastActivityDate)}
                         </span>
+                      )}
+                    </td>
+                    <td className="p-3 text-xs font-bold text-emerald-700">
+                      {isAdmin ? (
+                        <select
+                          value={client.sales_agent_id || ''}
+                          onChange={(event) => updateClientAgentMutation.mutate({ clientId: client.id, agentId: event.target.value })}
+                          disabled={updateClientAgentMutation.isPending}
+                          className="rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-bold text-emerald-800 outline-none"
+                        >
+                          <option value="">غير محدد</option>
+                          {salesAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+                        </select>
+                      ) : (
+                        client.sales_agent_name || 'غير محدد'
                       )}
                     </td>
                     {/* <td className="p-3 font-bold text-gray-700">{client.phone || '-'}</td> */}

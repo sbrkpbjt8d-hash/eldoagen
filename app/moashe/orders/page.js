@@ -5,6 +5,7 @@ import { pb } from '../../lib/pocketbase';
 import toast, { Toaster } from 'react-hot-toast';
 
 export default function ProductionOrdersPage() {
+  const STOCK_EPSILON = 1e-9;
   const queryClient = useQueryClient();
   const [selectedProduct, setSelectedProduct] = useState('');
   const [productionQty, setProductionQty] = useState('');
@@ -107,6 +108,8 @@ export default function ProductionOrdersPage() {
       }
 
       const existingProductStock = productsStock.find(p => normalizeProductName(p.product_name || p.name) === normalizeProductName(selectedProduct));
+      const finalProductStock = Number(existingProductStock?.stock || 0) + qtyToProduce;
+      let productStockId = existingProductStock?.id || '';
 
       if (existingProductStock) {
         const updatedStock = Number(existingProductStock.stock || 0) + qtyToProduce;
@@ -117,13 +120,28 @@ export default function ProductionOrdersPage() {
           actor_name: getCurrentActorName(),
         });
       } else {
-        await pb.collection('products_stock').create({
+        const createdProductStock = await pb.collection('products_stock').create({
           product_name: selectedProduct,
           stock: qtyToProduce,
           total_cost: costToAdd,
           actor_name: getCurrentActorName(),
         });
+        productStockId = createdProductStock.id;
       }
+
+      await pb.collection('product_stock_transactions').create({
+        product_name: selectedProduct,
+        quantity: qtyToProduce,
+        movement_type: 'production',
+        title: 'أمر تصنيع',
+        notes: `تم تصنيع ${qtyToProduce} من المنتج`,
+        actor_name: getCurrentActorName(),
+        source_type: 'production_order',
+        source_id: selectedProduct,
+        product_stock_id: productStockId,
+        movement_at: new Date().toISOString(),
+        balance_after: finalProductStock,
+      });
 
       return await pb.collection('production_orders').create({
         product_name: selectedProduct,
@@ -137,6 +155,7 @@ export default function ProductionOrdersPage() {
       queryClient.invalidateQueries({ queryKey: ['production_orders'] });
       queryClient.invalidateQueries({ queryKey: ['khamat_moashe'] });
       queryClient.invalidateQueries({ queryKey: ['products_stock'] });
+      queryClient.invalidateQueries({ queryKey: ['product_stock_transactions'] });
       toast.success('تم تنفيذ أمر التصنيع وتحديث المخازن بنجاح! 🚀');
       setSelectedProduct('');
       setProductionQty('');
@@ -194,11 +213,26 @@ export default function ProductionOrdersPage() {
       }
 
       await pb.collection('production_orders').delete(order.id);
+      await pb.collection('product_stock_transactions').create({
+        product_name: productName,
+        quantity: -qtyProduced,
+        movement_type: 'delete',
+        title: 'حذف أمر تصنيع',
+        notes: `تم حذف أمر التصنيع وإخراج كمية ${qtyProduced} من المخزن`,
+        actor_name: getCurrentActorName(),
+        source_type: 'production_order_delete',
+        source_id: order.id,
+        product_stock_id: matchingProductStocks[0]?.id || '',
+        movement_at: new Date().toISOString(),
+        balance_after: updatedStock,
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['production_orders'] });
       queryClient.invalidateQueries({ queryKey: ['khamat_moashe'] });
       queryClient.invalidateQueries({ queryKey: ['products_stock'] });
+      queryClient.invalidateQueries({ queryKey: ['product_stock_transactions'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices_logs_products_stock_history'] });
       toast.success('تم حذف أمر التصنيع وإرجاع الخامات بنجاح!');
       setConfirmModal({ isOpen: false, title: '', message: '', onConfirm: null });
     },
@@ -253,7 +287,7 @@ export default function ProductionOrdersPage() {
       const totalNeeded = qtyPerUnit * qtyToProduce;
       const availableStock = matInfo ? Number(matInfo.stock || matInfo.quantity || 0) : 0;
 
-      if (!matInfo || availableStock < totalNeeded) {
+      if (!matInfo || availableStock + STOCK_EPSILON < totalNeeded) {
         toast.error(`الخامة "${matInfo?.name || 'غير معروفة'}" غير متوفرة بالكمية الكافية! (المتوفر: ${availableStock}, المطلوب: ${totalNeeded})`);
         return;
       }
@@ -386,7 +420,7 @@ export default function ProductionOrdersPage() {
                     const qtyPerUnit = Number(item.quantity_needed || item.quantity || 0);
                     const totalNeeded = qtyPerUnit * (Number(productionQty) || 0);
                     const available = matInfo ? Number(matInfo.stock || matInfo.quantity || 0) : 0;
-                    const isEnough = available >= totalNeeded;
+                    const isEnough = available + STOCK_EPSILON >= totalNeeded;
 
                     return (
                       <div key={idx} className="flex justify-between items-center text-xs bg-white p-2 rounded border">

@@ -1,9 +1,10 @@
 'use client';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
 import { useReactToPrint } from 'react-to-print';
 const currentUserName = localStorage.getItem('userName') || 'مسؤول النظام';
+const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 
 export default function SalesInvoicesPage() {
   const queryClient = useQueryClient();
@@ -98,6 +99,17 @@ export default function SalesInvoicesPage() {
 
   const customers = clientsList;
   const selectedCustomerName = customers.find(customer => customer.id === selectedCustomer)?.name || '';
+  const factoryAgent = salesAgents.find((agent) => String(agent.name || '').trim() === 'المصنع');
+  const selectedRegisteredAgent = customers.find((customer) => customer.id === selectedCustomer);
+  const customerAgent = selectedRegisteredAgent?.sales_agent_id
+    ? salesAgents.find((agent) => agent.id === selectedRegisteredAgent.sales_agent_id)
+    : salesAgents.find((agent) => agent.name === selectedRegisteredAgent?.sales_agent_name);
+  const selectedCustomerAgentName = customerAgent?.name || selectedRegisteredAgent?.sales_agent_name || '';
+
+  useEffect(() => {
+    const assignedAgent = customerType === 'walk-in' ? factoryAgent : customerAgent;
+    setSelectedSalesAgent(assignedAgent?.id || '');
+  }, [customerType, selectedCustomer, factoryAgent, customerAgent]);
   const filteredCustomers = customers.filter(customer => String(customer.name || '').toLowerCase().includes(customerSearch.toLowerCase().trim()));
 
   const { data: salesInvoices = [], isLoading: loadingInvoices } = useQuery({
@@ -228,21 +240,35 @@ export default function SalesInvoicesPage() {
 
   const normalizeProductName = value => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
 
-  const updateFinishedProductStock = async (productName, quantityChange) => {
+  const updateFinishedProductStock = async (productName, quantityChange, movement = {}) => {
     const stockRecords = await pb.collection('products_stock').getFullList({ requestKey: null }).catch(() => []);
     const normalizedName = normalizeProductName(productName);
     const stockRecord = stockRecords.find(record => normalizeProductName(record.product_name || record.name) === normalizedName);
     if (!stockRecord) return;
 
     const currentStock = Number(stockRecord.stock || 0);
+    const nextStock = currentStock + quantityChange;
     await pb.collection('products_stock').update(stockRecord.id, {
-      stock: currentStock + quantityChange,
+      stock: nextStock,
+    });
+    await pb.collection('product_stock_transactions').create({
+      product_name: stockRecord.product_name || stockRecord.name || productName,
+      quantity: quantityChange,
+      movement_type: movement.type || (quantityChange < 0 ? 'sale' : 'return'),
+      title: movement.title || (quantityChange < 0 ? 'سحب من فاتورة بيع' : 'إضافة للمخزن'),
+      notes: movement.notes || '-',
+      actor_name: currentUserName,
+      source_type: movement.sourceType || 'sales_invoice',
+      source_id: movement.sourceId || '',
+      product_stock_id: stockRecord.id,
+      movement_at: new Date().toISOString(),
+      balance_after: nextStock,
     });
   };
 
-  const subTotal = selectedProducts.reduce((sum, p) => sum + (p.price * p.qty), 0);
-  const discount = Number(discountAmount) || 0;
-  const netTotal = Math.max(0, subTotal - discount);
+  const subTotal = roundMoney(selectedProducts.reduce((sum, p) => sum + (Number(p.price || 0) * Number(p.qty || 0)), 0));
+  const discount = roundMoney(discountAmount);
+  const netTotal = roundMoney(Math.max(0, subTotal - discount));
 
   const saveInvoiceMutation = useMutation({
     mutationFn: async () => {
@@ -252,7 +278,11 @@ export default function SalesInvoicesPage() {
             await updateMaterialStock(oldProd.materialId, Number(oldProd.qty || 0));
             continue;
           }
-          await updateFinishedProductStock(oldProd.name, Number(oldProd.qty || 0));
+          await updateFinishedProductStock(oldProd.name, Number(oldProd.qty || 0), {
+            type: 'invoice_edit',
+            title: 'تعديل فاتورة بيع - إرجاع القديم',
+            sourceId: editingInvoiceId,
+          });
         }
 
         if (oldInvoiceData?.payment_type === 'credit' && oldInvoiceData?.customer_type === 'registered') {
@@ -263,7 +293,7 @@ export default function SalesInvoicesPage() {
             const currentDebt = Number(custRecord.balance || custRecord.debt || custRecord.total_debt || 0);
             const oldAmount = Number(oldInvoiceData.total_amount || 0);
             await pb.collection('clientsmoashe').update(oldCustId, {
-              balance: Math.max(0, currentDebt - oldAmount)
+              balance: roundMoney(Math.max(0, currentDebt - oldAmount))
             }).catch(() => {});
           }
         }
@@ -274,7 +304,11 @@ export default function SalesInvoicesPage() {
           await updateMaterialStock(prod.materialId, -Number(prod.qty || 0));
           continue;
         }
-        await updateFinishedProductStock(prod.name, -Number(prod.qty || 0));
+        await updateFinishedProductStock(prod.name, -Number(prod.qty || 0), {
+          type: 'sale',
+          title: 'فاتورة بيع - سحب من المخزن',
+          sourceId: editingInvoiceId || 'new-sale',
+        });
       }
 
       const customerName = customerType === 'walk-in' 
@@ -295,7 +329,8 @@ export default function SalesInvoicesPage() {
         ? Number(currentCustomer.balance ?? currentCustomer.debt ?? currentCustomer.total_debt ?? 0)
         : 0;
 
-      const selectedAgent = salesAgents.find((agent) => agent.id === selectedSalesAgent);
+      const assignedAgent = customerType === 'walk-in' ? factoryAgent : customerAgent;
+      const selectedAgent = assignedAgent || salesAgents.find((agent) => agent.id === selectedSalesAgent);
 
       const invoiceData = {
         customer_name: customerName,
@@ -306,7 +341,7 @@ export default function SalesInvoicesPage() {
         sales_agent_region: selectedAgent?.region || '',
         items: selectedProducts,
         sub_total: subTotal,
-        discount: Number(discountAmount) || 0,
+        discount,
         total_amount: netTotal,
         payment_type: paymentType,
         actor_name: currentUserName,
@@ -358,10 +393,10 @@ export default function SalesInvoicesPage() {
         if (custRecord) {
           const currentDebt = Number(custRecord.balance || custRecord.debt || custRecord.total_debt || 0);
           await pb.collection('clientsmoashe').update(selectedCustomer, {
-            balance: currentDebt + netTotal
+            balance: roundMoney(currentDebt + netTotal)
           }).catch(async () => {
             await pb.collection('clientsmoashe').update(selectedCustomer, {
-              debt: currentDebt + netTotal
+              debt: roundMoney(currentDebt + netTotal)
             }).catch(() => {});
           });
         }
@@ -370,7 +405,7 @@ export default function SalesInvoicesPage() {
       if (!editingInvoiceId && paymentType === 'cash' && netTotal > 0) {
         const treasuryRecords = await pb.collection('treasury').getFullList().catch(() => []);
         const treasury = treasuryRecords[0];
-        const newBalance = Number(treasury?.balance || 0) + netTotal;
+        const newBalance = roundMoney(Number(treasury?.balance || 0) + netTotal);
         if (treasury) {
           await pb.collection('treasury').update(treasury.id, { balance: newBalance });
         } else {
@@ -392,6 +427,7 @@ export default function SalesInvoicesPage() {
       queryClient.invalidateQueries({ queryKey: ['sales_invoices'] });
       queryClient.invalidateQueries({ queryKey: ['khamat_moashe'] });
       queryClient.invalidateQueries({ queryKey: ['products_stock'] });
+      queryClient.invalidateQueries({ queryKey: ['product_stock_transactions'] });
       queryClient.invalidateQueries({ queryKey: ['customers'] });
       queryClient.invalidateQueries({ queryKey: ['clientsList'] });
       queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
@@ -420,7 +456,11 @@ const deleteInvoiceMutation = useMutation({
           await updateMaterialStock(prod.materialId, Number(prod.qty || 0));
           continue;
         }
-        await updateFinishedProductStock(prod.name, Number(prod.qty || 0));
+        await updateFinishedProductStock(prod.name, Number(prod.qty || 0), {
+          type: 'return',
+          title: 'حذف فاتورة بيع - إرجاع للمخزن',
+          sourceId: invoice.id,
+        });
       }
 
       // التعديل هنا: دعمنا اللغة الإنجليزية والعربية لأنواع الدفع الآجل
@@ -434,7 +474,7 @@ const deleteInvoiceMutation = useMutation({
         const remainingSubtotal = itemsToRestore.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.qty || 0), 0);
         const invoiceRatio = originalSubtotal > 0 ? Number(invoice.total_amount || 0) / originalSubtotal : 1;
         const remainingAmount = Number((remainingSubtotal * invoiceRatio).toFixed(6));
-        const newDebt = Math.max(0, currentDebt - remainingAmount);
+        const newDebt = roundMoney(Math.max(0, currentDebt - remainingAmount));
 
         // التحديث الديناميكي لأي حقل مديونية موجود في الجدول لضمان نجاح العملية
         const updateData = {};
@@ -471,6 +511,7 @@ const deleteInvoiceMutation = useMutation({
       queryClient.invalidateQueries({ queryKey: ['sales_invoices'] });
       queryClient.invalidateQueries({ queryKey: ['khamat_moashe'] });
       queryClient.invalidateQueries({ queryKey: ['products_stock'] });
+      queryClient.invalidateQueries({ queryKey: ['product_stock_transactions'] });
       queryClient.invalidateQueries({ queryKey: ['customers'] });
       queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
       queryClient.invalidateQueries({ queryKey: ['invoices_logs'] });
@@ -550,7 +591,11 @@ const deleteInvoiceMutation = useMutation({
           continue;
         }
 
-        await updateFinishedProductStock(item.name, item.qty);
+        await updateFinishedProductStock(item.name, item.qty, {
+          type: 'return',
+          title: 'مرتجع فاتورة بيع - إرجاع للمخزن',
+          sourceId: invoice.id,
+        });
       }
 
       const originalSubtotal = Number(invoice.sub_total || 0) || originalItems.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.qty || 0), 0);
@@ -562,7 +607,7 @@ const deleteInvoiceMutation = useMutation({
         if (customer) {
           const currentDebt = Number(customer.balance ?? customer.debt ?? customer.total_debt ?? 0);
           await pb.collection('clientsmoashe').update(customer.id, {
-            balance: Math.max(0, currentDebt - invoiceAmount),
+            balance: roundMoney(Math.max(0, currentDebt - invoiceAmount)),
           });
         }
       }
@@ -572,7 +617,7 @@ const deleteInvoiceMutation = useMutation({
         const treasury = treasuryRecords[0];
         if (treasury) {
           await pb.collection('treasury').update(treasury.id, {
-            balance: Number(treasury.balance || 0) - invoiceAmount,
+            balance: roundMoney(Number(treasury.balance || 0) - invoiceAmount),
           });
         }
         await pb.collection('treasury_transactions').create({
@@ -613,6 +658,7 @@ const deleteInvoiceMutation = useMutation({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sales_invoices'] });
       queryClient.invalidateQueries({ queryKey: ['products_stock'] });
+      queryClient.invalidateQueries({ queryKey: ['product_stock_transactions'] });
       queryClient.invalidateQueries({ queryKey: ['khamat_moashe'] });
       queryClient.invalidateQueries({ queryKey: ['clientsList'] });
       queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
@@ -948,7 +994,7 @@ const deleteInvoiceMutation = useMutation({
                     </div>
                     <div className="flex justify-between bg-amber-50 p-3 rounded-2xl border border-amber-200">
                       <span className="text-amber-700 font-bold">📊 إجمالي المديونية:</span>
-                      <span className="font-bold text-amber-800">{(modalPreviousBalance + Number(viewInvoiceModal.invoice.total_amount || 0)).toLocaleString()} ج.م</span>
+                      <span className="font-bold text-amber-800">{roundMoney(modalPreviousBalance + Number(viewInvoiceModal.invoice.total_amount || 0)).toLocaleString()} ج.م</span>
                     </div>
                   </div>
                 );
@@ -985,7 +1031,7 @@ const deleteInvoiceMutation = useMutation({
                         <td className="p-2.5 text-gray-600">{it.price} ج.م</td>
                         <td className="p-2.5 text-gray-600 font-bold">{it.qty}</td>
                         <td className="p-2.5 text-gray-500">{it.note || '-'}</td>
-                        <td className="p-2.5 font-bold text-emerald-600">{(it.price * it.qty).toLocaleString()} ج.م</td>
+                        <td className="p-2.5 font-bold text-emerald-600">{roundMoney(it.price * it.qty).toLocaleString()} ج.م</td>
                       </tr>
                     ))}
                   </tbody>
@@ -996,17 +1042,17 @@ const deleteInvoiceMutation = useMutation({
             <div className="bg-gray-50 p-4 rounded-2xl space-y-2 text-xs border border-gray-200/60">
               <div className="flex justify-between text-gray-600">
                 <span>إجمالي المنتجات:</span>
-                <span className="font-bold">{(viewInvoiceModal.invoice.sub_total || 0).toLocaleString()} ج.م</span>
+                <span className="font-bold">{roundMoney(viewInvoiceModal.invoice.sub_total || 0).toLocaleString()} ج.م</span>
               </div>
               {Number(viewInvoiceModal.invoice.discount !== undefined ? viewInvoiceModal.invoice.discount : (viewInvoiceModal.invoice.discount_amount || 0)) > 0 && (
                 <div className="flex justify-between text-red-600">
                   <span>الخصم المطبق:</span>
-                  <span className="font-bold">- {(viewInvoiceModal.invoice.discount !== undefined ? viewInvoiceModal.invoice.discount : (viewInvoiceModal.invoice.discount_amount || 0)).toLocaleString()} ج.م</span>
+                  <span className="font-bold">- {roundMoney(viewInvoiceModal.invoice.discount !== undefined ? viewInvoiceModal.invoice.discount : (viewInvoiceModal.invoice.discount_amount || 0)).toLocaleString()} ج.م</span>
                 </div>
               )}
               <div className="flex justify-between pt-2 border-t text-emerald-800 font-black text-sm">
                 <span>الصافي النهائي:</span>
-                <span>{(viewInvoiceModal.invoice.total_amount || 0).toLocaleString()} ج.م</span>
+                <span>{roundMoney(viewInvoiceModal.invoice.total_amount || 0).toLocaleString()} ج.م</span>
               </div>
             </div>
 
@@ -1105,7 +1151,7 @@ const deleteInvoiceMutation = useMutation({
               <label className="block text-xs font-bold text-gray-700 mb-2">المندوب:</label>
               <select
                 value={selectedSalesAgent}
-                onChange={(e) => setSelectedSalesAgent(e.target.value)}
+                disabled
                 className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-2.5 text-xs font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
               >
                 <option value="">-- اختر المندوب --</option>
@@ -1147,12 +1193,16 @@ const deleteInvoiceMutation = useMutation({
                           onClick={() => { setSelectedCustomer(customer.id); setCustomerSearch(customer.name || ''); setCustomerDropdownOpen(false); }}
                           className="block w-full px-4 py-2.5 text-right text-xs font-bold hover:bg-emerald-50"
                         >
-                          {customer.name}
+                          <span className="block">{customer.name}</span>
+                          <span className="block text-[10px] font-normal text-emerald-700">المندوب: {customer.sales_agent_name || salesAgents.find((agent) => agent.id === customer.sales_agent_id)?.name || 'غير محدد'}</span>
                         </button>
                       )) : <p className="p-3 text-xs text-gray-400">لا يوجد عميل بهذا الاسم.</p>}
                     </div>
                   )}
                 </div>
+                {selectedCustomer && (
+                  <p className="mt-1 text-[10px] font-bold text-emerald-700">المندوب المسؤول: {selectedCustomerAgentName || 'غير محدد'}</p>
+                )}
               </div>
             )}
 
@@ -1402,13 +1452,13 @@ const deleteInvoiceMutation = useMutation({
                   const isReturned = isInvoiceFullyReturned(inv);
                   const isPartiallyReturned = inv.status === 'مرتجع جزئي';
                   const isClosed = isReturned || isPartiallyReturned;
-                  const invDiscount = Number(inv.discount !== undefined ? inv.discount : (inv.discount_amount || 0));
+                  const invDiscount = roundMoney(inv.discount !== undefined ? inv.discount : (inv.discount_amount || 0));
                   const invSubTotal = (inv.sub_total !== undefined && inv.sub_total !== null && inv.sub_total !== 0) 
-                    ? inv.sub_total 
-                    : (Array.isArray(inv.items) ? inv.items.reduce((s, item) => s + (Number(item.price || 0) * Number(item.qty || 0)), 0) : 0);
+                    ? roundMoney(inv.sub_total) 
+                    : roundMoney(Array.isArray(inv.items) ? inv.items.reduce((s, item) => s + (Number(item.price || 0) * Number(item.qty || 0)), 0) : 0);
 
                   const previousBalance = getInvoicePreviousBalance(inv);
-                  const totalDebt = previousBalance + Number(inv.total_amount || 0);
+                  const totalDebt = roundMoney(previousBalance + Number(inv.total_amount || 0));
 
                   return (
                     <tr key={inv.id} className="hover:bg-gray-50/50 transition">
@@ -1422,7 +1472,7 @@ const deleteInvoiceMutation = useMutation({
                       <td className="p-3 font-bold text-red-600">
                         {invDiscount > 0 ? `- ${invDiscount.toLocaleString()} ج.م` : '0 ج.م'}
                       </td>
-                      <td className="p-3 font-bold text-emerald-600">{(inv.total_amount || 0).toLocaleString()} ج.م</td>
+                      <td className="p-3 font-bold text-emerald-600">{roundMoney(inv.total_amount || 0).toLocaleString()} ج.م</td>
                       <td className="p-3">
                         <span className={`px-2 py-1 rounded-xl text-white text-[10px] ${isReturned || isPartiallyReturned ? 'bg-red-600' : inv.payment_type === 'credit' ? 'bg-amber-600' : 'bg-emerald-600'}`}>
                           {isReturned ? 'مرتجع' : isPartiallyReturned ? 'مرتجع جزئي' : inv.payment_type === 'credit' ? 'آجل' : 'كاش'}

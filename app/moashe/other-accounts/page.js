@@ -4,6 +4,8 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
 
+const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+
 const today = new Date().toISOString().slice(0, 10);
 const amountValue = value => Number(value || 0).toLocaleString('ar-EG', { maximumFractionDigits: 2 });
 
@@ -40,16 +42,16 @@ export default function OtherAccountsPage() {
   const updateBalance = async (sourceType, bankId, delta) => {
     if (sourceType === 'treasury') {
       if (treasury) {
-        await pb.collection('treasury').update(treasury.id, { balance: Number(treasury.balance || 0) + delta });
+        await pb.collection('treasury').update(treasury.id, { balance: roundMoney(Number(treasury.balance || 0) + delta) });
       } else {
-        await pb.collection('treasury').create({ opening_balance: 0, balance: delta });
+        await pb.collection('treasury').create({ opening_balance: 0, balance: roundMoney(delta) });
       }
       return;
     }
 
     const bank = banks.find(item => item.id === bankId);
     if (!bank) throw new Error('البنك المختار غير موجود.');
-    await pb.collection('banks').update(bank.id, { balance: Number(bank.balance || 0) + delta });
+    await pb.collection('banks').update(bank.id, { balance: roundMoney(Number(bank.balance || 0) + delta) });
   };
 
   const createAdvanceMutation = useMutation({
@@ -63,10 +65,10 @@ export default function OtherAccountsPage() {
       const advance = await pb.collection('advances').create({
         advance_type: 'other',
         recipient_name: recipientName.trim(),
-        amount: numericAmount,
-        original_amount: numericAmount,
+        amount: roundMoney(numericAmount),
+        original_amount: roundMoney(numericAmount),
         returned_amount: 0,
-        remaining_amount: numericAmount,
+        remaining_amount: roundMoney(numericAmount),
         source_type: sourceType,
         bank_id: sourceType === 'bank' ? source : '',
         status: 'open',
@@ -115,8 +117,8 @@ export default function OtherAccountsPage() {
       const nextRemaining = remaining - numericReturn;
       const sourceType = returnSource === 'treasury' ? 'treasury' : 'bank';
       await pb.collection('advances').update(advance.id, {
-        returned_amount: Number(advance.returned_amount || 0) + numericReturn,
-        remaining_amount: nextRemaining,
+        returned_amount: roundMoney(Number(advance.returned_amount || 0) + numericReturn),
+        remaining_amount: roundMoney(nextRemaining),
         status: nextRemaining === 0 ? 'closed' : 'open',
         is_deducted: nextRemaining === 0,
       });

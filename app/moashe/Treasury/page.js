@@ -4,6 +4,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
 import { useReactToPrint } from 'react-to-print';
 
+const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+
 export default function TreasuryPage() {
   const queryClient = useQueryClient();
 
@@ -185,7 +187,7 @@ export default function TreasuryPage() {
           }
           if (treasury?.id) {
             await pb.collection('treasury').update(treasury.id, {
-              balance: currentBalance + Number(transaction.amount || 0),
+              balance: roundMoney(currentBalance + Number(transaction.amount || 0)),
             });
           }
         }
@@ -193,12 +195,12 @@ export default function TreasuryPage() {
           const bank = banks.find(item => item.id === transaction.bank_id);
           if (bank) {
             await pb.collection('banks').update(bank.id, {
-              balance: Number(bank.balance || 0) + Number(transaction.amount || 0),
+              balance: roundMoney(Number(bank.balance || 0) + Number(transaction.amount || 0)),
             });
           }
           if (treasury?.id) {
             await pb.collection('treasury').update(treasury.id, {
-              balance: currentBalance - Number(transaction.amount || 0),
+              balance: roundMoney(currentBalance - Number(transaction.amount || 0)),
             });
           }
         }
@@ -235,9 +237,9 @@ export default function TreasuryPage() {
 
       const actorName = currentUser?.name || currentUser?.email || 'مستخدم النظام';
       const date = new Date().toISOString();
-      await pb.collection('treasury').update(treasury?.id, { balance: currentBalance - amount });
+      await pb.collection('treasury').update(treasury?.id, { balance: roundMoney(currentBalance - amount) });
       await pb.collection('banks').update(bank.id, {
-        balance: Number(bank.balance || 0) + amount,
+        balance: roundMoney(Number(bank.balance || 0) + amount),
         actor_name: actorName,
       });
       return await pb.collection('treasury_transactions').create({
@@ -275,7 +277,7 @@ export default function TreasuryPage() {
       const date = new Date().toISOString();
       if (treasury?.id) {
         await pb.collection('treasury').update(treasury.id, {
-          balance: Number(treasury.balance ?? openingBalance) + amount,
+          balance: roundMoney(Number(treasury.balance ?? openingBalance) + amount),
         });
       } else {
         await pb.collection('treasury').create({ opening_balance: 0, balance: amount });
