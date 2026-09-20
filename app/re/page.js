@@ -10,6 +10,7 @@ const money = value => {
 };
 
 const dateValue = value => String(value || '').slice(0, 10);
+const reportCapitalStorageKey = 'factory_erp_report_opening_capital';
 
 // دالة تفقيط وتحويل الأرقام إلى كلمات عربية صحيحة
 const convertToArabicWords = (num) => {
@@ -56,6 +57,11 @@ export default function ReportsPage() {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [openingCapitalInput, setOpeningCapitalInput] = useState(null);
+  const [reportOpeningCapital, setReportOpeningCapital] = useState(() => {
+    if (typeof window === 'undefined') return null;
+    const storedValue = window.localStorage.getItem(reportCapitalStorageKey);
+    return storedValue === null ? null : Number(storedValue);
+  });
   const [openingCapitalError, setOpeningCapitalError] = useState('');
 
   const fetchRecords = (collection, options = {}) => pb.collection(collection).getFullList(options).catch(() => []);
@@ -91,16 +97,15 @@ export default function ReportsPage() {
     const firstScore = Math.abs(Number(first.opening_balance ?? first.balance ?? 0)) + Math.abs(Number(first.balance ?? 0));
     const secondScore = Math.abs(Number(second.opening_balance ?? second.balance ?? 0)) + Math.abs(Number(second.balance ?? 0));
 
-    if (secondScore !== firstScore) {
-      return secondScore - firstScore;
-    }
+    if (secondScore !== firstScore) return secondScore - firstScore;
 
     const firstTime = new Date(first.updated || first.created || 0).getTime();
     const secondTime = new Date(second.updated || second.created || 0).getTime();
     return secondTime - firstTime;
   })[0] || {};
 
-  const openingCapital = Number(treasury.opening_balance ?? treasury.balance ?? 0);
+  const treasuryOpeningBalance = Number(treasury.opening_balance ?? treasury.balance ?? 0);
+  const openingCapital = reportOpeningCapital ?? treasuryOpeningBalance;
 
   const treasuryMovementEntries = [
     ...expenses
@@ -137,6 +142,16 @@ export default function ReportsPage() {
       })
       .map((transaction) => ({
         amount: -Number(transaction.amount || 0),
+        date: transaction.date || transaction.created || '',
+      })),
+    ...clientTransactions
+      .filter((transaction) => {
+        const isOpening = String(transaction.type || '').toLowerCase().includes('open') || String(transaction.notes || '').toLowerCase().includes('افتتاحي');
+        const isSettlement = String(transaction.notes || '').startsWith('تسوية (');
+        return !isOpening && !isSettlement && ['treasury', 'خزنة', 'كاش', ''].includes(String(transaction.destination || ''));
+      })
+      .map((transaction) => ({
+        amount: Number(transaction.amount || 0),
         date: transaction.date || transaction.created || '',
       })),
     ...salesInvoices
@@ -198,7 +213,7 @@ export default function ReportsPage() {
       .filter((transaction) => transaction.date && (transaction.amount !== 0 || String(transaction.amount || '').trim() !== '')),
   ].filter((entry) => entry.date).sort((first, second) => new Date(first.date) - new Date(second.date));
 
-  const derivedTreasuryBalance = openingCapital + treasuryMovementEntries.reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+  const derivedTreasuryBalance = treasuryOpeningBalance + treasuryMovementEntries.reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
   const storedTreasuryBalance = Number(treasury.balance ?? treasury.opening_balance ?? 0);
   const treasuryBalance = Math.abs(storedTreasuryBalance - derivedTreasuryBalance) > 1
     ? derivedTreasuryBalance
@@ -208,14 +223,13 @@ export default function ReportsPage() {
     mutationFn: async () => {
       const value = Number(openingCapitalInput);
       if (!Number.isFinite(value)) throw new Error('invalid_opening_capital');
-      if (treasury.id) {
-        return pb.collection('treasury').update(treasury.id, { opening_balance: value });
-      }
-      return pb.collection('treasury').create({ opening_balance: value, balance: 0 });
+      window.localStorage.setItem(reportCapitalStorageKey, String(value));
+      return value;
     },
-    onSuccess: () => {
+    onSuccess: value => {
+      setReportOpeningCapital(value);
+      setOpeningCapitalInput(null);
       setOpeningCapitalError('');
-      queryClient.invalidateQueries({ queryKey: ['report_treasury'] });
     },
     onError: error => setOpeningCapitalError(error.message || 'تعذر حفظ رأس المال الأساسي.'),
   });
@@ -361,7 +375,7 @@ export default function ReportsPage() {
               type="number" 
               min="0" 
               step="0.01" 
-              value={openingCapitalInput ?? treasury.opening_balance ?? ''} 
+              value={openingCapitalInput ?? reportOpeningCapital ?? treasuryOpeningBalance}
               onChange={event => { setOpeningCapitalInput(event.target.value); setOpeningCapitalError(''); }} 
               placeholder="رأس المال الأساسي" 
               className="w-full border bg-gray-50 p-2 rounded-xl text-xs" 
