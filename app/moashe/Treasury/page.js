@@ -154,7 +154,7 @@ export default function TreasuryPage() {
       if (treasury) {
         return await pb.collection('treasury').update(treasury.id, {
           opening_balance: val,
-          balance: val,
+          balance: roundMoney(currentBalance - openingBalance + val),
         });
       } else {
         return await pb.collection('treasury').create({
@@ -172,12 +172,14 @@ export default function TreasuryPage() {
 
   // Mutation لحذف أي حركة معلقة للأدمن فقط
   const deleteTransactionMutation = useMutation({
-    mutationFn: async ({ id, collectionName }) => {
+    mutationFn: async ({ id, collectionName, signedAmount }) => {
       if (!isAdmin) {
         throw new Error('عذراً، هذه الصلاحية للأدمن فقط.');
       }
       if (collectionName === 'treasury_transactions') {
         const transaction = await pb.collection(collectionName).getOne(id);
+        const movementType = String(transaction.movement_type || '').toLowerCase();
+        const isBankTransferToTreasury = movementType === 'bank_transfer' && String(transaction.title || '').includes('إلى الخزنة');
         if (String(transaction.movement_type || '').toLowerCase() === 'bank_deposit') {
           const bank = banks.find(item => item.id === transaction.bank_id);
           if (bank) {
@@ -191,7 +193,7 @@ export default function TreasuryPage() {
             });
           }
         }
-        if (String(transaction.movement_type || '').toLowerCase() === 'bank_transfer' && String(transaction.title || '').includes('إلى الخزنة')) {
+        if (isBankTransferToTreasury) {
           const bank = banks.find(item => item.id === transaction.bank_id);
           if (bank) {
             await pb.collection('banks').update(bank.id, {
@@ -206,9 +208,24 @@ export default function TreasuryPage() {
         }
         if (String(transaction.movement_type || '').toLowerCase() === 'cash_deposit' && treasury?.id) {
           await pb.collection('treasury').update(treasury.id, {
-            balance: Math.max(0, Number(treasury.balance || 0) - Number(transaction.amount || 0)),
+            balance: roundMoney(currentBalance - Number(transaction.amount || 0)),
           });
         }
+        if (
+          treasury?.id &&
+          Number.isFinite(Number(signedAmount)) &&
+          movementType !== 'bank_deposit' &&
+          movementType !== 'cash_deposit' &&
+          !isBankTransferToTreasury
+        ) {
+          await pb.collection('treasury').update(treasury.id, {
+            balance: roundMoney(currentBalance - Number(signedAmount)),
+          });
+        }
+      } else if (treasury?.id && Number.isFinite(Number(signedAmount))) {
+        await pb.collection('treasury').update(treasury.id, {
+          balance: roundMoney(currentBalance - Number(signedAmount)),
+        });
       }
       return await pb.collection(collectionName).delete(id);
     },
@@ -651,7 +668,7 @@ export default function TreasuryPage() {
     }));
 
   const getTransactionDate = (transaction) => {
-    return transaction.created || transaction.date;
+    return transaction.date || transaction.created;
   };
 
   const getTransactionTimestamp = (transaction) => {
@@ -1027,7 +1044,11 @@ const allTransactions = [...transactionsWithTreasuryBalance].reverse();
                       <button
                         onClick={async () => {
                           const confirmed = await requestConfirmation('هل أنت متأكد من حذف هذه الحركة نهائياً وتحديث رصيد الخزنة؟');
-                          if (confirmed) deleteTransactionMutation.mutate({ id: tx.id, collectionName: tx.collection });
+                          if (confirmed) deleteTransactionMutation.mutate({
+                            id: tx.id,
+                            collectionName: tx.collection,
+                            signedAmount: tx.signedAmount,
+                          });
                         }}
                         className="bg-red-50 text-red-600 hover:bg-red-600 hover:text-white px-2.5 py-1.5 rounded-xl text-[10px] font-bold transition"
                         title="حذف الحركة"
