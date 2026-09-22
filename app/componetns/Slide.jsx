@@ -118,6 +118,7 @@ export default function Sidebar() {
                   <Link href="/moashe/Treasury" className={navLinkClass('/moashe/Treasury')}>الخزنه </Link>
                   <Link href="/moashe/banks" className={navLinkClass('/moashe/banks')}>البنوك </Link>
                   <Link href="/moashe/salaires" className={navLinkClass('/moashe/salaires')}>المرتبات </Link>
+                  <Link href="/moashe/featured-employees" className={navLinkClass('/moashe/featured-employees')}>الموظفون المميزون </Link>
                   <Link href="/moashe/other-accounts" className={navLinkClass('/moashe/other-accounts')}>عهده</Link>
                   <Link href="/moashe/manadeb" className={navLinkClass('/moashe/manadeb')}>المناديب </Link>
                   <Link href="/moashe/price" className={navLinkClass('/moashe/price')}>الاسعار </Link>
