@@ -14,10 +14,16 @@ export default function ProductionStockPage() {
   const [editStockQuantity, setEditStockQuantity] = useState('');
   const [deleteConfirmModal, setDeleteConfirmModal] = useState({ isOpen: false, title: '', message: '', onConfirm: null });
   const [historyModal, setHistoryModal] = useState({ isOpen: false, product: null });
+  const [salesModal, setSalesModal] = useState({ isOpen: false, product: null });
   const [historyEditModal, setHistoryEditModal] = useState({ isOpen: false, item: null, product: null });
   const [historyEditQuantity, setHistoryEditQuantity] = useState('');
   const [historyStartDate, setHistoryStartDate] = useState('');
   const [historyEndDate, setHistoryEndDate] = useState('');
+  const [salesSearchTerm, setSalesSearchTerm] = useState('');
+  const [salesStartDate, setSalesStartDate] = useState('');
+  const [salesEndDate, setSalesEndDate] = useState('');
+  const [salesModalStartDate, setSalesModalStartDate] = useState('');
+  const [salesModalEndDate, setSalesModalEndDate] = useState('');
 
   // جلب مخزن المنتجات الجاهزة مع تفعيل التحديث التلقائي عند الرجوع للصفحة
   const { data: productsStock = [], isLoading, refetch } = useQuery({
@@ -54,6 +60,11 @@ export default function ProductionStockPage() {
     queryFn: () => pb.collection('product_stock_transactions').getFullList().catch(() => []),
   });
 
+  const { data: salesInvoices = [] } = useQuery({
+    queryKey: ['sales_invoices_products_stock'],
+    queryFn: () => pb.collection('sales_invoices').getFullList({ sort: '-created' }).catch(() => []),
+  });
+
   // تجهيز وتنظيف البيانات المأخوذة من جدول الـ Stock (مع دعم حقول التكلفة)
   const inventoryList = productsStock.map(item => {
     const productName = item.product_name || item.name || 'منتج بدون اسم';
@@ -84,6 +95,35 @@ export default function ProductionStockPage() {
     String(item.product_name || '').toLowerCase().includes(searchTerm.toLowerCase())
   );
 
+  const salesSummary = inventoryList
+    .map((product) => {
+      const normalizeName = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      const productName = normalizeName(product.product_name);
+      const productSales = salesInvoices.flatMap((invoice) => {
+        const invoiceDate = String(invoice.created || '').slice(0, 10);
+        if (salesStartDate && invoiceDate < salesStartDate) return [];
+        if (salesEndDate && invoiceDate > salesEndDate) return [];
+
+        return (Array.isArray(invoice.items) ? invoice.items : [])
+          .filter((item) => normalizeName(item.name || item.product_name) === productName)
+          .map((item) => ({
+            quantity: Number(item.qty || 0),
+            total: Number(item.price || 0) * Number(item.qty || 0),
+          }));
+      });
+
+      return {
+        ...product,
+        salesCount: productSales.length,
+        soldQuantity: productSales.reduce((sum, sale) => sum + sale.quantity, 0),
+        salesTotal: productSales.reduce((sum, sale) => sum + sale.total, 0),
+      };
+    })
+    .filter((product) => String(product.product_name || '').toLowerCase().includes(salesSearchTerm.toLowerCase().trim()));
+
+  const salesSummaryQuantity = salesSummary.reduce((sum, product) => sum + product.soldQuantity, 0);
+  const salesSummaryTotal = salesSummary.reduce((sum, product) => sum + product.salesTotal, 0);
+
   const getProductHistory = (product) => {
     const normalizeName = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
     const productName = normalizeName(product.product_name);
@@ -113,6 +153,31 @@ export default function ProductionStockPage() {
       const itemDate = String(item.date || '').slice(0, 10);
       return (!historyStartDate || itemDate >= historyStartDate) && (!historyEndDate || itemDate <= historyEndDate);
     });
+  };
+
+  const getProductSales = (product) => {
+    const normalizeName = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const productName = normalizeName(product.product_name);
+
+    return salesInvoices
+      .filter((invoice) => {
+        const invoiceDate = String(invoice.created || '').slice(0, 10);
+        return (!salesModalStartDate || invoiceDate >= salesModalStartDate)
+          && (!salesModalEndDate || invoiceDate <= salesModalEndDate);
+      })
+      .flatMap((invoice) => (Array.isArray(invoice.items) ? invoice.items : [])
+        .filter((item) => normalizeName(item.name || item.product_name) === productName)
+        .map((item, index) => ({
+          id: `${invoice.id}-${index}`,
+          invoiceNumber: invoice.invoice_number || invoice.id.slice(-6),
+          customer: invoice.customer_name || 'عميل فوري',
+          quantity: Number(item.qty || 0),
+          unitPrice: Number(item.price || 0),
+          total: Number(item.price || 0) * Number(item.qty || 0),
+          date: invoice.created,
+          paymentType: invoice.payment_type === 'credit' ? 'آجل' : 'كاش',
+        })))
+      .sort((first, second) => new Date(second.date || 0) - new Date(first.date || 0));
   };
 
   const adjustmentMutation = useMutation({
@@ -512,6 +577,17 @@ export default function ProductionStockPage() {
                           >
                             عرض السجل
                           </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSalesModalStartDate('');
+                              setSalesModalEndDate('');
+                              setSalesModal({ isOpen: true, product: item });
+                            }}
+                            className="bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-100 px-3 py-1 rounded-xl transition"
+                          >
+                            قائمة المبيعات
+                          </button>
                           {isAdmin && (
                             <>
                               <button
@@ -546,6 +622,70 @@ export default function ProductionStockPage() {
               </table>
             </div>
           )}
+        </div>
+      </div>
+
+      <div className="bg-white shadow-xl rounded-2xl border border-gray-100 overflow-hidden">
+        <div className="p-4 bg-emerald-50 border-b border-emerald-100">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h2 className="text-lg font-black text-gray-800">📊 إجمالي مبيعات المنتجات</h2>
+              <p className="text-xs text-gray-500 mt-1">تقرير مجمع للمبيعات حسب المنتج خلال الفترة المحددة</p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 w-full lg:w-auto">
+              <input
+                type="search"
+                value={salesSearchTerm}
+                onChange={(event) => setSalesSearchTerm(event.target.value)}
+                placeholder="بحث باسم المنتج..."
+                className="border border-gray-200 bg-white p-2.5 rounded-xl text-xs font-bold outline-none"
+              />
+              <input
+                type="date"
+                value={salesStartDate}
+                onChange={(event) => setSalesStartDate(event.target.value)}
+                className="border border-gray-200 bg-white p-2.5 rounded-xl text-xs font-bold outline-none"
+              />
+              <input
+                type="date"
+                value={salesEndDate}
+                onChange={(event) => setSalesEndDate(event.target.value)}
+                className="border border-gray-200 bg-white p-2.5 rounded-xl text-xs font-bold outline-none"
+              />
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 border-b border-gray-100">
+          <div className="rounded-xl bg-gray-50 p-3 text-xs font-bold text-gray-600">المنتجات الظاهرة: <span className="text-gray-900">{salesSummary.length}</span></div>
+          <div className="rounded-xl bg-blue-50 p-3 text-xs font-bold text-blue-700">إجمالي الكمية المباعة: <span className="font-black">{salesSummaryQuantity.toLocaleString()}</span></div>
+          <div className="rounded-xl bg-emerald-50 p-3 text-xs font-bold text-emerald-700">إجمالي قيمة المبيعات: <span className="font-black">{salesSummaryTotal.toLocaleString()} ج.م</span></div>
+        </div>
+        <div className="overflow-x-auto p-4">
+          <table className="w-full text-right text-xs">
+            <thead className="bg-gray-50 text-gray-600">
+              <tr>
+                <th className="p-3">المنتج</th>
+                <th className="p-3">عدد الفواتير</th>
+                <th className="p-3">إجمالي الكمية المباعة</th>
+                {/* <th className="p-3">إجمالي المبيعات</th> */}
+                <th className="p-3">الرصيد الحالي</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {salesSummary.map((product) => (
+                <tr key={product.id} className="hover:bg-gray-50">
+                  <td className="p-3 font-black text-gray-900">{product.product_name}</td>
+                  <td className="p-3 font-bold text-blue-700">{product.salesCount.toLocaleString()}</td>
+                  <td className="p-3 font-black text-red-700">{product.soldQuantity.toLocaleString()}</td>
+                  {/* <td className="p-3 font-black text-emerald-700">{product.salesTotal.toLocaleString()} ج.م</td> */}
+                  <td className="p-3 font-bold text-indigo-700">{product.stock.toLocaleString()}</td>
+                </tr>
+              ))}
+              {!salesSummary.length && (
+                <tr><td colSpan="5" className="p-8 text-center text-gray-400">لا توجد منتجات مطابقة للبحث أو الفترة المحددة.</td></tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -646,6 +786,74 @@ export default function ProductionStockPage() {
             </div>
             <div className="flex justify-end">
               <button type="button" onClick={() => setHistoryModal({ isOpen: false, product: null })} className="bg-gray-900 text-white px-5 py-2 rounded-xl text-xs font-bold">إغلاق</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {salesModal.isOpen && salesModal.product && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-5xl w-full max-h-[88vh] shadow-2xl flex flex-col gap-4">
+            <div className="flex justify-between items-center border-b pb-3">
+              <div>
+                <h2 className="text-lg font-black text-gray-800">🧾 قائمة مبيعات: {salesModal.product.product_name}</h2>
+                <p className="text-xs text-gray-500 mt-1">عدد مرات البيع: <span className="font-black text-emerald-700">{getProductSales(salesModal.product).length}</span></p>
+              </div>
+              <button type="button" onClick={() => setSalesModal({ isOpen: false, product: null })} className="text-gray-400 hover:text-gray-700 text-xl">✕</button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <label className="text-xs font-bold text-gray-700">
+                من تاريخ
+                <input
+                  type="date"
+                  value={salesModalStartDate}
+                  onChange={(event) => setSalesModalStartDate(event.target.value)}
+                  className="mt-1 w-full border border-gray-200 bg-gray-50 p-3 rounded-xl text-xs font-bold"
+                />
+              </label>
+              <label className="text-xs font-bold text-gray-700">
+                إلى تاريخ
+                <input
+                  type="date"
+                  value={salesModalEndDate}
+                  onChange={(event) => setSalesModalEndDate(event.target.value)}
+                  className="mt-1 w-full border border-gray-200 bg-gray-50 p-3 rounded-xl text-xs font-bold"
+                />
+              </label>
+            </div>
+            <div className="overflow-auto border border-gray-100 rounded-xl">
+              <table className="w-full text-right text-xs">
+                <thead className="bg-gray-50 sticky top-0">
+                  <tr>
+                    <th className="p-3">رقم الفاتورة</th>
+                    <th className="p-3">العميل</th>
+                    <th className="p-3">الكمية</th>
+                    <th className="p-3">سعر الوحدة</th>
+                    <th className="p-3">إجمالي المنتج</th>
+                    <th className="p-3">طريقة الدفع</th>
+                    <th className="p-3">تاريخ البيع</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {getProductSales(salesModal.product).map((sale) => (
+                    <tr key={sale.id} className="hover:bg-gray-50">
+                      <td className="p-3 font-bold text-blue-700">{sale.invoiceNumber}</td>
+                      <td className="p-3 font-bold text-gray-800">{sale.customer}</td>
+                      <td className="p-3 font-black text-red-700">{sale.quantity.toLocaleString()}</td>
+                      <td className="p-3 text-gray-600">{sale.unitPrice.toLocaleString()} ج.م</td>
+                      <td className="p-3 font-black text-emerald-700">{sale.total.toLocaleString()} ج.م</td>
+                      <td className="p-3">{sale.paymentType}</td>
+                      <td className="p-3 text-gray-600">{sale.date ? new Date(sale.date).toLocaleString('ar-EG') : '-'}</td>
+                    </tr>
+                  ))}
+                  {!getProductSales(salesModal.product).length && (
+                    <tr><td colSpan="7" className="p-8 text-center text-gray-400">لا توجد مبيعات مسجلة لهذا المنتج.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex justify-end">
+              <button type="button" onClick={() => setSalesModal({ isOpen: false, product: null })} className="bg-gray-900 text-white px-5 py-2 rounded-xl text-xs font-bold">إغلاق</button>
             </div>
           </div>
         </div>

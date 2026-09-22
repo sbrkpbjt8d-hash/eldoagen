@@ -2,68 +2,57 @@ import Image from "next/image";
 
 export default function Home() {
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.js
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+    // <main
+    //   dir="rtl"
+    //   className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#fff8f5] px-5 py-10 text-[#3c2630]"
+    // >
+    //   <div className="pointer-events-none absolute -right-24 -top-24 h-72 w-72 rounded-full bg-[#f7c8c8]/45 blur-3xl" />
+    //   <div className="pointer-events-none absolute -bottom-32 -left-20 h-80 w-80 rounded-full bg-[#f4dfb8]/50 blur-3xl" />
+
+    //   <section className="relative grid w-full max-w-5xl items-center gap-10 overflow-hidden rounded-4xl border border-white/80 bg-white/75 p-6 shadow-[0_24px_80px_rgba(104,55,67,0.14)] backdrop-blur-sm sm:p-10 md:grid-cols-[1fr_1.05fr] md:p-12">
+    //     <div className="order-2 space-y-6 text-center md:order-1 md:text-right">
+    //       <div className="inline-flex items-center gap-2 rounded-full bg-[#fff0ee] px-4 py-2 text-sm font-bold text-[#a54d61]">
+    //         <span aria-hidden="true">♡</span>
+    //         أجمل نعمة في حياتي انتى وانس
+    //       </div>
+
+    //       <div className="space-y-3">
+    //         <p className="text-sm font-bold tracking-[0.18em] text-[#b87983]">إلى أمي الغالية</p>
+    //         <h1 className="text-4xl font-black leading-tight text-[#542d3b] sm:text-6xl">
+    //           بحبك يا أمي
+    //         </h1>
+    //         <p className="mx-auto max-w-lg text-lg leading-9 text-[#765963] md:mx-0">
+    //           ربنا يخليكي ليا ويديم وجودك في حياتي. إنتِ الحنية والأمان وأجمل حاجة في الدنيا، وكل كلمة حلوة مش هتقدر توصف قد إيه أنا بحبك.
+    //         </p>
+    //       </div>
+
+    //       <div className="flex items-center justify-center gap-3 text-sm font-bold text-[#a54d61] md:justify-start">
+    //         <span className="h-px w-12 bg-[#e9b4b7]" />
+    //         ربنا يحفظك ويطمن قلبي عليكي
+    //         <span className="h-px w-12 bg-[#e9b4b7]" />
+    //       </div>
+    //     </div>
+
+    //     <div className="order-1 md:order-2">
+    //       <div className="relative mx-auto aspect-square w-full max-w-108 rotate-1 rounded-[1.75rem] bg-[#ead1b0] p-3 shadow-[0_18px_45px_rgba(91,47,57,0.2)] transition-transform duration-500 hover:rotate-0">
+    //         <div className="relative h-full w-full overflow-hidden rounded-[1.25rem] bg-[#f6e9dd]">
+    //           <Image
+    //             src="/mother.jpeg"
+    //             alt="أمي الغالية"
+    //             fill
+    //             priority
+    //             sizes="(max-width: 768px) 90vw, 430px"
+    //             className="object-cover object-center"
+    //           />
+    //         </div>
+    //         <div className="absolute -bottom-4 -left-4 flex h-14 w-14 items-center justify-center rounded-full border-4 border-white bg-[#d8737c] text-2xl text-white shadow-lg" aria-hidden="true">
+    //           ♥
+    //         </div>
+    //       </div>
+    //     </div>
+    //   </section>
+    // </main>
+    <>
+    </>
   );
 }

@@ -260,11 +260,11 @@ export default function SuppliersPage() {
     new Date(a.date || a.created) - new Date(b.date || b.created)
   );
 
-  let runningBalance = 0;
-  const statementRowsWithBalance = sortedStatementRows.map((row) => {
-    runningBalance += row.effectAmount;
-    return { ...row, runningBalance };
-  });
+  const statementRowsWithBalance = sortedStatementRows.reduce((rows, row) => {
+    const previousBalance = rows.length ? rows[rows.length - 1].runningBalance : 0;
+    const runningBalance = previousBalance + row.effectAmount;
+    return [...rows, { ...row, runningBalance }];
+  }, []);
 
   const statementRows = statementRowsWithBalance.filter((row) => {
     const date = String(row.date || row.created || '').slice(0, 10);
@@ -417,8 +417,21 @@ export default function SuppliersPage() {
             </thead>
             <tbody className="divide-y">
               {filteredSuppliers.map((supplier) => {
-                const lastPurchase = allPurchaseInvoices.find(inv => inv.supplier_id === supplier.id);
-                const lastPayment = allTransactions.find(t => t.supplier_id === supplier.id && t.type === 'payment');
+                const relationId = (value) => typeof value === 'string' ? value : value?.id;
+                const transactionTimestamp = (transaction) => Date.parse(transaction.date || transaction.created || '') || 0;
+                const lastPurchase = allPurchaseInvoices
+                  .filter(inv => relationId(inv.supplier_id) === supplier.id)
+                  .sort((first, second) => (Date.parse(second.created || '') || 0) - (Date.parse(first.created || '') || 0))[0];
+                const lastPayment = allTransactions
+                  .filter((transaction) => {
+                    if (relationId(transaction.supplier_id) !== supplier.id) return false;
+                    const transactionType = String(transaction.type || '').toLowerCase();
+                    const transactionNotes = String(transaction.notes || '').toLowerCase();
+                    return ['payment', 'supplier_payment', 'supplierpayment'].includes(transactionType)
+                      || transactionNotes.includes('سداد')
+                      || transactionNotes.includes('تسوية (خصم');
+                  })
+                  .sort((first, second) => transactionTimestamp(second) - transactionTimestamp(first))[0];
 
                 return (
                   <tr key={supplier.id} className="hover:bg-gray-50">
