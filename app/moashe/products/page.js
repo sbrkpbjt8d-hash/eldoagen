@@ -33,6 +33,7 @@ export default function ProductsPage() {
   const [editingMaterials, setEditingMaterials] = useState([]);
   const [editingProductName, setEditingProductName] = useState('');
   const [expandedProductRecipes, setExpandedProductRecipes] = useState({});
+  const [recipePrintData, setRecipePrintData] = useState(null);
   const recipePrintRef = useRef(null);
   const printRecipe = useReactToPrint({
     contentRef: recipePrintRef,
@@ -45,6 +46,8 @@ export default function ProductsPage() {
       th, td { padding: 9px; border: 1px solid #9ca3af; text-align: right; }
       th { background: #eef2ff !important; font-weight: 800; }
       tr { break-inside: avoid; }
+      .recipe-print-summary { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 16px; font-size: 13px; font-weight: 700; }
+      .recipe-print-summary div { padding: 8px; border: 1px solid #9ca3af; }
     `,
   });
 
@@ -286,27 +289,40 @@ export default function ProductsPage() {
       {/* إشعارات الـ Toasts */}
       <Toaster position="top-center" reverseOrder={false} />
 
-      {editingMaterialsProd && editingMaterials.length > 0 && (
+      {((editingMaterialsProd && editingMaterials.length > 0) || recipePrintData) && (
         <div ref={recipePrintRef} className="product-recipe-print-document print-only" dir="rtl">
-          <h1>تركيبة المنتج: {editingProductName}</h1>
+          <h1>تركيبة المنتج: {recipePrintData?.productName || editingProductName}</h1>
           <table>
             <thead>
               <tr>
                 <th>#</th>
                 <th>الخامة</th>
                 <th>الكمية</th>
+                <th>سعر الوحدة</th>
+                <th>تكلفة البند</th>
               </tr>
             </thead>
             <tbody>
-              {editingMaterials.map((item, index) => (
-                <tr key={item.id}>
+              {(recipePrintData?.materials || editingMaterials).map((item, index) => (
+                <tr key={item.id || index}>
                   <td>{index + 1}</td>
                   <td>{item.name}</td>
                   <td>{formatQuantity(item.qtyNeeded)}</td>
+                  <td>{Number(item.price || 0).toLocaleString()} ج.م</td>
+                  <td>{(Number(item.price || 0) * Number(item.qtyNeeded || 0)).toLocaleString()} ج.م</td>
                 </tr>
               ))}
             </tbody>
           </table>
+          {recipePrintData && (
+            <div className="recipe-print-summary">
+              <div>إجمالي تكلفة الخامات: {recipePrintData.materialsCost.toLocaleString()} ج.م</div>
+              <div>التكلفة الإضافية: {recipePrintData.otherCost.toLocaleString()} ج.م</div>
+              <div>إجمالي التكلفة: {recipePrintData.totalCost.toLocaleString()} ج.م</div>
+              <div>سعر البيع: {recipePrintData.sellingPrice.toLocaleString()} ج.م</div>
+              <div>الربح: {recipePrintData.profit.toLocaleString()} ج.م</div>
+            </div>
+          )}
         </div>
       )}
 
@@ -481,7 +497,7 @@ export default function ProductsPage() {
             </div>
           </div>
 
-          <div className="p-4 space-y-4 max-h-[750px] overflow-y-auto divide-y">
+          <div className="p-4 space-y-4 max-h-187.5 overflow-y-auto divide-y">
             {filteredProducts.length === 0 ? (
               <div className="p-12 text-center text-gray-400 text-sm">
                 {searchTerm ? 'لا توجد نتائج مطابقة للبحث.' : 'لا توجد منتجات مسجلة حتى الآن.'}
@@ -744,12 +760,48 @@ export default function ProductsPage() {
                       </button>
                       {areRecipesVisible && (
                         <div className="mt-3 overflow-x-auto rounded-xl border border-gray-200 bg-white">
-                          <table className="w-full min-w-[420px] text-right text-[11px]">
+                          <div className="flex justify-end border-b border-gray-100 p-2 print:hidden">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const printMaterials = prodRecipes.map((recipe) => {
+                                  const matId = recipe.raw_material_id || recipe.material_id;
+                                  const matInfo = materials.find((material) => material.id === matId);
+                                  return {
+                                    id: matId,
+                                    name: matInfo?.name || 'خامة',
+                                    price: Number(matInfo?.price || 0),
+                                    qtyNeeded: Number(recipe.quantity_needed || recipe.qtyNeeded || recipe.quantity || 0),
+                                  };
+                                });
+                                const materialsCost = printMaterials.reduce(
+                                  (sum, material) => sum + material.price * material.qtyNeeded,
+                                  0,
+                                );
+                                const totalCost = materialsCost + otherCostVal;
+                                setRecipePrintData({
+                                  productName: prodName,
+                                  materials: printMaterials,
+                                  materialsCost,
+                                  otherCost: otherCostVal,
+                                  totalCost,
+                                  sellingPrice: sellingPriceVal,
+                                  profit: sellingPriceVal - totalCost,
+                                });
+                                setTimeout(() => printRecipe(), 0);
+                              }}
+                              className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-xl text-xs font-bold"
+                            >
+                              🖨️ طباعة التقرير
+                            </button>
+                          </div>
+                          <table className="w-full min-w-105 text-right text-[11px]">
                             <thead className="bg-blue-50 text-blue-900">
                               <tr>
                                 <th className="p-2.5 font-black">#</th>
                                 <th className="p-2.5 font-black">الخامة</th>
                                 <th className="p-2.5 font-black">الكمية</th>
+                                <th className="p-2.5 font-black">سعر الوحدة</th>
                                 <th className="p-2.5 font-black">التكلفة</th>
                               </tr>
                             </thead>
@@ -767,6 +819,7 @@ export default function ProductsPage() {
                                     <td className="p-2.5 text-gray-400">{idx + 1}</td>
                                     <td className="p-2.5 font-bold text-gray-800">{matName}</td>
                                     <td className="p-2.5 font-bold text-blue-700">{formatQuantity(qty)} طن</td>
+                                    <td className="p-2.5 font-bold text-violet-700">{matPrice.toLocaleString()} ج.م</td>
                                     <td className="p-2.5 font-bold text-emerald-700">{itemTotalCost.toFixed(1)} ج.م</td>
                                   </tr>
                                 );
