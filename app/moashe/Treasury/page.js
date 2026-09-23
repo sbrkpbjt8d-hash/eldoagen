@@ -56,11 +56,14 @@ export default function TreasuryPage() {
   const { data: treasuryRecords = [] } = useQuery({
     queryKey: ['treasury'],
     queryFn: async () => {
-      return await pb.collection('treasury').getFullList().catch(() => []);
+      return await pb.collection('treasury').getFullList({ sort: '-updated,-created' }).catch(() => []);
     },
   });
-  const treasury = treasuryRecords.find((record) => Object.prototype.hasOwnProperty.call(record, 'opening_balance')) || null;
-  const openingBalance = treasury ? Number(treasury.opening_balance || 0) : 0;
+  const sortedTreasuryRecords = [...treasuryRecords].sort((a, b) => new Date(b.updated || b.created || 0) - new Date(a.updated || a.created || 0));
+  const treasury = sortedTreasuryRecords.find((record) => Object.prototype.hasOwnProperty.call(record, 'opening_balance')) || sortedTreasuryRecords[0] || null;
+  const hasTreasuryOpeningRecord = treasuryRecords.some((record) => Object.prototype.hasOwnProperty.call(record, 'opening_balance'));
+  const openingBalance = hasTreasuryOpeningRecord && treasury ? Number(treasury.opening_balance || 0) : 0;
+  const effectiveOpeningBalance = openingBalance;
 
   const { data: banks = [] } = useQuery({
     queryKey: ['banks'],
@@ -255,7 +258,15 @@ export default function TreasuryPage() {
 
       const actorName = currentUser?.name || currentUser?.email || 'مستخدم النظام';
       const date = new Date().toISOString();
-      await pb.collection('treasury').update(treasury?.id, { balance: roundMoney(currentBalance - amount) });
+      const treasuryTargetBalance = roundMoney(currentBalance - amount);
+      if (treasury?.id) {
+        await pb.collection('treasury').update(treasury.id, { balance: treasuryTargetBalance });
+      } else {
+        await pb.collection('treasury').create({
+          opening_balance: 0,
+          balance: treasuryTargetBalance,
+        });
+      }
       await pb.collection('banks').update(bank.id, {
         balance: roundMoney(Number(bank.balance || 0) + amount),
         actor_name: actorName,
@@ -293,12 +304,16 @@ export default function TreasuryPage() {
 
       const actorName = currentUser?.name || currentUser?.email || 'مستخدم النظام';
       const date = new Date().toISOString();
+      const treasuryTargetBalance = roundMoney(currentBalance + amount);
       if (treasury?.id) {
         await pb.collection('treasury').update(treasury.id, {
-          balance: roundMoney(Number(treasury.balance ?? openingBalance) + amount),
+          balance: treasuryTargetBalance,
         });
       } else {
-        await pb.collection('treasury').create({ opening_balance: 0, balance: amount });
+        await pb.collection('treasury').create({
+          opening_balance: 0,
+          balance: treasuryTargetBalance,
+        });
       }
 
       return await pb.collection('treasury_transactions').create({
@@ -710,7 +725,7 @@ const sortedAscTransactions = [
 const transactionsWithTreasuryBalance = sortedAscTransactions.reduce((transactions, tx) => {
   const previousBalance = transactions.length > 0
     ? transactions[transactions.length - 1].treasuryBalance
-    : openingBalance;
+    : effectiveOpeningBalance;
   const treasuryBalance = previousBalance + tx.signedAmount;
   return [
     ...transactions,
@@ -723,11 +738,6 @@ const transactionsWithTreasuryBalance = sortedAscTransactions.reduce((transactio
 
 // 3. عكس الترتيب لعرض الأحدث في الأعلى مع الاحتفاظ بالأرصدة الصحيحة لكل حركة
 const allTransactions = [...transactionsWithTreasuryBalance].reverse();
-    
-
-
-
-
 
   const filteredTreasuryTransactions = allTransactions.filter(transaction => {
     if (movementTypeFilter !== 'all' && transaction.movementType !== movementTypeFilter) return false;
@@ -737,10 +747,20 @@ const allTransactions = [...transactionsWithTreasuryBalance].reverse();
     return true;
   });
 
-  // حساب الرصيد الحالي
-  const currentBalance = transactionsWithTreasuryBalance.length > 0 
-    ? transactionsWithTreasuryBalance[transactionsWithTreasuryBalance.length - 1].treasuryBalance 
-    : openingBalance;
+  // الرصيد الحقيقي يجب أن يُحسب من الحركات الفعلية؛ وإذا كانت بيانات الخزنة فارغة أو قديمة
+  // نستخدم الحساب التراكمي من المعاملات بشكل أساسي، مع الاحتفاظ بقيمة treasury.balance فقط
+  // كخطة احتياطية عندما لا توجد أي حركة على الإطلاق.
+  const totalDepositsFromTransactions = allTransactions
+    .filter((transaction) => transaction.signedAmount > 0)
+    .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+  const totalWithdrawalsFromTransactions = allTransactions
+    .filter((transaction) => transaction.signedAmount < 0)
+    .reduce((sum, transaction) => sum + Number(Math.abs(transaction.amount || 0)), 0);
+  const calculatedBalanceFromTransactions = effectiveOpeningBalance + totalDepositsFromTransactions - totalWithdrawalsFromTransactions;
+  const storedTreasuryBalance = Number(treasury?.balance ?? effectiveOpeningBalance ?? 0);
+  const currentBalance = allTransactions.length > 0
+    ? calculatedBalanceFromTransactions
+    : storedTreasuryBalance;
 
   const periodTransactions = allTransactions.filter((transaction) => {
     const transactionDate = new Date(transaction.date);
@@ -818,12 +838,12 @@ const allTransactions = [...transactionsWithTreasuryBalance].reverse();
 
         <div className="bg-emerald-600 p-6 rounded-3xl shadow-xl text-white">
           <h2 className="text-xs font-bold opacity-80 uppercase tracking-wider">إجمالي الإيداعات</h2>
-          <p className="text-3xl font-black mt-2">{periodDeposits.toLocaleString()} ج.م</p>
+          <p className="text-3xl font-black mt-2">{totalDepositsFromTransactions.toLocaleString()} ج.م</p>
         </div>
 
         <div className="bg-rose-600 p-6 rounded-3xl shadow-xl text-white">
           <h2 className="text-xs font-bold opacity-80 uppercase tracking-wider">إجمالي المسحوبات</h2>
-          <p className="text-3xl font-black mt-2">{periodWithdrawals.toLocaleString()} ج.م</p>
+          <p className="text-3xl font-black mt-2">{totalWithdrawalsFromTransactions.toLocaleString()} ج.م</p>
         </div>
 
         <div className="bg-white p-6 rounded-3xl shadow-xl border border-gray-100 flex flex-col justify-between">

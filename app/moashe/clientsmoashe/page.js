@@ -69,10 +69,11 @@ export default function ClientsPage() {
   const { data: treasuryRecords = [] } = useQuery({
     queryKey: ['treasury'],
     queryFn: async () => {
-      return await pb.collection('treasury').getFullList().catch(() => []);
+      return await pb.collection('treasury').getFullList({ sort: '-updated,-created' }).catch(() => []);
     },
   });
-  const treasury = treasuryRecords[0] || null;
+  const sortedTreasuryRecords = [...treasuryRecords].sort((a, b) => new Date(b.updated || b.created || 0) - new Date(a.updated || a.created || 0));
+  const treasury = sortedTreasuryRecords.find((record) => Object.prototype.hasOwnProperty.call(record, 'opening_balance')) || sortedTreasuryRecords[0] || null;
 
   const { data: banks = [] } = useQuery({
     queryKey: ['banks'],
@@ -453,8 +454,9 @@ const combinedStatement = [...statementWithBalance].reverse();
     const lastPayment = clientPayments[0] || null;
     const lastInvoice = clientInvoices[0] || null;
     const lastActivityDate = lastPayment?.created || lastPayment?.date || lastInvoice?.created || client.created || '';
+    const nowDate = new Date();
     const daysSinceCollection = lastActivityDate
-      ? Math.floor((Date.now() - new Date(lastActivityDate).getTime()) / (1000 * 60 * 60 * 24))
+      ? Math.floor((nowDate.getTime() - new Date(lastActivityDate).getTime()) / (1000 * 60 * 60 * 24))
       : 0;
     const isOverdue = Number(client.balance || 0) > 0 && daysSinceCollection > 20;
 

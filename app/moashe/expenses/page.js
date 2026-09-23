@@ -24,8 +24,10 @@ import { useReactToPrint } from 'react-to-print';
 export default function ExpensesPage() {
   const queryClient = useQueryClient();
 
-  // تعريف اسم المستخدم الحالي كمتغير نصي وليس كدالة
-  const currentUserName = typeof window !== 'undefined' ? (localStorage.getItem('userName') || 'مسؤول النظام') : 'مسؤول النظام';
+  const currentUserName = () => {
+    if (typeof window === 'undefined') return 'مسؤول النظام';
+    return pb.authStore.model?.name || pb.authStore.model?.email || localStorage.getItem('userName') || 'مسؤول النظام';
+  };
 
   // حالات نماذج الإدخال
   const [catName, setCatName] = useState('');
@@ -66,10 +68,11 @@ export default function ExpensesPage() {
   const { data: treasuryRecords = [] } = useQuery({
     queryKey: ['treasury'],
     queryFn: async () => {
-      return await pb.collection('treasury').getFullList().catch(() => []);
+      return await pb.collection('treasury').getFullList({ sort: '-updated,-created' }).catch(() => []);
     },
   });
-  const treasury = treasuryRecords.find((record) => Object.prototype.hasOwnProperty.call(record, 'opening_balance')) || treasuryRecords[0] || null;
+  const sortedTreasuryRecords = [...treasuryRecords].sort((a, b) => new Date(b.updated || b.created || 0) - new Date(a.updated || a.created || 0));
+  const treasury = sortedTreasuryRecords.find((record) => Object.prototype.hasOwnProperty.call(record, 'opening_balance')) || sortedTreasuryRecords[0] || null;
 
   // 2. جلب قائمة البنوك
   const { data: banks = [] } = useQuery({
@@ -134,7 +137,7 @@ export default function ExpensesPage() {
       return await pb.collection('expense_categories').create({
         name: catName.trim(),
         type: catType,
-        actor_name: currentUserName,
+        actor_name: currentUserName(),
       });
     },
     onSuccess: () => {
@@ -180,7 +183,7 @@ export default function ExpensesPage() {
         date: date,
         payment_source: isTreasury ? 'treasury' : 'bank',
         bank_id: isTreasury ? '' : paymentSource,
-        actor_name: currentUserName,
+        actor_name: currentUserName(),
       };
 
       const newExpense = await pb.collection('expenses').create(expenseData);
@@ -349,7 +352,50 @@ export default function ExpensesPage() {
     return sum;
   }, 0);
 
-  const currentTreasuryBalance = (treasury ? Number(treasury.opening_balance || 0) : 0) + cashClientPayments + cashSupplierPayments + cashSales + cashExpensesTotal * -1 + cashAdvances + cashSalaries + treasurySalaryTransactions + treasuryMovementTotal;
+  // إذا كانت بيانات treasury فارغة أو قديمة، نستخدم الرصيد المحسوب من المعاملات مباشرة.
+  // هذا يمنع ظهور أرقام عالقة من البيانات القديمة عند إعادة تهيئة المشروع.
+  const treasuryFallbackBalance = Number(treasury?.balance ?? treasury?.opening_balance ?? 0);
+  const cashInflowFromTransactions = clientTransactions
+    .filter(tx => ['treasury', 'خزنة', 'كاش', ''].includes(String(tx.destination || '')) && !String(tx.type || '').toLowerCase().includes('open'))
+    .reduce((sum, tx) => sum + Number(tx.amount || 0), 0)
+    + salesInvoices.reduce((sum, invoice) => {
+      const paymentType = String(invoice.payment_type || invoice.payment_method || invoice.type || '').toLowerCase();
+      const isCash = paymentType.includes('cash') || paymentType.includes('كاش') || paymentType.includes('نقدي') || paymentType === '';
+      return isCash ? sum + Number(invoice.total_amount || invoice.amount || 0) : sum;
+    }, 0)
+    + treasuryTransactions
+      .filter(transaction => String(transaction.movement_type || '').toLowerCase() === 'cash_deposit' && String(transaction.source_type || '') === 'treasury')
+      .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0)
+    + treasuryTransactions
+      .filter(transaction => String(transaction.movement_type || '').toLowerCase() === 'bank_transfer' && String(transaction.title || '').includes('إلى الخزنة'))
+      .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+  const cashOutflowFromTransactions = expenses.reduce((sum, expense) => {
+      const bankId = String(expense.bank_id || '').trim().toLowerCase();
+      const bankName = String(expense.bank || '').trim().toLowerCase();
+      const notesValue = String(expense.notes || '').toLowerCase();
+      const isBankExpense = (bankId && bankId !== 'treasury' && bankId !== 'الخزنة') || (bankName && !bankName.includes('خزن')) || notesValue.includes('بنك') || notesValue.includes('visa');
+      return isBankExpense ? sum : sum + Number(expense.amount || 0);
+    }, 0)
+    + supplierTransactions
+      .filter(transaction => ['treasury', 'خزنة', 'كاش', ''].includes(String(transaction.destination || '')) && !String(transaction.type || '').toLowerCase().includes('open'))
+      .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0)
+    + employeeAdvances.filter((advance) => {
+      const hasEmployee = Boolean(advance.employee_id);
+      const isOtherAdvance = String(advance.advance_type || '').toLowerCase() === 'other';
+      return hasEmployee && !isOtherAdvance;
+    }).reduce((sum, advance) => sum + Number(advance.amount || 0), 0)
+    + salariesPayouts.reduce((sum, salary) => sum + Number(salary.amount || salary.total_amount || salary.net_salary || 0), 0)
+    + treasuryTransactions.reduce((sum, transaction) => {
+      const movementType = String(transaction.movement_type || '').toLowerCase();
+      const sourceType = String(transaction.source_type || 'treasury');
+      if (movementType === 'salary' || (sourceType === 'treasury' && movementType === 'other_advance')) return sum + Number(transaction.amount || 0);
+      if (sourceType === 'treasury' && movementType === 'bank_deposit') return sum + Number(transaction.amount || 0);
+      return sum;
+    }, 0);
+  const fallbackCalculatedBalance = Number(treasury?.opening_balance ?? 0) + cashInflowFromTransactions - cashOutflowFromTransactions;
+  const currentTreasuryBalance = (treasury?.id || treasury?.balance !== undefined || treasury?.opening_balance !== undefined)
+    ? treasuryFallbackBalance
+    : fallbackCalculatedBalance;
   const totalBanksBalance = banks.reduce((sum, b) => sum + Number(b.balance || 0), 0);
 
   return (
@@ -405,12 +451,12 @@ export default function ExpensesPage() {
 
       {/* الكارتات العلوية */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className={`p-6 rounded-3xl shadow-xl flex flex-col justify-between text-white ${
+        {/* <div className={`p-6 rounded-3xl shadow-xl flex flex-col justify-between text-white ${
           currentTreasuryBalance < 0 ? 'bg-red-600' : 'bg-blue-600'
         }`}>
           <h2 className="text-xs font-bold opacity-80 uppercase tracking-wider">رصيد الخزنة الحالي</h2>
           <p className="text-3xl font-black mt-2">{currentTreasuryBalance.toLocaleString()} ج.م</p>
-        </div>
+        </div> */}
 
         <div className="bg-white p-6 rounded-3xl shadow-xl border border-gray-100 flex flex-col justify-between">
           <h2 className="text-xs font-bold text-gray-500 uppercase tracking-wider">إجمالي أرصدة البنوك</h2>

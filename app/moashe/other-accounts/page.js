@@ -25,8 +25,10 @@ export default function OtherAccountsPage() {
 
   const { data: treasuryRecords = [] } = useQuery({
     queryKey: ['other_accounts_treasury'],
-    queryFn: () => pb.collection('treasury').getFullList().catch(() => []),
+    queryFn: () => pb.collection('treasury').getFullList({ sort: '-updated,-created' }).catch(() => []),
   });
+  const sortedTreasuryRecords = [...treasuryRecords].sort((a, b) => new Date(b.updated || b.created || 0) - new Date(a.updated || a.created || 0));
+  const treasury = sortedTreasuryRecords.find((record) => Object.prototype.hasOwnProperty.call(record, 'opening_balance')) || sortedTreasuryRecords[0] || null;
   const { data: banks = [] } = useQuery({
     queryKey: ['other_accounts_banks'],
     queryFn: () => pb.collection('banks').getFullList({ sort: 'name' }).catch(() => []),
@@ -37,7 +39,6 @@ export default function OtherAccountsPage() {
   });
 
   const otherAdvances = advances.filter(item => item.advance_type === 'other' && Number(item.remaining_amount ?? item.amount ?? 0) > 0);
-  const treasury = treasuryRecords[0] || null;
 
   const updateBalance = async (sourceType, bankId, delta) => {
     if (sourceType === 'treasury') {

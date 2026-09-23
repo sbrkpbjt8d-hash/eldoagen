@@ -116,10 +116,11 @@ export default function BanksPage() {
 
   const { data: treasuryRecords = [] } = useQuery({
     queryKey: ['treasury'],
-    queryFn: async () => pb.collection('treasury').getFullList().catch(() => []),
+    queryFn: async () => pb.collection('treasury').getFullList({ sort: '-updated,-created' }).catch(() => []),
   });
 
-  const treasury = treasuryRecords.find((record) => Object.prototype.hasOwnProperty.call(record, 'opening_balance')) || null;
+  const sortedTreasuryRecords = [...treasuryRecords].sort((a, b) => new Date(b.updated || b.created || 0) - new Date(a.updated || a.created || 0));
+  const treasury = sortedTreasuryRecords.find((record) => Object.prototype.hasOwnProperty.call(record, 'opening_balance')) || sortedTreasuryRecords[0] || null;
 
   // إضافة بنك جديد (متاحة للجميع)
   const addBankMutation = useMutation({

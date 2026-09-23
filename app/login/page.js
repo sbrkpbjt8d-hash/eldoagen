@@ -38,6 +38,10 @@ export default function LoginPage() {
 
       // التحقق من المستخدم الموجه لصفحة الخزنة فقط أو توجيه باقي المستخدمين للتقارير
       const loggedUser = pb.authStore.model;
+      const savedUserName = loggedUser?.name || loggedUser?.email || 'مسؤول النظام';
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('userName', savedUserName);
+      }
       
       if (loggedUser?.email === 'ahmed@gmail.com') {
         router.replace('/moashe/Treasury');

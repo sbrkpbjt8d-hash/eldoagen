@@ -26,6 +26,7 @@ export default function SuppliersPage() {
   const [statementModal, setStatementModal] = useState({ open: false, supplier: null });
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [deletePaymentId, setDeletePaymentId] = useState(null);
 
   // فحص صلاحيات الأدمن
   const isAdmin = pb.authStore.model?.collectionName === '_superusers' || pb.authStore.model?.role === 'admin';
@@ -49,9 +50,10 @@ export default function SuppliersPage() {
 
   const { data: treasuryRecords = [] } = useQuery({
     queryKey: ['treasury'],
-    queryFn: () => pb.collection('treasury').getFullList().catch(() => []),
+    queryFn: () => pb.collection('treasury').getFullList({ sort: '-updated,-created' }).catch(() => []),
   });
-  const treasury = treasuryRecords[0] || null;
+  const sortedTreasuryRecords = [...treasuryRecords].sort((a, b) => new Date(b.updated || b.created || 0) - new Date(a.updated || a.created || 0));
+  const treasury = sortedTreasuryRecords.find((record) => Object.prototype.hasOwnProperty.call(record, 'opening_balance')) || sortedTreasuryRecords[0] || null;
 
   const { data: banks = [] } = useQuery({
     queryKey: ['banks'],
@@ -219,6 +221,71 @@ export default function SuppliersPage() {
     onError: (error) => showFeedback(`فشل إجراء التسوية: ${error.message}`, 'error'),
   });
 
+  const deletePaymentMutation = useMutation({
+    mutationFn: async (transactionId) => {
+      if (!isAdmin) {
+        throw new Error('حذف السداد متاح للأدمن فقط.');
+      }
+
+      const transaction = await pb.collection('supplier_transactions').getOne(transactionId);
+      if (String(transaction.type || '').toLowerCase() !== 'payment') {
+        throw new Error('هذه الحركة ليست سداداً للمورد.');
+      }
+
+      const supplier = await pb.collection('suppliers').getOne(transaction.supplier_id);
+      const amount = Number(transaction.amount || 0);
+
+      if (!Number.isFinite(amount) || amount <= 0) {
+        throw new Error('مبلغ السداد غير صحيح.');
+      }
+
+      await pb.collection('suppliers').update(supplier.id, {
+        balance: Number(supplier.balance || 0) + amount,
+      });
+
+      const destination = String(transaction.destination || '').trim();
+      const bankId = String(transaction.bank_id || '').trim();
+
+      if (destination === 'treasury') {
+        const treasuryRecords = await pb.collection('treasury').getFullList().catch(() => []);
+        const treasuryRecord = treasuryRecords[0] || null;
+        if (treasuryRecord) {
+          await pb.collection('treasury').update(treasuryRecord.id, {
+            balance: Number(treasuryRecord.balance || 0) + amount,
+          });
+        } else {
+          await pb.collection('treasury').create({
+            balance: amount,
+            opening_balance: 0,
+          });
+        }
+      } else if (destination === 'banks' && bankId) {
+        const bank = await pb.collection('banks').getOne(bankId).catch(() => null);
+        if (bank) {
+          await pb.collection('banks').update(bank.id, {
+            balance: Number(bank.balance || 0) + amount,
+          });
+        }
+      }
+
+      await pb.collection('supplier_transactions').delete(transaction.id);
+      return transaction;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['suppliers'] });
+      queryClient.invalidateQueries({ queryKey: ['supplier_transactions'] });
+      queryClient.invalidateQueries({ queryKey: ['all_supplier_transactions'] });
+      queryClient.invalidateQueries({ queryKey: ['treasury'] });
+      queryClient.invalidateQueries({ queryKey: ['banks'] });
+      setDeletePaymentId(null);
+      showFeedback('تم حذف السداد واسترجاع الرصيد للبنك/الخزنة بنجاح.');
+    },
+    onError: (error) => {
+      setDeletePaymentId(null);
+      showFeedback(`فشل حذف السداد: ${error.message}`, 'error');
+    },
+  });
+
   const filteredSuppliers = suppliers.filter((supplier) => {
     const query = searchTerm.toLowerCase();
     return supplier.name?.toLowerCase().includes(query) || supplier.phone?.includes(searchTerm);
@@ -228,6 +295,14 @@ export default function SuppliersPage() {
   const transactionsList = transactions.map(t => {
     let effect = 0;
     const isSettlement = String(t.notes || '').startsWith('تسوية (');
+    const paymentSource = String(t.destination || '').trim();
+    const bankName = banks.find((bank) => bank.id === t.bank_id)?.name || '';
+    const paymentSourceLabel = (t.type === 'payment')
+      ? (paymentSource === 'banks' || Boolean(t.bank_id)
+        ? `البنك${bankName ? `: ${bankName}` : ''}`
+        : 'الخزنة')
+      : '';
+
     if (t.type === 'opening_balance') {
       effect = Number(t.amount || 0);
     } else if (t.type === 'payment') {
@@ -239,6 +314,7 @@ export default function SuppliersPage() {
       ...t,
       source: 'transaction',
       displayType: isSettlement ? 'تسوية حساب' : t.type === 'payment' ? 'سداد' : t.type === 'opening_balance' ? 'رصيد افتتاحي' : 'إضافة على الحساب',
+      paymentSourceLabel,
       effectAmount: effect,
       displayAmount: Number(t.amount || 0),
     };
@@ -362,10 +438,12 @@ export default function SuppliersPage() {
                   <tr>
                     <th className="p-3">التاريخ</th>
                     <th className="p-3">نوع الحركة</th>
+                    <th className="p-3">مصدر السداد</th>
                     <th className="p-3">المبلغ</th>
                     <th className="p-3 text-red-600">الرصيد بعد المعاملة</th>
                     <th className="p-3">ملاحظات</th>
                     <th className="p-3">بواسطة</th>
+                    <th className="p-3">الإجراء</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
@@ -373,14 +451,25 @@ export default function SuppliersPage() {
                     <tr key={row.id} className={row.source === 'purchase' ? 'bg-blue-50/30' : 'hover:bg-gray-50'}>
                       <td className="p-3">{String(row.date || row.created).slice(0, 10)}</td>
                       <td className="p-3 font-bold">{row.displayType}</td>
+                      <td className="p-3 font-bold text-emerald-700">{row.type === 'payment' ? (row.paymentSourceLabel || 'غير محدد') : '-'}</td>
                       <td className="p-3 font-black">{Number(row.displayAmount || 0).toLocaleString()} ج.م</td>
                       <td className="p-3 font-black text-red-600 bg-gray-50/50">{Number(row.runningBalance || 0).toLocaleString()} ج.م</td>
                       <td className="p-3 text-gray-500">{row.notes || '-'}</td>
                       <td className="p-3 font-bold text-gray-700">{row.actor_name || 'غير معروف'}</td>
+                      <td className="p-3">
+                        {row.source !== 'purchase' && row.type === 'payment' && isAdmin && (
+                          <button
+                            onClick={() => setDeletePaymentId(row.id)}
+                            className="bg-red-50 text-red-700 px-2 py-1.5 rounded-lg font-bold"
+                          >
+                            حذف السداد
+                          </button>
+                        )}
+                      </td>
                     </tr>
                   )) : (
                     <tr>
-                      <td colSpan="6" className="p-8 text-center text-gray-400">لا توجد حركات أو فواتير في هذه الفترة.</td>
+                      <td colSpan="8" className="p-8 text-center text-gray-400">لا توجد حركات أو فواتير في هذه الفترة.</td>
                     </tr>
                   )}
                 </tbody>
@@ -490,6 +579,25 @@ export default function SuppliersPage() {
       </div>
 
       {deleteId && <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"><div className="bg-white rounded-2xl p-6 max-w-sm w-full space-y-4"><h3 className="font-black">تأكيد حذف المورد</h3><p className="text-xs text-gray-500">هل أنت متأكد من حذف هذا المورد؟</p><div className="flex gap-2"><button onClick={() => setDeleteId(null)} className="flex-1 bg-gray-100 py-3 rounded-xl text-xs font-bold">إلغاء</button><button onClick={() => deleteMutation.mutate(deleteId)} className="flex-1 bg-red-600 text-white py-3 rounded-xl text-xs font-bold">حذف</button></div></div></div>}
+
+      {deletePaymentId && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-sm w-full space-y-4">
+            <h3 className="font-black">تأكيد حذف السداد</h3>
+            <p className="text-xs text-gray-500">هل تريد حذف هذا السداد؟ سيتم استرجاع رصيد المورد وباقي الحسابات حسب مصدر السداد.</p>
+            <div className="flex gap-2">
+              <button onClick={() => setDeletePaymentId(null)} className="flex-1 bg-gray-100 py-3 rounded-xl text-xs font-bold">إلغاء</button>
+              <button
+                onClick={() => deletePaymentMutation.mutate(deletePaymentId)}
+                disabled={deletePaymentMutation.isPending}
+                className="flex-1 bg-red-600 text-white py-3 rounded-xl text-xs font-bold"
+              >
+                {deletePaymentMutation.isPending ? 'جاري الحذف...' : 'حذف السداد'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
