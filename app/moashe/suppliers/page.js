@@ -286,6 +286,33 @@ export default function SuppliersPage() {
     },
   });
 
+  const getSupplierDerivedBalance = (supplierId) => {
+    const supplier = suppliers.find((item) => item.id === supplierId);
+    const normalizedSupplierId = String(supplierId || '');
+
+    const transactionTotal = allTransactions
+      .filter((transaction) => String(transaction.supplier_id || '') === normalizedSupplierId)
+      .reduce((sum, transaction) => {
+        const type = String(transaction.type || '').toLowerCase();
+        const amount = Number(transaction.amount || 0);
+
+        if (type === 'opening_balance') return sum + amount;
+        if (type === 'payment') return sum - amount;
+        return sum + amount;
+      }, 0);
+
+    const purchaseTotal = allPurchaseInvoices
+      .filter((invoice) => String(invoice.supplier_id || '') === normalizedSupplierId)
+      .reduce((sum, invoice) => sum + Number(invoice.total_amount || 0), 0);
+
+    const derivedBalance = transactionTotal + purchaseTotal;
+    const fallbackBalance = Number(supplier?.balance || 0);
+
+    return Number.isFinite(derivedBalance) && Math.abs(derivedBalance) > 0
+      ? derivedBalance
+      : fallbackBalance;
+  };
+
   const filteredSuppliers = suppliers.filter((supplier) => {
     const query = searchTerm.toLowerCase();
     return supplier.name?.toLowerCase().includes(query) || supplier.phone?.includes(searchTerm);
@@ -347,7 +374,7 @@ export default function SuppliersPage() {
     return (!startDate || date >= startDate) && (!endDate || date <= endDate);
   });
 
-  const totalBalances = suppliers.reduce((sum, supplier) => sum + Number(supplier.balance || 0), 0);
+  const totalBalances = suppliers.reduce((sum, supplier) => sum + getSupplierDerivedBalance(supplier.id), 0);
 
   const handleSubmit = (event) => {
     event.preventDefault();
@@ -508,6 +535,7 @@ export default function SuppliersPage() {
               {filteredSuppliers.map((supplier) => {
                 const relationId = (value) => typeof value === 'string' ? value : value?.id;
                 const transactionTimestamp = (transaction) => Date.parse(transaction.date || transaction.created || '') || 0;
+                const supplierDueBalance = getSupplierDerivedBalance(supplier.id);
                 const lastPurchase = allPurchaseInvoices
                   .filter(inv => relationId(inv.supplier_id) === supplier.id)
                   .sort((first, second) => (Date.parse(second.created || '') || 0) - (Date.parse(first.created || '') || 0))[0];
@@ -555,7 +583,7 @@ export default function SuppliersPage() {
                         <span className="text-gray-400">لا توجد مدفوعات</span>
                       )}
                     </td>
-                    <td className="p-3 font-black text-red-600">{Number(supplier.balance || 0).toLocaleString()} ج.م</td>
+                    <td className="p-3 font-black text-red-600">{Number(supplierDueBalance || 0).toLocaleString()} ج.م</td>
                     <td className="p-3 flex flex-wrap gap-1">
                       <button onClick={() => { setStartDate(''); setEndDate(''); setStatementModal({ open: true, supplier }); }} className="bg-blue-50 text-blue-700 px-2.5 py-1.5 rounded-lg font-bold">كشف الحساب</button>
                       <button onClick={() => { setPaymentAmount(''); setPaymentNotes(''); setPaymentDestination('treasury'); setPaymentBankId(''); setPaymentModal({ open: true, supplier }); }} className="bg-emerald-50 text-emerald-700 px-2.5 py-1.5 rounded-lg font-bold">سداد</button>
