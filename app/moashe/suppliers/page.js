@@ -127,11 +127,12 @@ export default function SuppliersPage() {
     mutationFn: async () => {
       const supplier = paymentModal.supplier;
       const amount = Number(paymentAmount);
+      const currentDue = getSupplierDerivedBalance(supplier.id);
       if (paymentDestination === 'banks' && !paymentBankId) {
         throw new Error('اختر البنك الذي سيتم السداد منه');
       }
       await pb.collection('suppliers').update(supplier.id, {
-        balance: Number(supplier.balance || 0) - amount,
+        balance: currentDue - amount,
       });
       await pb.collection('supplier_transactions').create({
         supplier_id: supplier.id,
@@ -180,7 +181,7 @@ export default function SuppliersPage() {
     mutationFn: async () => {
       const supplier = settlementModal.supplier;
       const amount = Number(settlementAmount);
-      const currentBalance = Number(supplier.balance || 0);
+      const currentBalance = getSupplierDerivedBalance(supplier.id);
 
       if (!Number.isFinite(amount) || amount <= 0) {
         throw new Error('اكتب مبلغ تسوية صحيح');
@@ -239,8 +240,9 @@ export default function SuppliersPage() {
         throw new Error('مبلغ السداد غير صحيح.');
       }
 
+      const currentDue = getSupplierDerivedBalance(supplier.id);
       await pb.collection('suppliers').update(supplier.id, {
-        balance: Number(supplier.balance || 0) + amount,
+        balance: currentDue + amount,
       });
 
       const destination = String(transaction.destination || '').trim();
@@ -290,27 +292,36 @@ export default function SuppliersPage() {
     const supplier = suppliers.find((item) => item.id === supplierId);
     const normalizedSupplierId = String(supplierId || '');
 
-    const transactionTotal = allTransactions
-      .filter((transaction) => String(transaction.supplier_id || '') === normalizedSupplierId)
-      .reduce((sum, transaction) => {
-        const type = String(transaction.type || '').toLowerCase();
-        const amount = Number(transaction.amount || 0);
+    const supplierTransactions = allTransactions.filter(
+      (transaction) => String(transaction.supplier_id || '') === normalizedSupplierId
+    );
 
-        if (type === 'opening_balance') return sum + amount;
-        if (type === 'payment') return sum - amount;
-        return sum + amount;
-      }, 0);
+    const supplierPurchaseInvoices = allPurchaseInvoices.filter(
+      (invoice) => String(invoice.supplier_id || '') === normalizedSupplierId
+    );
 
-    const purchaseTotal = allPurchaseInvoices
-      .filter((invoice) => String(invoice.supplier_id || '') === normalizedSupplierId)
-      .reduce((sum, invoice) => sum + Number(invoice.total_amount || 0), 0);
+    const transactionTotal = supplierTransactions.reduce((sum, transaction) => {
+      const type = String(transaction.type || '').toLowerCase();
+      const amount = Number(transaction.amount || 0);
+
+      if (type === 'opening_balance') return sum + amount;
+      if (type === 'payment') return sum - amount;
+      return sum + amount;
+    }, 0);
+
+    const purchaseTotal = supplierPurchaseInvoices.reduce(
+      (sum, invoice) => sum + Number(invoice.total_amount || 0),
+      0
+    );
 
     const derivedBalance = transactionTotal + purchaseTotal;
     const fallbackBalance = Number(supplier?.balance || 0);
 
-    return Number.isFinite(derivedBalance) && Math.abs(derivedBalance) > 0
-      ? derivedBalance
-      : fallbackBalance;
+    if (!supplierTransactions.length && !supplierPurchaseInvoices.length) {
+      return fallbackBalance;
+    }
+
+    return Number.isFinite(derivedBalance) ? derivedBalance : fallbackBalance;
   };
 
   const filteredSuppliers = suppliers.filter((supplier) => {
@@ -373,6 +384,9 @@ export default function SuppliersPage() {
     const date = String(row.date || row.created || '').slice(0, 10);
     return (!startDate || date >= startDate) && (!endDate || date <= endDate);
   });
+  const statementCurrentBalance = statementRows.length
+    ? Number(statementRows[statementRows.length - 1].runningBalance || 0)
+    : 0;
 
   const totalBalances = suppliers.reduce((sum, supplier) => sum + getSupplierDerivedBalance(supplier.id), 0);
 
@@ -390,7 +404,7 @@ export default function SuppliersPage() {
     setEditingId(supplier.id);
     setForm({
       name: supplier.name || '', phone: supplier.phone || '', address: supplier.address || '',
-      notes: supplier.notes || '', balance: String(supplier.balance || 0),
+      notes: supplier.notes || '', balance: String(getSupplierDerivedBalance(supplier.id) || 0),
     });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -403,7 +417,7 @@ export default function SuppliersPage() {
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4">
             <div className="flex justify-between border-b pb-3"><h3 className="font-black">سداد للمورد: {paymentModal.supplier?.name}</h3><button onClick={() => setPaymentModal({ open: false, supplier: null })}>✕</button></div>
-            <p className="text-xs text-gray-500">الرصيد المستحق: <b className="text-red-600">{Number(paymentModal.supplier?.balance || 0).toLocaleString()} ج.م</b></p>
+            <p className="text-xs text-gray-500">الرصيد المستحق: <b className="text-red-600">{Number(getSupplierDerivedBalance(paymentModal.supplier?.id || '') || 0).toLocaleString()} ج.م</b></p>
             <input type="number" min="0.01" step="0.01" placeholder="مبلغ السداد" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} className="w-full border p-3 rounded-xl text-xs" />
             <select value={paymentDestination} onChange={(e) => { setPaymentDestination(e.target.value); setPaymentBankId(''); }} className="w-full border p-3 rounded-xl text-xs">
               <option value="treasury">الخزنة الرئيسية (الرصيد: {Number(treasury?.balance || 0).toLocaleString()} ج.م)</option>
@@ -421,7 +435,7 @@ export default function SuppliersPage() {
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4">
             <div className="flex justify-between border-b pb-3"><h3 className="font-black">⚙️ تسوية حساب المورد: {settlementModal.supplier?.name}</h3><button onClick={() => setSettlementModal({ open: false, supplier: null })}>✕</button></div>
-            <p className="text-xs text-gray-500">الرصيد المستحق الحالي: <b className="text-red-600">{Number(settlementModal.supplier?.balance || 0).toLocaleString()} ج.م</b></p>
+            <p className="text-xs text-gray-500">الرصيد المستحق الحالي: <b className="text-red-600">{Number(getSupplierDerivedBalance(settlementModal.supplier?.id || '') || 0).toLocaleString()} ج.م</b></p>
             <div>
               <label className="text-xs font-bold text-gray-700">نوع التسوية</label>
               <select value={settlementType} onChange={(e) => setSettlementType(e.target.value)} className="w-full border p-3 rounded-xl text-xs mt-1 bg-white">
@@ -451,7 +465,7 @@ export default function SuppliersPage() {
             <div className="flex justify-between items-center border-b pb-3">
               <div>
                 <h3 className="font-black text-base">كشف حساب المورد: {statementModal.supplier?.name}</h3>
-                <p className="text-xs text-gray-500">الرصيد الحالي: <b className="text-red-600">{Number(statementModal.supplier?.balance || 0).toLocaleString()} ج.م</b></p>
+                <p className="text-xs text-gray-500">الرصيد الحالي: <b className="text-red-600">{statementCurrentBalance.toLocaleString()} ج.م</b></p>
               </div>
               <button onClick={() => setStatementModal({ open: false, supplier: null })}>✕</button>
             </div>
@@ -527,7 +541,7 @@ export default function SuppliersPage() {
                 <th className="p-3">العنوان</th>
                 <th className="p-3">آخر فاتورة شراء</th>
                 <th className="p-3">آخر ميعاد سداد</th>
-                <th className="p-3">الرصيد المستحق</th>
+                {/* <th className="p-3">الرصيد المستحق</th> */}
                 <th className="p-3">الإجراءات</th>
               </tr>
             </thead>
@@ -583,7 +597,9 @@ export default function SuppliersPage() {
                         <span className="text-gray-400">لا توجد مدفوعات</span>
                       )}
                     </td>
-                    <td className="p-3 font-black text-red-600">{Number(supplierDueBalance || 0).toLocaleString()} ج.م</td>
+                   
+                    {/* <td className="p-3 font-black text-red-600">   {Number(supplierDueBalance || 0).toLocaleString()} ج.م  </td> */}
+      
                     <td className="p-3 flex flex-wrap gap-1">
                       <button onClick={() => { setStartDate(''); setEndDate(''); setStatementModal({ open: true, supplier }); }} className="bg-blue-50 text-blue-700 px-2.5 py-1.5 rounded-lg font-bold">كشف الحساب</button>
                       <button onClick={() => { setPaymentAmount(''); setPaymentNotes(''); setPaymentDestination('treasury'); setPaymentBankId(''); setPaymentModal({ open: true, supplier }); }} className="bg-emerald-50 text-emerald-700 px-2.5 py-1.5 rounded-lg font-bold">سداد</button>

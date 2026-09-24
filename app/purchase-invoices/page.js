@@ -40,6 +40,30 @@ export default function PurchaseInvoicesPage() {
     queryFn: () => pb.collection('purchase_invoices').getFullList().catch(() => []),
   });
 
+  const { data: supplierTransactions = [] } = useQuery({
+    queryKey: ['all_supplier_transactions'],
+    queryFn: () => pb.collection('supplier_transactions').getFullList().catch(() => []),
+  });
+
+  const getSupplierDerivedBalance = supplierId => {
+    const normalizedId = String(supplierId || '');
+    const transactionTotal = supplierTransactions
+      .filter(transaction => String(transaction.supplier_id || '') === normalizedId)
+      .reduce((sum, transaction) => {
+        const type = String(transaction.type || '').toLowerCase();
+        const amount = Number(transaction.amount || 0);
+        if (type === 'opening_balance') return sum + amount;
+        if (type === 'payment') return sum - amount;
+        return sum + amount;
+      }, 0);
+
+    const purchaseTotal = invoices
+      .filter(invoice => String(invoice.supplier_id || '') === normalizedId)
+      .reduce((sum, invoice) => sum + Number(invoice.total_amount || 0), 0);
+
+    return transactionTotal + purchaseTotal;
+  };
+
   const selectedSupplierName = suppliers.find(supplier => supplier.id === form.supplierId)?.name || '';
   const filteredSuppliers = suppliers.filter(supplier => String(supplier.name || '').toLowerCase().includes(supplierSearch.toLowerCase().trim()));
   const filteredMaterials = materials.filter(material => String(material.name || '').toLowerCase().includes(materialSearch.toLowerCase().trim()));
@@ -115,10 +139,12 @@ export default function PurchaseInvoicesPage() {
         }
       }
 
-      // 4. تحديث رصيد المورد إذا كانت الفاتورة آجل
+      // 4. تحديث رصيد المورد إذا كانت الفاتورة آجل باستخدام الحساب المشتق من الحركات الفعلية
       if (form.paymentType === 'credit') {
+        const currentDerivedBalance = getSupplierDerivedBalance(supplier.id);
+        const previousInvoiceAmount = oldInvoice && oldInvoice.payment_type === 'credit' ? Number(oldInvoice.total_amount || 0) : 0;
         await pb.collection('suppliers').update(supplier.id, {
-          balance: Number(supplier.balance || 0) + total
+          balance: currentDerivedBalance - previousInvoiceAmount + total
         });
       }
 
@@ -154,8 +180,9 @@ export default function PurchaseInvoicesPage() {
       if (invoice.payment_type === 'credit') {
         const supplier = suppliers.find(item => item.id === invoice.supplier_id);
         if (supplier) {
+          const currentDerivedBalance = getSupplierDerivedBalance(supplier.id);
           await pb.collection('suppliers').update(supplier.id, {
-            balance: Number(supplier.balance || 0) - Number(invoice.total_amount || 0)
+            balance: currentDerivedBalance - Number(invoice.total_amount || 0)
           });
         }
       }
