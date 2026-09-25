@@ -88,7 +88,10 @@ export default function SuppliersPage() {
     }).catch(() => []),
   });
 
-  const saveMutation = useMutation({
+
+
+
+ const saveMutation = useMutation({
     mutationFn: async () => {
       const data = { ...form, name: form.name.trim(), balance: Number(form.balance || 0), actor_name: currentUserName() };
       if (editingId) return pb.collection('suppliers').update(editingId, data);
@@ -112,6 +115,12 @@ export default function SuppliersPage() {
     },
     onError: (error) => showFeedback(`فشل حفظ المورد: ${error.message}`, 'error'),
   });
+
+
+
+
+
+
 
   const deleteMutation = useMutation({
     mutationFn: (id) => pb.collection('suppliers').delete(id),
@@ -222,107 +231,170 @@ export default function SuppliersPage() {
     onError: (error) => showFeedback(`فشل إجراء التسوية: ${error.message}`, 'error'),
   });
 
-  const deletePaymentMutation = useMutation({
-    mutationFn: async (transactionId) => {
-      if (!isAdmin) {
-        throw new Error('حذف السداد متاح للأدمن فقط.');
-      }
 
-      const transaction = await pb.collection('supplier_transactions').getOne(transactionId);
-      if (String(transaction.type || '').toLowerCase() !== 'payment') {
-        throw new Error('هذه الحركة ليست سداداً للمورد.');
-      }
 
-      const supplier = await pb.collection('suppliers').getOne(transaction.supplier_id);
-      const amount = Number(transaction.amount || 0);
 
-      if (!Number.isFinite(amount) || amount <= 0) {
-        throw new Error('مبلغ السداد غير صحيح.');
-      }
-
-      const currentDue = getSupplierDerivedBalance(supplier.id);
-      await pb.collection('suppliers').update(supplier.id, {
-        balance: currentDue + amount,
-      });
-
-      const destination = String(transaction.destination || '').trim();
-      const bankId = String(transaction.bank_id || '').trim();
-
-      if (destination === 'treasury') {
-        const treasuryRecords = await pb.collection('treasury').getFullList().catch(() => []);
-        const treasuryRecord = treasuryRecords[0] || null;
-        if (treasuryRecord) {
-          await pb.collection('treasury').update(treasuryRecord.id, {
-            balance: Number(treasuryRecord.balance || 0) + amount,
-          });
-        } else {
-          await pb.collection('treasury').create({
-            balance: amount,
-            opening_balance: 0,
-          });
-        }
-      } else if (destination === 'banks' && bankId) {
-        const bank = await pb.collection('banks').getOne(bankId).catch(() => null);
-        if (bank) {
-          await pb.collection('banks').update(bank.id, {
-            balance: Number(bank.balance || 0) + amount,
-          });
-        }
-      }
-
-      await pb.collection('supplier_transactions').delete(transaction.id);
-      return transaction;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['suppliers'] });
-      queryClient.invalidateQueries({ queryKey: ['supplier_transactions'] });
-      queryClient.invalidateQueries({ queryKey: ['all_supplier_transactions'] });
-      queryClient.invalidateQueries({ queryKey: ['treasury'] });
-      queryClient.invalidateQueries({ queryKey: ['banks'] });
-      setDeletePaymentId(null);
-      showFeedback('تم حذف السداد واسترجاع الرصيد للبنك/الخزنة بنجاح.');
-    },
-    onError: (error) => {
-      setDeletePaymentId(null);
-      showFeedback(`فشل حذف السداد: ${error.message}`, 'error');
-    },
-  });
-
-  const getSupplierDerivedBalance = (supplierId) => {
-    const supplier = suppliers.find((item) => item.id === supplierId);
-    const normalizedSupplierId = String(supplierId || '');
-
-    const supplierTransactions = allTransactions.filter(
-      (transaction) => String(transaction.supplier_id || '') === normalizedSupplierId
-    );
-
-    const supplierPurchaseInvoices = allPurchaseInvoices.filter(
-      (invoice) => String(invoice.supplier_id || '') === normalizedSupplierId
-    );
-
-    const transactionTotal = supplierTransactions.reduce((sum, transaction) => {
-      const type = String(transaction.type || '').toLowerCase();
-      const amount = Number(transaction.amount || 0);
-
-      if (type === 'opening_balance') return sum + amount;
-      if (type === 'payment') return sum - amount;
-      return sum + amount;
-    }, 0);
-
-    const purchaseTotal = supplierPurchaseInvoices.reduce(
-      (sum, invoice) => sum + Number(invoice.total_amount || 0),
-      0
-    );
-
-    const derivedBalance = transactionTotal + purchaseTotal;
-    const fallbackBalance = Number(supplier?.balance || 0);
-
-    if (!supplierTransactions.length && !supplierPurchaseInvoices.length) {
-      return fallbackBalance;
+  
+ const deletePaymentMutation = useMutation({
+  mutationFn: async (transactionId) => {
+    if (!isAdmin) {
+      throw new Error('حذف السداد متاح للأدمن فقط.');
     }
 
-    return Number.isFinite(derivedBalance) ? derivedBalance : fallbackBalance;
+    const transaction = await pb.collection('supplier_transactions').getOne(transactionId);
+    if (String(transaction.type || '').toLowerCase() !== 'payment') {
+      throw new Error('هذه الحركة ليست سداداً للمورد.');
+    }
+
+    const amount = Number(transaction.amount || 0);
+    const destination = String(transaction.destination || '').trim();
+    const bankId = String(transaction.bank_id || '').trim();
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new Error('مبلغ السداد غير صحيح.');
+    }
+
+    // 1. استرجاع المبلغ للخزينة أو البنك أولاً
+    if (destination === 'treasury') {
+      const treasuryRecords = await pb.collection('treasury').getFullList().catch(() => []);
+      const treasuryRecord = treasuryRecords[0] || null;
+      if (treasuryRecord) {
+        await pb.collection('treasury').update(treasuryRecord.id, {
+          balance: Number(treasuryRecord.balance || 0) + amount,
+        });
+      } else {
+        await pb.collection('treasury').create({
+          balance: amount,
+          opening_balance: 0,
+        });
+      }
+    } else if (destination === 'banks' && bankId) {
+      const bank = await pb.collection('banks').getOne(bankId).catch(() => null);
+      if (bank) {
+        await pb.collection('banks').update(bank.id, {
+          balance: Number(bank.balance || 0) + amount,
+        });
+      }
+    }
+
+    // 2. حذف معاملة السداد نهائياً من الجدول
+    await pb.collection('supplier_transactions').delete(transactionId);
+
+    // 3. عمل Invalidate للـ Queries عشان الـ State تتحدث والـ UI يحسب الأرصدة الجديدة تلقائياً
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['suppliers'] }),
+      queryClient.invalidateQueries({ queryKey: ['supplier_transactions'] }),
+      queryClient.invalidateQueries({ queryKey: ['all_supplier_transactions'] }),
+      queryClient.invalidateQueries({ queryKey: ['treasury'] }),
+      queryClient.invalidateQueries({ queryKey: ['banks'] }),
+    ]);
+
+    return transaction;
+  },
+  onSuccess: () => {
+    setDeletePaymentId(null);
+    showFeedback('تم حذف السداد واسترجاع رصيد الخزينة/البنك وتحديث الأرصدة بنجاح.');
+  },
+  onError: (error) => {
+    setDeletePaymentId(null);
+    showFeedback(`فشل حذف السداد: ${error.message}`, 'error');
+  },
+});
+
+
+  // ظظظ
+
+  const formatDisplayDate = (value) => {
+    if (!value) return '-';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value).slice(0, 10);
+    return date.toLocaleDateString('en-US', {
+      month: '2-digit',
+      day: '2-digit',
+      year: 'numeric',
+    });
   };
+
+  const getSupplierMovementRows = (supplierId) => {
+    const normalizedSupplierId = String(supplierId || '');
+
+    const supplierTransactions = (allTransactions || [])
+      .filter((transaction) => String(transaction.supplier_id || '') === normalizedSupplierId)
+      .map((transaction) => {
+        const type = String(transaction.type || '').toLowerCase();
+        const amount = Number(transaction.amount || 0);
+        const notes = String(transaction.notes || '');
+        const negativeAdjustment = /خصم|تخفيض|مرتجع|cancel/i.test(notes);
+        const positiveAdjustment = /إضافة|زيادة|مكافأة|credit/i.test(notes);
+
+        let effect = 0;
+        if (type === 'opening_balance') {
+          effect = amount;
+        } else if (type === 'payment') {
+          effect = -amount;
+        } else if (negativeAdjustment) {
+          effect = -amount;
+        } else if (positiveAdjustment) {
+          effect = amount;
+        } else {
+          effect = amount;
+        }
+
+        return {
+          ...transaction,
+          date: transaction.date || transaction.created,
+          effectAmount: Number.isFinite(effect) ? effect : 0,
+        };
+      });
+
+    const supplierPurchases = (allPurchaseInvoices || [])
+      .filter((invoice) => String(invoice.supplier_id || '') === normalizedSupplierId)
+      .map((invoice) => ({
+        ...invoice,
+        date: invoice.created || invoice.date,
+        effectAmount: Number(invoice.total_amount || invoice.amount || 0),
+      }));
+
+    return [...supplierTransactions, ...supplierPurchases]
+      .sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0))
+      .reduce((acc, row) => {
+        const previous = acc.length ? acc[acc.length - 1].runningBalance : 0;
+        const runningBalance = previous + Number(row.effectAmount || 0);
+        return [...acc, { ...row, runningBalance }];
+      }, []);
+  };
+
+
+
+const getSupplierDerivedBalance = (supplierId) => {
+  // 1. هات كل معاملات وسدادات المورد من الـ state العامة
+  const supTransactions = (transactionsList || []).filter(t => t.supplier === supplierId || t.supplierId === supplierId);
+  // 2. هات كل فواتير الشراء الخاصة بالمورد
+  const supPurchases = (purchasesList || []).filter(p => p.supplier === supplierId || p.supplierId === supplierId);
+
+  // 3. هات الرصيد الافتتاحي الأساسي المسجل للمورد من جدول الموردين
+  const currentSupplier = (suppliers || []).find((item) => item.id === supplierId);
+  const openingBalance = Number(currentSupplier?.balance || 0);
+
+  // 4. ادمج كل الحركات (فواتير + معاملات وسداد وتسويات) مع بعض
+  const allRows = [...supTransactions, ...supPurchases];
+
+  // 5. ترتيب الحركات تصاعدياً حسب التاريخ لضمان دقة التراكم
+  const sortedRows = allRows.flat().sort((a, b) => 
+    new Date(a.date || a.created) - new Date(b.date || b.created)
+  );
+
+  // 6. ابدأ الرصيد التراكمي بـ "الرصيد الافتتاحي" مش بـ صفر
+  let runningBalance = openingBalance;
+  for (const row of sortedRows) {
+    runningBalance += Number(row.effectAmount || 0);
+  }
+
+  return Number.isFinite(runningBalance) ? runningBalance : 0;
+};
+
+
+
 
   const filteredSuppliers = suppliers.filter((supplier) => {
     const query = searchTerm.toLowerCase();
@@ -388,7 +460,67 @@ export default function SuppliersPage() {
     ? Number(statementRows[statementRows.length - 1].runningBalance || 0)
     : 0;
 
-  const totalBalances = suppliers.reduce((sum, supplier) => sum + getSupplierDerivedBalance(supplier.id), 0);
+  const getSupplierStatementRunningBalance = (supplierId) => {
+    const normalizedSupplierId = String(supplierId || '');
+    const supplierTransactions = allTransactions
+      .filter((transaction) => String(transaction.supplier_id || '') === normalizedSupplierId)
+      .map((transaction) => {
+        const isSettlement = String(transaction.notes || '').startsWith('تسوية (');
+        const paymentSource = String(transaction.destination || '').trim();
+        const bankName = banks.find((bank) => bank.id === transaction.bank_id)?.name || '';
+        const paymentSourceLabel = (transaction.type === 'payment')
+          ? (paymentSource === 'banks' || Boolean(transaction.bank_id)
+            ? `البنك${bankName ? `: ${bankName}` : ''}`
+            : 'الخزنة')
+          : '';
+
+        let effect = 0;
+        if (transaction.type === 'opening_balance') {
+          effect = Number(transaction.amount || 0);
+        } else if (transaction.type === 'payment') {
+          effect = -Number(transaction.amount || 0);
+        } else {
+          effect = Number(transaction.amount || 0);
+        }
+
+        return {
+          ...transaction,
+          source: 'transaction',
+          displayType: isSettlement ? 'تسوية حساب' : transaction.type === 'payment' ? 'سداد' : transaction.type === 'opening_balance' ? 'رصيد افتتاحي' : 'إضافة على الحساب',
+          paymentSourceLabel,
+          effectAmount: effect,
+          date: transaction.date || transaction.created,
+          actor_name: transaction.actor_name || 'غير معروف',
+        };
+      });
+
+    const supplierPurchases = allPurchaseInvoices
+      .filter((invoice) => String(invoice.supplier_id || '') === normalizedSupplierId)
+      .map((invoice) => ({
+        ...invoice,
+        source: 'purchase',
+        displayType: `فاتورة شراء (${invoice.invoice_number || 'بدون رقم'})`,
+        effectAmount: Number(invoice.total_amount || 0),
+        date: invoice.created,
+        notes: `إجمالي الفاتورة: ${Number(invoice.total_amount || 0).toLocaleString()} ج.م`,
+        actor_name: 'النظام (مشتريات)',
+        paymentSourceLabel: '',
+      }));
+
+    const supplierStatementRows = [...supplierTransactions, ...supplierPurchases]
+      .sort((a, b) => new Date(a.date || a.created) - new Date(b.date || b.created))
+      .reduce((rows, row) => {
+        const previousBalance = rows.length ? rows[rows.length - 1].runningBalance : 0;
+        const runningBalance = previousBalance + Number(row.effectAmount || 0);
+        return [...rows, { ...row, runningBalance }];
+      }, []);
+
+    return supplierStatementRows.length
+      ? Number(supplierStatementRows[supplierStatementRows.length - 1].runningBalance || 0)
+      : Number(suppliers.find((supplier) => supplier.id === supplierId)?.balance || 0);
+  };
+
+ const totalBalances = suppliers.reduce((sum, supplier) => sum + getSupplierDerivedBalance(supplier.id), 0);
 
   const handleSubmit = (event) => {
     event.preventDefault();
@@ -410,7 +542,7 @@ export default function SuppliersPage() {
   };
 
   return (
-    <div className="p-4 md:p-8 max-w-7xl mx-auto space-y-8 relative" dir="rtl">
+ <div className="p-4 md:p-8 max-w-7xl mx-auto space-y-8 relative" dir="rtl">
       {feedback.text && <div className={`p-4 rounded-2xl text-xs font-bold ${feedback.type === 'error' ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-600'}`}>{feedback.text}</div>}
 
       {paymentModal.open && (
@@ -490,7 +622,7 @@ export default function SuppliersPage() {
                 <tbody className="divide-y">
                   {statementRows.length ? statementRows.map((row) => (
                     <tr key={row.id} className={row.source === 'purchase' ? 'bg-blue-50/30' : 'hover:bg-gray-50'}>
-                      <td className="p-3">{String(row.date || row.created).slice(0, 10)}</td>
+                      <td className="p-3">{formatDisplayDate(row.date || row.created)}</td>
                       <td className="p-3 font-bold">{row.displayType}</td>
                       <td className="p-3 font-bold text-emerald-700">{row.type === 'payment' ? (row.paymentSourceLabel || 'غير محدد') : '-'}</td>
                       <td className="p-3 font-black">{Number(row.displayAmount || 0).toLocaleString()} ج.م</td>
@@ -524,12 +656,12 @@ export default function SuppliersPage() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4"><div className="bg-white p-5 rounded-2xl shadow-sm border flex justify-between"><div><p className="text-xs font-bold text-gray-400">إجمالي الموردين</p><h3 className="text-xl font-black text-blue-600">{suppliers.length} مورد</h3></div><span className="p-3 bg-blue-50 rounded-xl">🏢</span></div><div className="bg-white p-5 rounded-2xl shadow-sm border flex justify-between"><div><p className="text-xs font-bold text-gray-400">إجمالي المستحقات</p><h3 className="text-xl font-black text-red-600">{totalBalances.toLocaleString()} ج.م</h3></div><span className="p-3 bg-red-50 rounded-xl">💰</span></div></div>
 
-      <div className="bg-white p-6 rounded-2xl shadow-xl border"><h2 className="text-lg font-bold mb-4">{editingId ? '✏️ تعديل بيانات المورد' : '➕ إضافة مورد جديد'}</h2><form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4"><input required placeholder="اسم المورد *" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="border p-2.5 rounded-xl text-xs" /><input placeholder="رقم الهاتف" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="border p-2.5 rounded-xl text-xs" /><input placeholder="العنوان" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} className="border p-2.5 rounded-xl text-xs" /><input type="number" step="0.01" placeholder="الرصيد الافتتاحي" value={form.balance} onChange={(e) => setForm({ ...form, balance: e.target.value })} className="border p-2.5 rounded-xl text-xs" /><input placeholder="ملاحظات" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="border p-2.5 rounded-xl text-xs" /><div className="md:col-span-2 lg:col-span-5 flex justify-end gap-2"><button type="submit" disabled={saveMutation.isPending} className="bg-blue-600 text-white px-6 py-2.5 rounded-xl text-xs font-bold">{editingId ? 'حفظ التعديل' : 'حفظ وإضافة المورد'}</button>{editingId && <button type="button" onClick={() => { setEditingId(null); setForm({ name: '', phone: '', address: '', notes: '', balance: '' }); }} className="bg-gray-100 px-6 py-2.5 rounded-xl text-xs font-bold">إلغاء</button>}</div></form></div>
+      <div className="bg-white p-6 rounded-2xl shadow-xl border"><h2 className="text-lg font-bold mb-4">{editingId ? '✏️ تعديل بيانات المورد' : '➕ إضافة مورد جديد'}</h2><form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4"><input required placeholder="اسم المورد *" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="border p-2.5 rounded-xl text-xs" /><input type="number" step="0.01" placeholder="الرصيد الافتتاحي" value={form.balance} onChange={(e) => setForm({ ...form, balance: e.target.value })} className="border p-2.5 rounded-xl text-xs" /><input placeholder="ملاحظات" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="border p-2.5 rounded-xl text-xs" /><div className="md:col-span-2 lg:col-span-5 flex justify-end gap-2"><button type="submit" disabled={saveMutation.isPending} className="bg-blue-600 text-white px-6 py-2.5 rounded-xl text-xs font-bold">{editingId ? 'حفظ التعديل' : 'حفظ وإضافة المورد'}</button>{editingId && <button type="button" onClick={() => { setEditingId(null); setForm({ name: '', phone: '', address: '', notes: '', balance: '' }); }} className="bg-gray-100 px-6 py-2.5 rounded-xl text-xs font-bold">إلغاء</button>}</div></form></div>
 
       <div className="bg-white shadow-xl rounded-2xl border overflow-hidden">
         <div className="p-4 bg-gray-50 border-b flex justify-between items-center gap-4">
           <h2 className="text-lg font-bold">📋 جدول الموردين</h2>
-          <input placeholder="🔍 بحث بالاسم أو الهاتف..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="border px-3 py-2 rounded-xl text-xs w-64 bg-white" />
+          <input placeholder="🔍 بحث بالاسم..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="border px-3 py-2 rounded-xl text-xs w-64 bg-white" />
         </div>
         {suppliersError && <p className="p-4 text-xs font-bold text-red-600 bg-red-50">تعذر تحميل الموردين. اضغط تحديث للمحاولة مرة أخرى.</p>}
         <div className="overflow-x-auto">
@@ -537,69 +669,20 @@ export default function SuppliersPage() {
             <thead className="bg-gray-100 text-gray-600">
               <tr>
                 <th className="p-3">المورد</th>
-                {/* <th className="p-3">الهاتف</th> */}
-                <th className="p-3">العنوان</th>
-                <th className="p-3">آخر فاتورة شراء</th>
-                <th className="p-3">آخر ميعاد سداد</th>
-                {/* <th className="p-3">الرصيد المستحق</th> */}
+                <th className="p-3">الرصيد المستحق</th>
                 <th className="p-3">الإجراءات</th>
               </tr>
             </thead>
             <tbody className="divide-y">
               {filteredSuppliers.map((supplier) => {
-                const relationId = (value) => typeof value === 'string' ? value : value?.id;
-                const transactionTimestamp = (transaction) => Date.parse(transaction.date || transaction.created || '') || 0;
-                const supplierDueBalance = getSupplierDerivedBalance(supplier.id);
-                const lastPurchase = allPurchaseInvoices
-                  .filter(inv => relationId(inv.supplier_id) === supplier.id)
-                  .sort((first, second) => (Date.parse(second.created || '') || 0) - (Date.parse(first.created || '') || 0))[0];
-                const lastPayment = allTransactions
-                  .filter((transaction) => {
-                    if (relationId(transaction.supplier_id) !== supplier.id) return false;
-                    const transactionType = String(transaction.type || '').toLowerCase();
-                    const transactionNotes = String(transaction.notes || '').toLowerCase();
-                    return ['payment', 'supplier_payment', 'supplierpayment'].includes(transactionType)
-                      || transactionNotes.includes('سداد')
-                      || transactionNotes.includes('تسوية (خصم');
-                  })
-                  .sort((first, second) => transactionTimestamp(second) - transactionTimestamp(first))[0];
+                const derivedBalance = getSupplierDerivedBalance(supplier.id);
 
                 return (
                   <tr key={supplier.id} className="hover:bg-gray-50">
-                    <td className="p-3 font-bold">{supplier.name}</td>
-                    {/* <td className="p-3">{supplier.phone || '-'}</td> */}
-                    <td className="p-3">{supplier.address || '-'}</td>
-                    <td className="p-3">
-                      {lastPurchase ? (
-                        <div className="space-y-0.5">
-                          <span className="font-bold text-blue-600 block">
-                            {Number(lastPurchase.total_amount || 0).toLocaleString()} ج.م
-                          </span>
-                          <span className="text-[10px] text-gray-400 block">
-                            {String(lastPurchase.created || '').slice(0, 10)} {lastPurchase.invoice_number ? `(#${lastPurchase.invoice_number})` : ''}
-                          </span>
-                        </div>
-                      ) : (
-                        <span className="text-gray-400">لا توجد فواتير</span>
-                      )}
-                    </td>
-                    <td className="p-3">
-                      {lastPayment ? (
-                        <div className="space-y-0.5">
-                          <span className="font-bold text-emerald-600 block">
-                            {Number(lastPayment.amount || 0).toLocaleString()} ج.م
-                          </span>
-                          <span className="text-[10px] text-gray-400 block">
-                            {String(lastPayment.date || lastPayment.created || '').slice(0, 10)}
-                          </span>
-                        </div>
-                      ) : (
-                        <span className="text-gray-400">لا توجد مدفوعات</span>
-                      )}
-                    </td>
-                   
-                    {/* <td className="p-3 font-black text-red-600">   {Number(supplierDueBalance || 0).toLocaleString()} ج.م  </td> */}
-      
+                    <td className="p-3 font-bold">{supplier.name}</td>                    
+              <td className="p-3 font-black text-red-600">
+  {Number(getSupplierDerivedBalance(supplier.id) || 0).toLocaleString()} ج.م
+</td>
                     <td className="p-3 flex flex-wrap gap-1">
                       <button onClick={() => { setStartDate(''); setEndDate(''); setStatementModal({ open: true, supplier }); }} className="bg-blue-50 text-blue-700 px-2.5 py-1.5 rounded-lg font-bold">كشف الحساب</button>
                       <button onClick={() => { setPaymentAmount(''); setPaymentNotes(''); setPaymentDestination('treasury'); setPaymentBankId(''); setPaymentModal({ open: true, supplier }); }} className="bg-emerald-50 text-emerald-700 px-2.5 py-1.5 rounded-lg font-bold">سداد</button>
@@ -616,7 +699,7 @@ export default function SuppliersPage() {
                   </tr>
                 );
               })}
-              {!filteredSuppliers.length && <tr><td colSpan="7" className="p-8 text-center text-gray-400">{isLoading ? 'جاري التحميل...' : 'لا يوجد موردون مطابقون.'}</td></tr>}
+              {!filteredSuppliers.length && <tr><td colSpan="3" className="p-8 text-center text-gray-400">{isLoading ? 'جاري التحميل...' : 'لا يوجد موردون مطابقون.'}</td></tr>}
             </tbody>
           </table>
         </div>
