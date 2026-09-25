@@ -690,8 +690,8 @@ export default function BanksPage() {
 
       {/* نافذة سجل الحركات */}
       {historyModal.isOpen && historyModal.bank && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div ref={bankHistoryPrintRef} className="bank-history-print-area bg-white rounded-3xl p-6 max-w-2xl w-full shadow-2xl space-y-4 max-h-[85vh] flex flex-col">
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-3 md:p-6">
+          <div ref={bankHistoryPrintRef} className="bank-history-print-area bg-white rounded-3xl p-4 md:p-6 w-[95vw] h-[92vh] shadow-2xl space-y-4 flex flex-col">
             <div className="flex justify-between items-center border-b pb-3">
               <div>
                 <h3 className="text-base font-black text-gray-800">📜 سجل حركات البنك: {historyModal.bank.name}</h3>
