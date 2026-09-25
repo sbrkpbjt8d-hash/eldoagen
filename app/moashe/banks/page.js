@@ -353,6 +353,76 @@ export default function BanksPage() {
     },
   });
 
+  const deleteBankTransactionMutation = useMutation({
+    mutationFn: async (transaction) => {
+      if (!isAdmin) throw new Error('عذراً، حذف الحركات مسموح للأدمن فقط.');
+
+      const bankId = historyModal.bank?.id;
+      const amount = Number(transaction.amount || 0);
+      const collectionName = transaction.collectionName;
+
+      if (!bankId) throw new Error('لم يتم تحديد البنك الحالي.');
+      if (!Number.isFinite(amount) || amount <= 0) throw new Error('مبلغ الحركة غير صالح.');
+
+      const bank = await pb.collection('banks').getOne(bankId).catch(() => null);
+      if (!bank) throw new Error('البنك المحدد غير موجود.');
+
+      const reverseBalance = (delta) => {
+        return pb.collection('banks').update(bankId, {
+          balance: Number(bank.balance || 0) + Number(delta || 0),
+          actor_name: currentUserName(),
+        });
+      };
+
+      if (collectionName === 'expenses') {
+        await reverseBalance(amount);
+      } else if (collectionName === 'client_transactions') {
+        await reverseBalance(amount);
+      } else if (collectionName === 'supplier_transactions') {
+        await reverseBalance(amount);
+      } else if (collectionName === 'treasury_transactions') {
+        const movementType = String(transaction.movement_type || '').toLowerCase();
+        const isIncoming = String(transaction.destination_bank_id || '').trim() === bankId || String(transaction.title || '').includes(`إلى بنك ${historyModal.bank.name}`);
+        const isOutgoing = String(transaction.bank_id || '').trim() === bankId && !isIncoming;
+
+        if (movementType === 'bank_adjustment') {
+          await reverseBalance(-Number(transaction.amount || 0));
+        } else if (movementType === 'bank_deposit') {
+          await reverseBalance(-Number(transaction.amount || 0));
+        } else if (movementType === 'bank_transfer') {
+          if (isIncoming) {
+            await reverseBalance(-Number(transaction.amount || 0));
+          } else if (isOutgoing) {
+            await reverseBalance(Number(transaction.amount || 0));
+          }
+        } else if (movementType === 'other_advance' || movementType === 'other_advance_return') {
+          await reverseBalance(movementType === 'other_advance_return' ? -Number(transaction.amount || 0) : Number(transaction.amount || 0));
+        } else {
+          await reverseBalance(Number(transaction.amount || 0));
+        }
+      }
+
+      await pb.collection(collectionName).delete(transaction.id);
+
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['banks'] }),
+        queryClient.invalidateQueries({ queryKey: ['expenses'] }),
+        queryClient.invalidateQueries({ queryKey: ['client_transactions_banks'] }),
+        queryClient.invalidateQueries({ queryKey: ['supplier_transactions_banks'] }),
+        queryClient.invalidateQueries({ queryKey: ['treasury_transactions_banks'] }),
+        queryClient.invalidateQueries({ queryKey: ['treasury'] }),
+      ]);
+
+      return transaction;
+    },
+    onSuccess: () => {
+      showFeedback('🗑️ تم حذف الحركة وتحديث رصيد البنك بنجاح.', 'success');
+    },
+    onError: (error) => {
+      showFeedback('❌ فشل حذف الحركة: ' + error.message, 'error');
+    },
+  });
+
   const handleAddBank = (e) => {
     e.preventDefault();
     if (!bankName.trim()) {
@@ -402,7 +472,7 @@ export default function BanksPage() {
         return bankId === historyModal.bank.id &&
           (!historyStartDate || transactionDate >= historyStartDate) &&
           (!historyEndDate || transactionDate <= historyEndDate);
-      }).map((transaction) => ({ ...transaction, movementType: 'client_payment' }))
+      }).map((transaction) => ({ ...transaction, movementType: 'client_payment', collectionName: 'client_transactions' }))
     : [];
 
   const currentSupplierPayments = historyModal.bank
@@ -412,7 +482,7 @@ export default function BanksPage() {
         return bankId === historyModal.bank.id &&
           (!historyStartDate || transactionDate >= historyStartDate) &&
           (!historyEndDate || transactionDate <= historyEndDate);
-      }).map((transaction) => ({ ...transaction, movementType: 'supplier_payment' }))
+      }).map((transaction) => ({ ...transaction, movementType: 'supplier_payment', collectionName: 'supplier_transactions' }))
     : [];
 
   const currentBankOtherAdvanceTransactions = historyModal.bank
@@ -427,6 +497,7 @@ export default function BanksPage() {
       }).map(transaction => ({
         ...transaction,
         movementType: transaction.movement_type === 'other_advance_return' ? 'other_advance_return' : 'other_advance',
+        collectionName: 'treasury_transactions',
       }))
     : [];
 
@@ -439,7 +510,7 @@ export default function BanksPage() {
           bankId === historyModal.bank.id &&
           (!historyStartDate || transactionDate >= historyStartDate) &&
           (!historyEndDate || transactionDate <= historyEndDate);
-      }).map(transaction => ({ ...transaction, movementType: 'bank_deposit' }))
+      }).map(transaction => ({ ...transaction, movementType: 'bank_deposit', collectionName: 'treasury_transactions' }))
     : [];
 
   const currentBankTransfers = historyModal.bank
@@ -456,6 +527,7 @@ export default function BanksPage() {
         ...transaction,
         movementType: 'bank_transfer',
         isIncoming: String(transaction.destination_bank_id || '').trim() === historyModal.bank.id || String(transaction.title || '').includes(`إلى بنك ${historyModal.bank.name}`),
+        collectionName: 'treasury_transactions',
       }))
     : [];
 
@@ -468,11 +540,11 @@ export default function BanksPage() {
           bankId === historyModal.bank.id &&
           (!historyStartDate || transactionDate >= historyStartDate) &&
           (!historyEndDate || transactionDate <= historyEndDate);
-      }).map(transaction => ({ ...transaction, movementType: 'bank_adjustment' }))
+      }).map(transaction => ({ ...transaction, movementType: 'bank_adjustment', collectionName: 'treasury_transactions' }))
     : [];
 
   const currentBankTransactions = [
-    ...currentBankExpenses.map((expense) => ({ ...expense, movementType: 'expense' })),
+    ...currentBankExpenses.map((expense) => ({ ...expense, movementType: 'expense', collectionName: 'expenses' })),
     ...currentBankPayments,
     ...currentSupplierPayments,
     ...currentBankOtherAdvanceTransactions,
@@ -516,6 +588,20 @@ export default function BanksPage() {
     return ['client_payment', 'other_advance_return', 'bank_deposit'].includes(transaction.movementType)
       ? 'deposit'
       : 'withdrawal';
+  };
+
+  const handleDeleteBankTransaction = async (transaction) => {
+    if (!isAdmin) {
+      showFeedback('❌ لا توجد صلاحية حذف حركات البنك.', 'error');
+      return;
+    }
+
+    if (!transaction?.id || !transaction?.collectionName) {
+      showFeedback('❌ هذه الحركة لا يمكن حذفها.', 'error');
+      return;
+    }
+
+    deleteBankTransactionMutation.mutate(transaction);
   };
 
   const filteredCurrentBankTransactions = transactionsWithBankBalance.filter((transaction) => (
@@ -642,6 +728,7 @@ export default function BanksPage() {
                     <th className="p-3">رصيد البنك بعد الحركة</th>
                     <th className="p-3">ملاحظات</th>
                     <th className="p-3">بواسطة</th>
+                    <th className="p-3 print:hidden">الإجراء</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -663,6 +750,18 @@ export default function BanksPage() {
                         <td className="p-3 font-black text-blue-700">{Number(tx.bankBalance || 0).toLocaleString()} ج.م</td>
                         <td className="p-3 text-gray-500">{tx.notes || '-'}</td>
                         <td className="p-3 font-bold text-gray-700">{tx.actor_name || 'غير معروف'}</td>
+                        <td className="p-3 print:hidden">
+                          {isAdmin && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteBankTransaction(tx)}
+                              disabled={deleteBankTransactionMutation.isPending}
+                              className="bg-red-50 text-red-700 px-2 py-1.5 rounded-lg font-bold border border-red-200"
+                            >
+                              حذف
+                            </button>
+                          )}
+                        </td>
                       </tr>
                     ))
                   ) : (
