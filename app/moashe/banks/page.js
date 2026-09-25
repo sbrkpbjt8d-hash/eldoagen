@@ -704,115 +704,141 @@ export default function BanksPage() {
         </div>
       )}
 
-      {/* نافذة سجل الحركات */}
-      {historyModal.isOpen && historyModal.bank && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-3 md:p-6">
-          <div ref={bankHistoryPrintRef} className="bank-history-print-area bg-white rounded-3xl p-4 md:p-6 w-[95vw] h-[92vh] shadow-2xl space-y-4 flex flex-col">
-            <div className="flex justify-between items-center border-b pb-3">
-              <div>
-                <h3 className="text-base font-black text-gray-800">📜 سجل حركات البنك: {historyModal.bank.name}</h3>
-                <p className="text-[11px] text-gray-500 mt-0.5">الرصيد الحالي: <span className="font-black text-emerald-600">{Number(historyModal.bank.balance || 0).toLocaleString()} ج.م</span></p>
-              </div>
-              <button onClick={() => setHistoryModal({ isOpen: false, bank: null })} className="text-gray-400 font-bold text-lg hover:text-gray-700 print:hidden">✕</button>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 print:hidden">
-              <div>
-                <label className="text-xs font-bold text-gray-700">من تاريخ</label>
-                <input type="date" value={historyStartDate} onChange={(e) => setHistoryStartDate(e.target.value)} className="w-full border border-gray-200 bg-gray-50 p-3 rounded-xl text-xs font-bold outline-none mt-1" />
-              </div>
-              <div>
-                <label className="text-xs font-bold text-gray-700">إلى تاريخ</label>
-                <input type="date" value={historyEndDate} onChange={(e) => setHistoryEndDate(e.target.value)} className="w-full border border-gray-200 bg-gray-50 p-3 rounded-xl text-xs font-bold outline-none mt-1" />
-              </div>
-              <div>
-                <label className="text-xs font-bold text-gray-700">اتجاه الحركة</label>
-                <select value={historyDirectionFilter} onChange={(e) => setHistoryDirectionFilter(e.target.value)} className="w-full border border-gray-200 bg-gray-50 p-3 rounded-xl text-xs font-bold outline-none mt-1">
-                  <option value="all">كل الحركات</option>
-                  <option value="deposit">إيداع</option>
-                  <option value="withdrawal">سحب</option>
-                </select>
-              </div>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-3 print:hidden">
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                <p className="text-[10px] font-bold text-slate-700">الرصيد الافتتاحي</p>
-                <p className="mt-1 text-base font-black text-slate-700">{bankOpeningBalance.toLocaleString()} ج.م</p>
-              </div>
-              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3">
-                <p className="text-[10px] font-bold text-emerald-700">إجمالي الإيداعات</p>
-                <p className="mt-1 text-base font-black text-emerald-700">{filteredBankHistoryTotals.deposits.toLocaleString()} ج.م</p>
-              </div>
-              <div className="rounded-2xl border border-red-200 bg-red-50 p-3">
-                <p className="text-[10px] font-bold text-red-700">إجمالي المسحوبات</p>
-                <p className="mt-1 text-base font-black text-red-700">{filteredBankHistoryTotals.withdrawals.toLocaleString()} ج.م</p>
-              </div>
-              <div className="rounded-2xl border border-blue-200 bg-blue-50 p-3">
-                <p className="text-[10px] font-bold text-blue-700">الرصيد الحالي</p>
-                <p className={`mt-1 text-base font-black ${bankCurrentCalculatedBalance >= 0 ? 'text-blue-700' : 'text-red-700'}`}>
-                  {bankCurrentCalculatedBalance.toLocaleString()} ج.م
-                </p>
-              </div>
-            </div>
-            <div className="overflow-y-auto flex-1 border border-gray-100 rounded-2xl">
-              <table className="w-full text-right text-xs">
-                <thead className="bg-gray-50 text-gray-500 sticky top-0">
-                  <tr>
-                    <th className="p-3">التاريخ</th>
-                    <th className="p-3">الحركة</th>
-                    <th className="p-3">نوع الحركة</th>
-                    <th className="p-3">المبلغ</th>
-                    <th className="p-3">رصيد البنك بعد الحركة</th>
-                    <th className="p-3">ملاحظات</th>
-                    <th className="p-3">بواسطة</th>
-                    <th className="p-3 print:hidden">الإجراء</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {filteredCurrentBankTransactions.length > 0 ? (
-                    filteredCurrentBankTransactions.map((tx) => (
-                      <tr key={tx.id} className="hover:bg-gray-50/60">
-                        <td className="p-3 text-gray-600">{String(tx.date || tx.created || '').slice(0, 10) || '-'}</td>
-                        <td className="p-3">
-                          <span className={`px-2.5 py-1 rounded-xl text-[10px] font-bold ${getBankTransactionDirection(tx) === 'deposit' ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'}`}>
-                            {getBankTransactionDirection(tx) === 'deposit' ? 'إيداع' : 'سحب'}
-                          </span>
-                        </td>
-                        <td className="p-3 font-bold text-blue-600">
-                          {tx.movementType === 'client_payment' ? `تحصيل من عميل: ${tx.expand?.client_id?.name || 'عميل'}` : tx.movementType === 'supplier_payment' ? `سداد مورد: ${tx.expand?.supplier_id?.name || 'مورد'}` : tx.movementType === 'other_advance' ? tx.title || 'صرف عهدة' : tx.movementType === 'other_advance_return' ? tx.title || 'رد عهدة' : tx.movementType === 'bank_deposit' ? tx.title || 'إيداع من الخزنة' : tx.movementType === 'bank_transfer' ? tx.title || 'تحويل بين الحسابات' : tx.movementType === 'bank_adjustment' ? tx.title || 'تسوية رصيد البنك' : tx.expand?.category_id?.name || 'مصروف'}
-                        </td>
-                        <td className={`p-3 font-black ${tx.movementType === 'bank_adjustment' ? (Number(tx.amount || 0) >= 0 ? 'text-emerald-600' : 'text-red-600') : tx.movementType === 'client_payment' || tx.movementType === 'other_advance_return' || tx.movementType === 'bank_deposit' || (tx.movementType === 'bank_transfer' && tx.isIncoming) ? 'text-emerald-600' : 'text-red-600'}`}>
-                          {tx.movementType === 'bank_adjustment' ? (Number(tx.amount || 0) >= 0 ? '+' : '-') : tx.movementType === 'client_payment' || tx.movementType === 'other_advance_return' || tx.movementType === 'bank_deposit' || (tx.movementType === 'bank_transfer' && tx.isIncoming) ? '+' : '-'} {Math.abs(Number(tx.amount || 0)).toLocaleString()} ج.م
-                        </td>
-                        <td className="p-3 font-black text-blue-700">{Number(tx.bankBalance || 0).toLocaleString()} ج.م</td>
-                        <td className="p-3 text-gray-500">{tx.notes || '-'}</td>
-                        <td className="p-3 font-bold text-gray-700">{tx.actor_name || 'غير معروف'}</td>
-                        <td className="p-3 print:hidden">
-                          {isAdmin && (
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteBankTransaction(tx)}
-                              disabled={deleteBankTransactionMutation.isPending}
-                              className="bg-red-50 text-red-700 px-2 py-1.5 rounded-lg font-bold border border-red-200"
-                            >
-                              حذف
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    ))
-                  ) : (
-                    <tr><td colSpan="8" className="p-8 text-center text-gray-400 font-bold">لا توجد حركات مسجلة لهذا البنك في الفترة المحددة.</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-            <div className="pt-2 flex justify-end gap-2 print:hidden">
-              <button onClick={printBankHistory} className="bg-emerald-600 text-white px-6 py-2.5 rounded-xl text-xs font-bold">🖨️ طباعة السجل</button>
-              <button onClick={() => setHistoryModal({ isOpen: false, bank: null })} className="bg-gray-900 text-white px-6 py-2.5 rounded-xl text-xs font-bold">إغلاق</button>
-            </div>
+{/* نافذة سجل الحركات */}
+{historyModal.isOpen && historyModal.bank && (
+  <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-3 md:p-6">
+    <div ref={bankHistoryPrintRef} className="bank-history-print-area bg-white rounded-3xl p-4 md:p-6 w-[98vw] h-[95vh] shadow-2xl space-y-3 flex flex-col">
+      
+      {/* رأس النافذة */}
+      <div className="flex justify-between items-center border-b pb-2">
+        <div>
+          <h3 className="text-base font-black text-gray-800">📜 سجل حركات البنك: {historyModal.bank.name}</h3>
+          <p className="text-[11px] text-gray-500 mt-0.5">الرصيد الحالي: <span className="font-black text-emerald-600">{Number(historyModal.bank.balance || 0).toLocaleString()} ج.م</span></p>
+        </div>
+        <button onClick={() => setHistoryModal({ isOpen: false, bank: null })} className="text-gray-400 font-bold text-lg hover:text-gray-700 print:hidden">✕</button>
+      </div>
+
+      {/* شريط الفلاتر والإجماليات المدمج (ياخد مساحة صغيرة جداً في أعلى السجل) */}
+      <div className="flex flex-wrap items-center gap-2 bg-gray-50 p-2.5 rounded-2xl border border-gray-200 print:hidden">
+        
+        {/* حقول الفلترة مصغرة */}
+        <div className="flex items-center gap-1.5 bg-white px-2 py-1.5 rounded-xl border border-gray-200">
+          <span className="text-[10px] font-bold text-gray-500">من:</span>
+          <input type="date" value={historyStartDate} onChange={(e) => setHistoryStartDate(e.target.value)} className="bg-transparent text-xs font-bold outline-none text-gray-700" />
+        </div>
+
+        <div className="flex items-center gap-1.5 bg-white px-2 py-1.5 rounded-xl border border-gray-200">
+          <span className="text-[10px] font-bold text-gray-500">إلى:</span>
+          <input type="date" value={historyEndDate} onChange={(e) => setHistoryEndDate(e.target.value)} className="bg-transparent text-xs font-bold outline-none text-gray-700" />
+        </div>
+
+        <div className="flex items-center gap-1.5 bg-white px-2 py-1.5 rounded-xl border border-gray-200">
+          <span className="text-[10px] font-bold text-gray-500">الأتجاه:</span>
+          <select value={historyDirectionFilter} onChange={(e) => setHistoryDirectionFilter(e.target.value)} className="bg-transparent text-xs font-bold outline-none text-gray-700 cursor-pointer">
+            <option value="all">كل الحركات</option>
+            <option value="deposit">إيداع</option>
+            <option value="withdrawal">سحب</option>
+          </select>
+        </div>
+
+        <div className="h-6 w-[1px] bg-gray-300 mx-1 hidden xl:block"></div>
+
+        {/* مربعات الإجماليات مصغرة في نفس الشريط العلوي */}
+        <div className="flex items-center gap-2 flex-wrap mr-auto">
+          <div className="bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-xl">
+            <span className="text-[10px] font-bold text-slate-600 ml-1">الافتتاحي:</span>
+            <span className="text-xs font-black text-slate-700">{bankOpeningBalance.toLocaleString()} ج.م</span>
+          </div>
+
+          <div className="bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-xl">
+            <span className="text-[10px] font-bold text-emerald-700 ml-1">الإيداعات:</span>
+            <span className="text-xs font-black text-emerald-700">{filteredBankHistoryTotals.deposits.toLocaleString()} ج.م</span>
+          </div>
+
+          <div className="bg-red-50 border border-red-200 px-3 py-1.5 rounded-xl">
+            <span className="text-[10px] font-bold text-red-700 ml-1">المسحوبات:</span>
+            <span className="text-xs font-black text-red-700">{filteredBankHistoryTotals.withdrawals.toLocaleString()} ج.م</span>
+          </div>
+
+          <div className="bg-blue-50 border border-blue-200 px-3 py-1.5 rounded-xl">
+            <span className="text-[10px] font-bold text-blue-700 ml-1">الحالي:</span>
+            <span className={`text-xs font-black ${bankCurrentCalculatedBalance >= 0 ? 'text-blue-700' : 'text-red-700'}`}>
+              {bankCurrentCalculatedBalance.toLocaleString()} ج.م
+            </span>
           </div>
         </div>
-      )}
+
+      </div>
+
+      {/* جدول الحركات (يأخذ باقي المساحة الكبرى للشاشة وبراحتك تماماً في التصفح) */}
+      <div className="overflow-y-auto flex-1 border border-gray-100 rounded-2xl bg-white">
+        <table className="w-full text-right text-xs">
+          <thead className="bg-gray-50 text-gray-500 sticky top-0 z-10 shadow-sm">
+            <tr>
+              <th className="p-3">التاريخ</th>
+              <th className="p-3">الحركة</th>
+              <th className="p-3">نوع الحركة</th>
+              <th className="p-3">المبلغ</th>
+              <th className="p-3">رصيد البنك بعد الحركة</th>
+              <th className="p-3">ملاحظات</th>
+              <th className="p-3">بواسطة</th>
+              <th className="p-3 print:hidden">الإجراء</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {filteredCurrentBankTransactions.length > 0 ? (
+              filteredCurrentBankTransactions.map((tx) => (
+                <tr key={tx.id} className="hover:bg-gray-50/60">
+                  <td className="p-3 text-gray-600">{String(tx.date || tx.created || '').slice(0, 10) || '-'}</td>
+                  <td className="p-3">
+                    <span className={`px-2.5 py-1 rounded-xl text-[10px] font-bold ${getBankTransactionDirection(tx) === 'deposit' ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'}`}>
+                      {getBankTransactionDirection(tx) === 'deposit' ? 'إيداع' : 'سحب'}
+                    </span>
+                  </td>
+                  <td className="p-3 font-bold text-blue-600">
+                    {tx.movementType === 'client_payment' ? `تحصيل من عميل: ${tx.expand?.client_id?.name || 'عميل'}` : tx.movementType === 'supplier_payment' ? `سداد مورد: ${tx.expand?.supplier_id?.name || 'مورد'}` : tx.movementType === 'other_advance' ? tx.title || 'صرف عهدة' : tx.movementType === 'other_advance_return' ? tx.title || 'رد عهدة' : tx.movementType === 'bank_deposit' ? tx.title || 'إيداع من الخزنة' : tx.movementType === 'bank_transfer' ? tx.title || 'تحويل بين الحسابات' : tx.movementType === 'bank_adjustment' ? tx.title || 'تسوية رصيد البنك' : tx.expand?.category_id?.name || 'مصروف'}
+                  </td>
+                  <td className={`p-3 font-black ${tx.movementType === 'bank_adjustment' ? (Number(tx.amount || 0) >= 0 ? 'text-emerald-600' : 'text-red-600') : tx.movementType === 'client_payment' || tx.movementType === 'other_advance_return' || tx.movementType === 'bank_deposit' || (tx.movementType === 'bank_transfer' && tx.isIncoming) ? 'text-emerald-600' : 'text-red-600'}`}>
+                    {tx.movementType === 'bank_adjustment' ? (Number(tx.amount || 0) >= 0 ? '+' : '-') : tx.movementType === 'client_payment' || tx.movementType === 'other_advance_return' || tx.movementType === 'bank_deposit' || (tx.movementType === 'bank_transfer' && tx.isIncoming) ? '+' : '-'} {Math.abs(Number(tx.amount || 0)).toLocaleString()} ج.م
+                  </td>
+                  <td className="p-3 font-black text-blue-700">{Number(tx.bankBalance || 0).toLocaleString()} ج.م</td>
+                  <td className="p-3 text-gray-500">{tx.notes || '-'}</td>
+                  <td className="p-3 font-bold text-gray-700">{tx.actor_name || 'غير معروف'}</td>
+                  <td className="p-3 print:hidden">
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteBankTransaction(tx)}
+                        disabled={deleteBankTransactionMutation.isPending}
+                        className="bg-red-50 text-red-700 px-2 py-1.5 rounded-lg font-bold border border-red-200"
+                      >
+                        حذف
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))
+            ) : (
+              <tr><td colSpan="8" className="p-8 text-center text-gray-400 font-bold">لا توجد حركات مسجلة لهذا البنك في الفترة المحددة.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* أزرار الإغلاق والطباعة */}
+      <div className="pt-2 flex justify-end gap-2 print:hidden border-t">
+        <button onClick={printBankHistory} className="bg-emerald-600 text-white px-6 py-2 rounded-xl text-xs font-bold">🖨️ طباعة السجل</button>
+        <button onClick={() => setHistoryModal({ isOpen: false, bank: null })} className="bg-gray-900 text-white px-6 py-2 rounded-xl text-xs font-bold">إغلاق</button>
+      </div>
+
+    </div>
+  </div>
+)}
+
+
+
+
+
 
       {transferModal && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
