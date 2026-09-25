@@ -471,6 +471,18 @@ const getSupplierDerivedBalance = (supplierId) => {
     ? Number(statementRowsWithBalance[statementRowsWithBalance.length - 1].runningBalance || 0)
     : 0;
 
+  const statementTotals = statementRows.reduce((totals, row) => {
+    const amount = Math.abs(Number(row.effectAmount || 0));
+    if (Number(row.effectAmount || 0) >= 0) {
+      totals.increase += amount;
+    } else {
+      totals.decrease += amount;
+    }
+    return totals;
+  }, { increase: 0, decrease: 0 });
+
+  const statementPeriodBalance = statementOpeningBalance + statementTotals.increase - statementTotals.decrease;
+
   const getSupplierStatementRunningBalance = (supplierId) => {
     const normalizedSupplierId = String(supplierId || '');
     const supplierTransactions = allTransactions
@@ -604,7 +616,7 @@ const getSupplierDerivedBalance = (supplierId) => {
 
       {statementModal.open && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-6 max-w-5xl w-full shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+          <div className="bg-white rounded-3xl p-6 w-[80vw] max-w-5xl shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center border-b pb-3">
               <div>
                 <h3 className="font-black text-base">كشف حساب المورد: {statementModal.supplier?.name}</h3>
@@ -614,6 +626,26 @@ const getSupplierDerivedBalance = (supplierId) => {
                 </div>
               </div>
               <button onClick={() => setStatementModal({ open: false, supplier: null })}>✕</button>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                <p className="text-[10px] font-bold text-slate-700">رصيد أول المدة</p>
+                <p className="mt-1 text-base font-black text-slate-700">{statementOpeningBalance.toLocaleString()} ج.م</p>
+              </div>
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3">
+                <p className="text-[10px] font-bold text-emerald-700">إجمالي الإضافات</p>
+                <p className="mt-1 text-base font-black text-emerald-700">{statementTotals.increase.toLocaleString()} ج.م</p>
+              </div>
+              <div className="rounded-2xl border border-red-200 bg-red-50 p-3">
+                <p className="text-[10px] font-bold text-red-700">إجمالي المسحوبات</p>
+                <p className="mt-1 text-base font-black text-red-700">{statementTotals.decrease.toLocaleString()} ج.م</p>
+              </div>
+              <div className="rounded-2xl border border-blue-200 bg-blue-50 p-3">
+                <p className="text-[10px] font-bold text-blue-700">الرصيد الحالي</p>
+                <p className={`mt-1 text-base font-black ${statementPeriodBalance >= 0 ? 'text-blue-700' : 'text-red-700'}`}>
+                  {statementPeriodBalance.toLocaleString()} ج.م
+                </p>
+              </div>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="border p-3 rounded-xl text-xs" />
@@ -627,7 +659,6 @@ const getSupplierDerivedBalance = (supplierId) => {
                     <th className="p-3">نوع الحركة</th>
                     <th className="p-3">مصدر السداد</th>
                     <th className="p-3">المبلغ</th>
-                    <th className="p-3 text-red-600">الرصيد بعد المعاملة</th>
                     <th className="p-3">ملاحظات</th>
                     <th className="p-3">بواسطة</th>
                     <th className="p-3">الإجراء</th>
@@ -640,7 +671,6 @@ const getSupplierDerivedBalance = (supplierId) => {
                       <td className="p-3 font-bold">{row.displayType}</td>
                       <td className="p-3 font-bold text-emerald-700">{row.type === 'payment' ? (row.paymentSourceLabel || 'غير محدد') : '-'}</td>
                       <td className="p-3 font-black">{Number(row.displayAmount || 0).toLocaleString()} ج.م</td>
-                      <td className="p-3 font-black text-red-600 bg-gray-50/50">{Number(row.runningBalance || 0).toLocaleString()} ج.م</td>
                       <td className="p-3 text-gray-500">{row.notes || '-'}</td>
                       <td className="p-3 font-bold text-gray-700">{row.actor_name || 'غير معروف'}</td>
                       <td className="p-3">
