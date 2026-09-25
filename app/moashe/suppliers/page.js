@@ -467,6 +467,8 @@ const getSupplierDerivedBalance = (supplierId) => {
     const date = String(row.date || row.created || '').slice(0, 10);
     return (!startDate || date >= startDate) && (!endDate || date <= endDate);
   });
+
+  const statementRowsForDisplay = [...statementRows].sort((a, b) => new Date(a.date || a.created) - new Date(b.date || b.created));
   const statementCurrentBalance = statementRowsWithBalance.length
     ? Number(statementRowsWithBalance[statementRowsWithBalance.length - 1].runningBalance || 0)
     : 0;
@@ -659,18 +661,22 @@ const getSupplierDerivedBalance = (supplierId) => {
                     <th className="p-3">نوع الحركة</th>
                     <th className="p-3">مصدر السداد</th>
                     <th className="p-3">المبلغ</th>
+                    <th className="p-3">الرصيد بعد كل معاملة</th>
                     <th className="p-3">ملاحظات</th>
                     <th className="p-3">بواسطة</th>
                     <th className="p-3">الإجراء</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
-                  {statementRows.length ? statementRows.map((row) => (
+                  {statementRowsForDisplay.length ? statementRowsForDisplay.map((row) => (
                     <tr key={row.id} className={row.source === 'purchase' ? 'bg-blue-50/30' : 'hover:bg-gray-50'}>
                       <td className="p-3">{formatDisplayDate(row.date || row.created)}</td>
                       <td className="p-3 font-bold">{row.displayType}</td>
                       <td className="p-3 font-bold text-emerald-700">{row.type === 'payment' ? (row.paymentSourceLabel || 'غير محدد') : '-'}</td>
                       <td className="p-3 font-black">{Number(row.displayAmount || 0).toLocaleString()} ج.م</td>
+                      <td className={`p-3 font-black ${Number(row.runningBalance || 0) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                        {Number(row.runningBalance || 0).toLocaleString()} ج.م
+                      </td>
                       <td className="p-3 text-gray-500">{row.notes || '-'}</td>
                       <td className="p-3 font-bold text-gray-700">{row.actor_name || 'غير معروف'}</td>
                       <td className="p-3">
