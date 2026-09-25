@@ -1010,7 +1010,7 @@ export default function BanksPage() {
               <tr className="border-b text-xs text-gray-500 bg-gray-50">
                 <th className="p-3">اسم البنك</th>
                 <th className="p-3">الرصيد الافتتاحي</th>
-                <th className="p-3">الرصيد الحالي</th>
+                {/* <th className="p-3">الرصيد الحالي</th> */}
                 <th className="p-3">ملاحظات</th>
                 <th className="p-3">أُضيف/عُدِّل بواسطة</th>
                 <th className="p-3 text-center">الإجراءات والسجل</th>
@@ -1021,7 +1021,7 @@ export default function BanksPage() {
                 <tr key={bank.id} className="hover:bg-gray-50/50 transition">
                   <td className="p-3 font-black text-gray-900">{bank.name}</td>
                   <td className="p-3 font-bold text-gray-600">{Number(bank.opening_balance || 0).toLocaleString()} ج.م</td>
-                  <td className="p-3 font-black text-emerald-600">{Number(bank.balance || 0).toLocaleString()} ج.م</td>
+                  {/* <td className="p-3 font-black text-emerald-600">{Number(bank.balance || 0).toLocaleString()} ج.م</td> */}
                   <td className="p-3 text-xs text-gray-500">{bank.notes || '-'}</td>
                   <td className="p-3 text-xs font-bold text-gray-700">{bank.actor_name || 'غير معروف'}</td>
                   <td className="p-3 text-center">

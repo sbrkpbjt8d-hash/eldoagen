@@ -616,13 +616,13 @@ const getSupplierDerivedBalance = (supplierId) => {
 
       {statementModal.open && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-6 w-[80vw] max-w-5xl shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+          <div className="bg-white rounded-3xl p-6 w-[96vw] max-w-5xl shadow-2xl space-y-4 h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center border-b pb-3">
               <div>
                 <h3 className="font-black text-base">كشف حساب المورد: {statementModal.supplier?.name}</h3>
                 <div className="flex flex-wrap gap-3 mt-2 text-xs">
                   <p className="text-gray-500">رصيد أول المدة: <b className="text-blue-600">{statementOpeningBalance.toLocaleString()} ج.م</b></p>
-                  <p className="text-gray-500">الرصيد الحالي: <b className="text-red-600">{statementCurrentBalance.toLocaleString()} ج.م</b></p>
+                  {/* <p className="text-gray-500">الرصيد الحالي: <b className="text-red-600">{statementCurrentBalance.toLocaleString()} ج.م</b></p> */}
                 </div>
               </div>
               <button onClick={() => setStatementModal({ open: false, supplier: null })}>✕</button>
@@ -713,7 +713,7 @@ const getSupplierDerivedBalance = (supplierId) => {
             <thead className="bg-gray-100 text-gray-600">
               <tr>
                 <th className="p-3">المورد</th>
-                <th className="p-3">الرصيد المستحق</th>
+                {/* <th className="p-3">الرصيد المستحق</th> */}
                 <th className="p-3">الإجراءات</th>
               </tr>
             </thead>
@@ -724,9 +724,9 @@ const getSupplierDerivedBalance = (supplierId) => {
                 return (
                   <tr key={supplier.id} className="hover:bg-gray-50">
                     <td className="p-3 font-bold">{supplier.name}</td>                    
-              <td className="p-3 font-black text-red-600">
+              {/* <td className="p-3 font-black text-red-600">
   {Number(getSupplierDerivedBalance(supplier.id) || 0).toLocaleString()} ج.م
-</td>
+</td> */}
                     <td className="p-3 flex flex-wrap gap-1">
                       <button onClick={() => { setStartDate(''); setEndDate(''); setStatementModal({ open: true, supplier }); }} className="bg-blue-50 text-blue-700 px-2.5 py-1.5 rounded-lg font-bold">كشف الحساب</button>
                       <button onClick={() => { setPaymentAmount(''); setPaymentNotes(''); setPaymentDestination('treasury'); setPaymentBankId(''); setPaymentModal({ open: true, supplier }); }} className="bg-emerald-50 text-emerald-700 px-2.5 py-1.5 rounded-lg font-bold">سداد</button>
