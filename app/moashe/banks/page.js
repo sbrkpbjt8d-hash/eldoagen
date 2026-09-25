@@ -608,6 +608,22 @@ export default function BanksPage() {
     historyDirectionFilter === 'all' || getBankTransactionDirection(transaction) === historyDirectionFilter
   ));
 
+  const filteredBankHistoryTotals = filteredCurrentBankTransactions.reduce((totals, transaction) => {
+    const direction = getBankTransactionDirection(transaction);
+    const amount = Math.abs(Number(transaction.amount || 0));
+
+    if (direction === 'deposit') {
+      totals.deposits += amount;
+    } else if (direction === 'withdrawal') {
+      totals.withdrawals += amount;
+    }
+
+    return totals;
+  }, { deposits: 0, withdrawals: 0 });
+
+  const bankOpeningBalance = Number(historyModal.bank?.opening_balance || 0);
+  const bankCurrentCalculatedBalance = bankOpeningBalance + filteredBankHistoryTotals.deposits - filteredBankHistoryTotals.withdrawals;
+
   return (
     <div className="p-4 md:p-8 max-w-5xl mx-auto space-y-8 relative" dir="rtl">
 
@@ -717,6 +733,26 @@ export default function BanksPage() {
                 </select>
               </div>
             </div>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3 print:hidden">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                <p className="text-[10px] font-bold text-slate-700">الرصيد الافتتاحي</p>
+                <p className="mt-1 text-base font-black text-slate-700">{bankOpeningBalance.toLocaleString()} ج.م</p>
+              </div>
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3">
+                <p className="text-[10px] font-bold text-emerald-700">إجمالي الإيداعات</p>
+                <p className="mt-1 text-base font-black text-emerald-700">{filteredBankHistoryTotals.deposits.toLocaleString()} ج.م</p>
+              </div>
+              <div className="rounded-2xl border border-red-200 bg-red-50 p-3">
+                <p className="text-[10px] font-bold text-red-700">إجمالي المسحوبات</p>
+                <p className="mt-1 text-base font-black text-red-700">{filteredBankHistoryTotals.withdrawals.toLocaleString()} ج.م</p>
+              </div>
+              <div className="rounded-2xl border border-blue-200 bg-blue-50 p-3">
+                <p className="text-[10px] font-bold text-blue-700">الرصيد الحالي</p>
+                <p className={`mt-1 text-base font-black ${bankCurrentCalculatedBalance >= 0 ? 'text-blue-700' : 'text-red-700'}`}>
+                  {bankCurrentCalculatedBalance.toLocaleString()} ج.م
+                </p>
+              </div>
+            </div>
             <div className="overflow-y-auto flex-1 border border-gray-100 rounded-2xl">
               <table className="w-full text-right text-xs">
                 <thead className="bg-gray-50 text-gray-500 sticky top-0">
@@ -765,7 +801,7 @@ export default function BanksPage() {
                       </tr>
                     ))
                   ) : (
-                    <tr><td colSpan="7" className="p-8 text-center text-gray-400 font-bold">لا توجد حركات مسجلة لهذا البنك في الفترة المحددة.</td></tr>
+                    <tr><td colSpan="8" className="p-8 text-center text-gray-400 font-bold">لا توجد حركات مسجلة لهذا البنك في الفترة المحددة.</td></tr>
                   )}
                 </tbody>
               </table>

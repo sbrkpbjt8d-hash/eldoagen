@@ -452,12 +452,23 @@ const getSupplierDerivedBalance = (supplierId) => {
     return [...rows, { ...row, runningBalance }];
   }, []);
 
+  const statementOpeningBalance = (() => {
+    if (!startDate) return 0;
+    const openingRows = statementRowsWithBalance.filter((row) => {
+      const date = String(row.date || row.created || '').slice(0, 10);
+      return date < startDate;
+    });
+    return openingRows.length
+      ? Number(openingRows[openingRows.length - 1].runningBalance || 0)
+      : 0;
+  })();
+
   const statementRows = statementRowsWithBalance.filter((row) => {
     const date = String(row.date || row.created || '').slice(0, 10);
     return (!startDate || date >= startDate) && (!endDate || date <= endDate);
   });
-  const statementCurrentBalance = statementRows.length
-    ? Number(statementRows[statementRows.length - 1].runningBalance || 0)
+  const statementCurrentBalance = statementRowsWithBalance.length
+    ? Number(statementRowsWithBalance[statementRowsWithBalance.length - 1].runningBalance || 0)
     : 0;
 
   const getSupplierStatementRunningBalance = (supplierId) => {
@@ -597,7 +608,10 @@ const getSupplierDerivedBalance = (supplierId) => {
             <div className="flex justify-between items-center border-b pb-3">
               <div>
                 <h3 className="font-black text-base">كشف حساب المورد: {statementModal.supplier?.name}</h3>
-                <p className="text-xs text-gray-500">الرصيد الحالي: <b className="text-red-600">{statementCurrentBalance.toLocaleString()} ج.م</b></p>
+                <div className="flex flex-wrap gap-3 mt-2 text-xs">
+                  <p className="text-gray-500">رصيد أول المدة: <b className="text-blue-600">{statementOpeningBalance.toLocaleString()} ج.م</b></p>
+                  <p className="text-gray-500">الرصيد الحالي: <b className="text-red-600">{statementCurrentBalance.toLocaleString()} ج.م</b></p>
+                </div>
               </div>
               <button onClick={() => setStatementModal({ open: false, supplier: null })}>✕</button>
             </div>
