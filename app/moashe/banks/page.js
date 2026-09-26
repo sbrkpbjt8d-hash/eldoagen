@@ -59,6 +59,21 @@ export default function BanksPage() {
     return currentUser?.name || currentUser?.email || 'مستخدم النظام';
   };
 
+  const formatHistoryDateTime = (value) => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '-';
+    return new Intl.DateTimeFormat('ar-EG', {
+      timeZone: 'Africa/Cairo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    }).format(date);
+  };
+
   const showFeedback = (text, type = 'success') => {
     setFeedbackMessage({ text, type });
     setTimeout(() => {
@@ -789,7 +804,7 @@ export default function BanksPage() {
             {filteredCurrentBankTransactions.length > 0 ? (
               filteredCurrentBankTransactions.map((tx) => (
                 <tr key={tx.id} className="hover:bg-gray-50/60">
-                  <td className="p-3 text-gray-600">{String(tx.date || tx.created || '').slice(0, 10) || '-'}</td>
+                  <td className="p-3 text-gray-600">{formatHistoryDateTime(tx.date || tx.created || null)}</td>
                   <td className="p-3">
                     <span className={`px-2.5 py-1 rounded-xl text-[10px] font-bold ${getBankTransactionDirection(tx) === 'deposit' ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'}`}>
                       {getBankTransactionDirection(tx) === 'deposit' ? 'إيداع' : 'سحب'}

@@ -124,35 +124,93 @@ export default function ProductionStockPage() {
   const salesSummaryQuantity = salesSummary.reduce((sum, product) => sum + product.soldQuantity, 0);
   const salesSummaryTotal = salesSummary.reduce((sum, product) => sum + product.salesTotal, 0);
 
-  const getProductHistory = (product) => {
+  const getMovementTimestamp = (value) => {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+  };
+
+  const formatMovementDate = (value) => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '-';
+    return new Intl.DateTimeFormat('ar-EG', {
+      timeZone: 'Africa/Cairo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    }).format(date);
+  };
+
+  const getProductLedgerRows = (product) => {
     const normalizeName = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
     const productName = normalizeName(product.product_name);
-    const history = stockTransactions
-      .filter((transaction) => normalizeName(transaction.product_name) === productName)
-      .filter((transaction) => transaction.product_stock_id === product.id || (
-        !transaction.product_stock_id && new Date(transaction.created || 0) >= new Date(product.created || 0)
-      ))
+
+    const relevantTransactions = stockTransactions.filter((transaction) => {
+      const sameProductName = normalizeName(transaction.product_name) === productName;
+      const sameStockId = transaction.product_stock_id === product.id;
+      const legacyMatch = !transaction.product_stock_id && new Date(transaction.created || 0) >= new Date(product.created || 0);
+      return sameProductName && (sameStockId || legacyMatch);
+    });
+
+    return relevantTransactions
       .map((transaction) => ({
         id: transaction.id,
         date: transaction.movement_at || transaction.updated || transaction.created,
-        type: transaction.quantity >= 0 ? 'إضافة' : 'سحب',
+        type: Number(transaction.quantity || 0) >= 0 ? 'إضافة' : 'سحب',
         title: transaction.title || 'حركة مخزن منتجات',
         quantity: Number(transaction.quantity || 0),
-        balance: Number(transaction.balance_after ?? 0),
         actor: transaction.actor_name || 'غير معروف',
         notes: transaction.notes || '-',
         editable: ['adjustment', 'stock_edit'].includes(transaction.movement_type),
         sourceId: transaction.id,
       }))
       .sort((first, second) => {
-        const timeDifference = new Date(second.date || 0) - new Date(first.date || 0);
-        return timeDifference || String(second.id).localeCompare(String(first.id));
-      });
+        const timeDifference = getMovementTimestamp(first.date) - getMovementTimestamp(second.date);
+        return timeDifference || String(first.id).localeCompare(String(second.id));
+      })
+      .reduce((rows, item) => {
+        const previousBalance = rows.length ? rows[rows.length - 1].balance : 0;
+        return [...rows, { ...item, balance: previousBalance + Number(item.quantity || 0) }];
+      }, []);
+  };
 
-    return history.filter(item => {
+  const getProductHistory = (product) => {
+    const allRows = getProductLedgerRows(product);
+    return allRows.filter((item) => {
       const itemDate = String(item.date || '').slice(0, 10);
       return (!historyStartDate || itemDate >= historyStartDate) && (!historyEndDate || itemDate <= historyEndDate);
     });
+  };
+
+  const getProductHistorySummary = (product) => {
+    const allRows = getProductLedgerRows(product);
+    const startDateMs = historyStartDate ? new Date(`${historyStartDate}T00:00:00`).getTime() : null;
+    const endDateMs = historyEndDate ? new Date(`${historyEndDate}T23:59:59`).getTime() : null;
+
+    const filteredRows = allRows.filter((item) => {
+      const itemTime = getMovementTimestamp(item.date);
+      return (!startDateMs || itemTime >= startDateMs) && (!endDateMs || itemTime <= endDateMs);
+    });
+
+    const openingRows = allRows.filter((item) => {
+      const itemTime = getMovementTimestamp(item.date);
+      return startDateMs ? itemTime < startDateMs : false;
+    });
+
+    const openingBalance = openingRows.length ? openingRows[openingRows.length - 1].balance : 0;
+    const additions = filteredRows.reduce((sum, item) => sum + (Number(item.quantity || 0) > 0 ? Number(item.quantity || 0) : 0), 0);
+    const withdrawals = filteredRows.reduce((sum, item) => sum + (Number(item.quantity || 0) < 0 ? Math.abs(Number(item.quantity || 0)) : 0), 0);
+    const currentBalance = openingBalance + additions - withdrawals;
+
+    return {
+      openingBalance,
+      additions,
+      withdrawals,
+      currentBalance,
+    };
   };
 
   const getProductSales = (product) => {
@@ -691,7 +749,7 @@ export default function ProductionStockPage() {
 
       {historyModal.isOpen && historyModal.product && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-2xl p-6 max-w-5xl w-full max-h-[88vh] shadow-2xl flex flex-col gap-4">
+          <div className="bg-white rounded-2xl p-6 w-[96vw] h-[90vh] max-w-6xl shadow-2xl flex flex-col gap-4">
             <div className="flex justify-between items-center border-b pb-3">
               <div>
                 <h2 className="text-lg font-black text-gray-800">📜 سجل حركة المنتج: {historyModal.product.product_name}</h2>
@@ -716,6 +774,26 @@ export default function ProductionStockPage() {
                 <button type="button" onClick={() => setHistoryModal({ isOpen: false, product: null })} className="text-gray-400 hover:text-gray-700 text-xl">✕</button>
               </div>
             </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                <p className="text-[10px] font-bold text-slate-700">رصيد أول المدة</p>
+                <p className="mt-1 text-base font-black text-slate-700">{getProductHistorySummary(historyModal.product).openingBalance.toLocaleString()} طن</p>
+              </div>
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3">
+                <p className="text-[10px] font-bold text-emerald-700">إجمالي الإيداعات</p>
+                <p className="mt-1 text-base font-black text-emerald-700">{getProductHistorySummary(historyModal.product).additions.toLocaleString()} طن</p>
+              </div>
+              <div className="rounded-2xl border border-red-200 bg-red-50 p-3">
+                <p className="text-[10px] font-bold text-red-700">إجمالي المسحوبات</p>
+                <p className="mt-1 text-base font-black text-red-700">{getProductHistorySummary(historyModal.product).withdrawals.toLocaleString()} طن</p>
+              </div>
+              <div className="rounded-2xl border border-blue-200 bg-blue-50 p-3">
+                <p className="text-[10px] font-bold text-blue-700">الرصيد الحالي</p>
+                <p className="mt-1 text-base font-black text-blue-700">{getProductHistorySummary(historyModal.product).currentBalance.toLocaleString()} طن</p>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <label className="text-xs font-bold text-gray-700">
                 من تاريخ
@@ -726,7 +804,7 @@ export default function ProductionStockPage() {
                 <input type="date" value={historyEndDate} onChange={(event) => setHistoryEndDate(event.target.value)} className="mt-1 w-full border border-gray-200 bg-gray-50 p-3 rounded-xl text-xs font-bold" />
               </label>
             </div>
-            <div className="overflow-auto border border-gray-100 rounded-xl">
+            <div className="overflow-auto border border-gray-100 rounded-xl flex-1">
               <table className="w-full text-right text-xs">
                 <thead className="bg-gray-50 sticky top-0">
                   <tr>
@@ -741,7 +819,7 @@ export default function ProductionStockPage() {
                 <tbody className="divide-y">
                   {getProductHistory(historyModal.product).length ? getProductHistory(historyModal.product).map(item => (
                     <tr key={item.id} className="hover:bg-gray-50">
-                      <td className="p-3 text-gray-600">{new Date(item.date).toLocaleString('ar-EG')}</td>
+                      <td className="p-3 text-gray-600">{formatMovementDate(item.date)}</td>
                       <td className={`p-3 font-black ${item.quantity >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>{item.type}</td>
                       <td className="p-3 font-bold text-blue-700">{item.title}<div className="text-[10px] text-gray-500 mt-1">{item.notes}</div></td>
                       <td className={`p-3 font-black ${item.quantity >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>{item.quantity >= 0 ? '+' : '-'} {Math.abs(item.quantity).toLocaleString()} طن</td>
@@ -843,7 +921,7 @@ export default function ProductionStockPage() {
                       <td className="p-3 text-gray-600">{sale.unitPrice.toLocaleString()} ج.م</td>
                       <td className="p-3 font-black text-emerald-700">{sale.total.toLocaleString()} ج.م</td>
                       <td className="p-3">{sale.paymentType}</td>
-                      <td className="p-3 text-gray-600">{sale.date ? new Date(sale.date).toLocaleString('ar-EG') : '-'}</td>
+                      <td className="p-3 text-gray-600">{sale.date ? formatMovementDate(sale.date) : '-'}</td>
                     </tr>
                   ))}
                   {!getProductSales(salesModal.product).length && (
