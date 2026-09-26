@@ -329,6 +329,74 @@ const combinedStatement = [...statementWithBalance].reverse();
     },
   });
 
+  const deleteClientPaymentMutation = useMutation({
+    mutationFn: async ({ transactionId, clientId }) => {
+      if (!isAdmin) {
+        throw new Error('حذف تحصيل العميل متاح للأدمن فقط.');
+      }
+
+      const transaction = await pb.collection('client_transactions').getOne(transactionId);
+      if (String(transaction.type || '').toLowerCase() !== 'payment') {
+        throw new Error('هذه الحركة ليست تحصيل عميل.');
+      }
+
+      const amount = Number(transaction.amount || 0);
+      const destination = String(transaction.destination || '').trim();
+      const bankId = String(transaction.bank_id || '').trim();
+      const client = await pb.collection('clientsmoashe').getOne(clientId).catch(() => null);
+
+      if (!Number.isFinite(amount) || amount <= 0) {
+        throw new Error('قيمة التحصيل غير صحيحة.');
+      }
+
+      if (destination === 'treasury') {
+        const treasuryRecords = await pb.collection('treasury').getFullList().catch(() => []);
+        const treasuryRecord = treasuryRecords[0] || null;
+        if (treasuryRecord) {
+          await pb.collection('treasury').update(treasuryRecord.id, {
+            balance: Number(treasuryRecord.balance || 0) - amount,
+          });
+        } else {
+          await pb.collection('treasury').create({
+            balance: -amount,
+            opening_balance: 0,
+          });
+        }
+      } else if (destination === 'banks' && bankId) {
+        const bank = await pb.collection('banks').getOne(bankId).catch(() => null);
+        if (bank) {
+          await pb.collection('banks').update(bank.id, {
+            balance: Number(bank.balance || 0) - amount,
+          });
+        }
+      }
+
+      if (client) {
+        await pb.collection('clientsmoashe').update(client.id, {
+          balance: roundMoney(Number(client.balance || 0) + amount),
+        });
+      }
+
+      await pb.collection('client_transactions').delete(transactionId);
+
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] }),
+        queryClient.invalidateQueries({ queryKey: ['client_transactions'] }),
+        queryClient.invalidateQueries({ queryKey: ['all_client_transactions_summary'] }),
+        queryClient.invalidateQueries({ queryKey: ['treasury'] }),
+        queryClient.invalidateQueries({ queryKey: ['banks'] }),
+      ]);
+
+      return transaction;
+    },
+    onSuccess: () => {
+      showFeedback('✅ تم حذف التحصيل واسترجاع تأثيره من الخزنة/البنك وتحديث العميل.', 'success');
+    },
+    onError: (error) => {
+      showFeedback('❌ فشل حذف التحصيل: ' + error.message, 'error');
+    },
+  });
+
   // إضافة أو تعديل الرصيد الافتتاحي للعميل (محمي للأدمن فقط)
   const openingBalanceMutation = useMutation({
     mutationFn: async ({ client, amount }) => {
@@ -699,6 +767,7 @@ const combinedStatement = [...statementWithBalance].reverse();
                       <th className="p-3">الوجهة</th>
                       <th className="p-3">ملاحظات</th>
                       <th className="p-3">بواسطة</th>
+                      <th className="p-3 text-center">إجراءات</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y">
@@ -725,6 +794,18 @@ const combinedStatement = [...statementWithBalance].reverse();
                         <td className="p-3 text-gray-600">{tx.destination === 'treasury' ? 'الخزنة' : tx.destination === 'banks' ? 'البنوك' : '-'}</td>
                         <td className="p-3 text-gray-500">{tx.notes}</td>
                         <td className="p-3 font-bold text-gray-700">{tx.actorName}</td>
+                        <td className="p-3 text-center">
+                          {isAdmin && tx.type === 'payment' && (
+                            <button
+                              type="button"
+                              onClick={() => deleteClientPaymentMutation.mutate({ transactionId: tx.id, clientId: statementModal.client?.id })}
+                              disabled={deleteClientPaymentMutation.isPending}
+                              className="bg-red-50 text-red-600 border border-red-200 px-2.5 py-1 rounded-lg text-[10px] font-bold hover:bg-red-600 hover:text-white transition"
+                            >
+                              🗑️ حذف
+                            </button>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
