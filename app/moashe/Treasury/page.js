@@ -758,9 +758,10 @@ const allTransactions = [...transactionsWithTreasuryBalance].reverse();
     .reduce((sum, transaction) => sum + Number(Math.abs(transaction.amount || 0)), 0);
   const calculatedBalanceFromTransactions = effectiveOpeningBalance + totalDepositsFromTransactions - totalWithdrawalsFromTransactions;
   const storedTreasuryBalance = Number(treasury?.balance ?? effectiveOpeningBalance ?? 0);
-  const currentBalance = allTransactions.length > 0
-    ? calculatedBalanceFromTransactions
-    : storedTreasuryBalance;
+ // لو مفيش حركات خالص، الرصيد الحالي يساوي الرصيد الافتتاحي الصافي مباشرة مش آخر رقم قديم مخزن
+const currentBalance = allTransactions.length > 0
+  ? calculatedBalanceFromTransactions
+  : Number(effectiveOpeningBalance || 0);
 
   const periodTransactions = allTransactions.filter((transaction) => {
     const transactionDate = new Date(transaction.date);
