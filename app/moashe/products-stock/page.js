@@ -66,9 +66,31 @@ export default function ProductionStockPage() {
   });
 
   // تجهيز وتنظيف البيانات المأخوذة من جدول الـ Stock (مع دعم حقول التكلفة)
+  const normalizeProductName = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+  const getLedgerStockForProduct = (productName, productId) => {
+    const targetName = normalizeProductName(productName);
+    const ledgerStock = stockTransactions
+      .filter((transaction) => {
+        const nameMatches = normalizeProductName(transaction.product_name) === targetName;
+        const idMatches = String(transaction.product_stock_id || '').trim() === String(productId || '').trim();
+        const sourceMatches = String(transaction.source_id || '').trim() === String(productId || '').trim();
+        const legacyMatch = !transaction.product_stock_id && nameMatches;
+        return nameMatches || idMatches || sourceMatches || legacyMatch;
+      })
+      .reduce((sum, transaction) => sum + Number(transaction.quantity || 0), 0);
+
+    return Number.isFinite(ledgerStock) ? ledgerStock : 0;
+  };
+
   const inventoryList = productsStock.map(item => {
     const productName = item.product_name || item.name || 'منتج بدون اسم';
-    const stock = Number(item.stock ?? productionOrders
+    const stockFromLedger = getLedgerStockForProduct(productName, item.id);
+    const stock = stockFromLedger !== 0 || stockTransactions.some((transaction) => {
+      const sameName = normalizeProductName(transaction.product_name) === normalizeProductName(productName);
+      const sameId = String(transaction.product_stock_id || '').trim() === String(item.id || '').trim();
+      return sameName || sameId;
+    }) ? stockFromLedger : Number(item.stock ?? productionOrders
       .filter(order => (order.product_name || order.name) === productName)
       .reduce((sum, order) => sum + Number(order.batch_quantity || order.quantity || 0), 0));
     const productRecipes = recipes.filter(recipe => (recipe.product_name || recipe.name) === productName);
@@ -145,14 +167,17 @@ export default function ProductionStockPage() {
   };
 
   const getProductLedgerRows = (product) => {
-    const normalizeName = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
-    const productName = normalizeName(product.product_name);
+    const normalizeName = (value) => String(value || '').replace(/\s+/g, '').trim().toLowerCase();
+    const productKey = normalizeName(product.product_name);
 
     const relevantTransactions = stockTransactions.filter((transaction) => {
-      const sameProductName = normalizeName(transaction.product_name) === productName;
+      const transactionProductName = normalizeName(transaction.product_name || transaction.source_id || '');
+      const sameProductName = transactionProductName === productKey;
       const sameStockId = transaction.product_stock_id === product.id;
+      const sameSourceId = String(transaction.source_id || '').trim() === String(product.id || '').trim();
+      const productionMatch = transaction.source_type === 'production_order' && normalizeName(transaction.source_id || '') === productKey;
       const legacyMatch = !transaction.product_stock_id && new Date(transaction.created || 0) >= new Date(product.created || 0);
-      return sameProductName && (sameStockId || legacyMatch);
+      return sameProductName || sameStockId || sameSourceId || productionMatch || legacyMatch;
     });
 
     return relevantTransactions
@@ -171,9 +196,13 @@ export default function ProductionStockPage() {
         const timeDifference = getMovementTimestamp(first.date) - getMovementTimestamp(second.date);
         return timeDifference || String(first.id).localeCompare(String(second.id));
       })
-      .reduce((rows, item) => {
-        const previousBalance = rows.length ? rows[rows.length - 1].balance : 0;
-        return [...rows, { ...item, balance: previousBalance + Number(item.quantity || 0) }];
+      .reduce((rows, item, index, allItems) => {
+        const previousBalance = index === 0 ? 0 : rows[index - 1]?.balance ?? 0;
+        rows.push({
+          ...item,
+          balance: previousBalance + Number(item.quantity || 0),
+        });
+        return rows;
       }, []);
   };
 
@@ -203,7 +232,9 @@ export default function ProductionStockPage() {
     const openingBalance = openingRows.length ? openingRows[openingRows.length - 1].balance : 0;
     const additions = filteredRows.reduce((sum, item) => sum + (Number(item.quantity || 0) > 0 ? Number(item.quantity || 0) : 0), 0);
     const withdrawals = filteredRows.reduce((sum, item) => sum + (Number(item.quantity || 0) < 0 ? Math.abs(Number(item.quantity || 0)) : 0), 0);
-    const currentBalance = openingBalance + additions - withdrawals;
+    const currentBalance = (!historyStartDate && !historyEndDate)
+      ? (allRows.length ? allRows[allRows.length - 1].balance : 0)
+      : openingBalance + additions - withdrawals;
 
     return {
       openingBalance,
@@ -749,7 +780,7 @@ export default function ProductionStockPage() {
 
       {historyModal.isOpen && historyModal.product && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-2xl p-6 w-[96vw] h-[90vh] max-w-6xl shadow-2xl flex flex-col gap-4">
+          <div className="bg-white rounded-2xl p-6 w-[90vw] h-[90vh] max-w-6xl shadow-2xl flex flex-col gap-4">
             <div className="flex justify-between items-center border-b pb-3">
               <div>
                 <h2 className="text-lg font-black text-gray-800">📜 سجل حركة المنتج: {historyModal.product.product_name}</h2>
