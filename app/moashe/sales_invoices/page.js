@@ -5,14 +5,6 @@ import { pb } from '../../lib/pocketbase';
 import { useReactToPrint } from 'react-to-print';
 const currentUserName = localStorage.getItem('userName') || 'مسؤول النظام';
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
-const getInvoiceSubtotal = (invoice) => {
-  const storedSubtotal = Number(invoice?.sub_total || 0);
-  if (storedSubtotal !== 0) return roundMoney(storedSubtotal);
-
-  return roundMoney(Array.isArray(invoice?.items)
-    ? invoice.items.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.qty || 0), 0)
-    : 0);
-};
 
 export default function SalesInvoicesPage() {
   const queryClient = useQueryClient();
@@ -46,7 +38,6 @@ export default function SalesInvoicesPage() {
 
   const [viewInvoiceModal, setViewInvoiceModal] = useState({ show: false, invoice: null });
   const [viewLogModal, setViewLogModal] = useState({ show: false, log: null });
-  const [returnModal, setReturnModal] = useState({ show: false, invoice: null, items: [] });
   const [isSalesHistoryExpanded, setIsSalesHistoryExpanded] = useState(false);
   const invoicePrintRef = useRef(null);
   const salesHistoryPrintRef = useRef(null);
@@ -574,109 +565,6 @@ const deleteInvoiceMutation = useMutation({
     ));
   };
 
-  const returnInvoiceMutation = useMutation({
-    mutationFn: async ({ invoice, returnItems }) => {
-      const invoiceNumber = invoice.invoice_number || invoice.id.slice(-6);
-      const originalItems = Array.isArray(invoice.items) ? invoice.items : [];
-      const returnedQuantities = getReturnedQuantities(invoice);
-      const itemsList = returnItems
-        .map((item) => {
-          const originalItem = originalItems.find((sourceItem) => getReturnItemKey(sourceItem) === item.key);
-          return originalItem ? { ...originalItem, qty: Number(item.qty || 0) } : null;
-        })
-        .filter((item) => item && item.qty > 0);
-      if (!itemsList.length) throw new Error('اكتب كمية مرتجع لصنف واحد على الأقل.');
-
-      for (const item of itemsList) {
-        const alreadyReturnedQty = returnedQuantities[getReturnItemKey(item)] || 0;
-        const originalItem = originalItems.find((sourceItem) => getReturnItemKey(sourceItem) === getReturnItemKey(item));
-        const remainingQty = Number(originalItem?.qty || 0) - alreadyReturnedQty;
-        if (item.qty > remainingQty + 0.000000001) {
-          throw new Error(`كمية المرتجع للصنف "${item.name}" أكبر من الكمية المتبقية.`);
-        }
-        if (item.itemType === 'material' && item.materialId) {
-          await updateMaterialStock(item.materialId, item.qty);
-          continue;
-        }
-
-        await updateFinishedProductStock(item.name, item.qty, {
-          type: 'return',
-          title: 'مرتجع فاتورة بيع - إرجاع للمخزن',
-          sourceId: invoice.id,
-        });
-      }
-
-      const originalSubtotal = Number(invoice.sub_total || 0) || originalItems.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.qty || 0), 0);
-      const returnedSubtotal = itemsList.reduce((sum, item) => sum + Number(item.price || 0) * item.qty, 0);
-      const discountRatio = originalSubtotal > 0 ? Number(invoice.total_amount || 0) / originalSubtotal : 1;
-      const invoiceAmount = Number((returnedSubtotal * discountRatio).toFixed(6));
-      if (invoice.payment_type === 'credit' && invoice.customer_type === 'registered') {
-        const customer = customers.find((item) => normalizeCustomerName(item.name) === normalizeCustomerName(invoice.customer_name));
-        if (customer) {
-          const currentDebt = Number(customer.balance ?? customer.debt ?? customer.total_debt ?? 0);
-          await pb.collection('clientsmoashe').update(customer.id, {
-            balance: roundMoney(Math.max(0, currentDebt - invoiceAmount)),
-          });
-        }
-      }
-
-      if (invoice.payment_type !== 'credit') {
-        const treasuryRecords = await pb.collection('treasury').getFullList().catch(() => []);
-        const treasury = treasuryRecords[0];
-        if (treasury) {
-          await pb.collection('treasury').update(treasury.id, {
-            balance: roundMoney(Number(treasury.balance || 0) - invoiceAmount),
-          });
-        }
-        await pb.collection('treasury_transactions').create({
-          type: 'sale',
-          movement_type: 'sales_return',
-          amount: -invoiceAmount,
-          title: `مرتجع فاتورة: ${invoiceNumber}`,
-          notes: `رد قيمة فاتورة العميل: ${invoice.customer_name || 'عميل'}`,
-          actor_name: currentUserName,
-          date: new Date().toISOString(),
-        });
-      }
-
-      const allReturned = originalItems.every((item) => {
-        const returnedQty = (returnedQuantities[getReturnItemKey(item)] || 0)
-          + (itemsList.find((returnedItem) => getReturnItemKey(returnedItem) === getReturnItemKey(item))?.qty || 0);
-        return returnedQty >= Number(item.qty || 0) - 0.000000001;
-      });
-      const updatedInvoice = await pb.collection('sales_invoices').update(invoice.id, {
-        status: allReturned ? 'مرتجع' : 'مرتجع جزئي',
-      });
-
-      await pb.collection('invoices_logs').create({
-        action_type: 'مرتجع',
-        actor_name: currentUserName,
-        invoice_number: invoiceNumber,
-        details: JSON.stringify({
-          customer_name: invoice.customer_name,
-          payment_type: invoice.payment_type || 'cash',
-          items: itemsList,
-          total_amount: invoiceAmount,
-          message: `${allReturned ? 'تم عمل مرتجع كامل' : 'تم عمل مرتجع جزئي'} للفاتورة بقيمة ${invoiceAmount} ج.م وإرجاع الأصناف وتحديث الحسابات.`,
-        }),
-      });
-
-      return updatedInvoice;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['sales_invoices'] });
-      queryClient.invalidateQueries({ queryKey: ['products_stock'] });
-      queryClient.invalidateQueries({ queryKey: ['product_stock_transactions'] });
-      queryClient.invalidateQueries({ queryKey: ['khamat_moashe'] });
-      queryClient.invalidateQueries({ queryKey: ['clientsList'] });
-      queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
-      queryClient.invalidateQueries({ queryKey: ['treasury'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices_logs'] });
-      showToast('✅ تم عمل المرتجع وإرجاع الأصناف وتحديث الحسابات بنجاح.');
-    },
-    onError: (error) => showToast('❌ فشل عمل المرتجع: ' + error.message, 'error'),
-  });
-
   function handleEditClick(invoice) {
     setEditingInvoiceId(invoice.id);
     setOldInvoiceItems(invoice.items || []);
@@ -714,20 +602,6 @@ const deleteInvoiceMutation = useMutation({
     setSelectedSalesAgent('');
     setDiscountAmount('');
     setPaymentType('cash');
-  }
-
-  function handleReturnClick(invoice) {
-    const returnedQuantities = getReturnedQuantities(invoice);
-    const items = (invoice.items || []).map((item) => {
-      const remaining = Math.max(0, Number(item.qty || 0) - Number(returnedQuantities[getReturnItemKey(item)] || 0));
-      return { key: getReturnItemKey(item), name: item.name, itemType: item.itemType, qty: '', remaining };
-    }).filter((item) => item.remaining > 0);
-
-    if (!items.length) {
-      showToast('تم عمل مرتجع لكل أصناف هذه الفاتورة بالفعل.', 'error');
-      return;
-    }
-    setReturnModal({ show: true, invoice, items });
   }
 
   function handleSaveInvoice(e) {
@@ -912,63 +786,6 @@ const deleteInvoiceMutation = useMutation({
         </div>
       )}
 
-      {returnModal.show && returnModal.invoice && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-6 max-w-lg w-full shadow-2xl space-y-5">
-            <div className="flex justify-between items-center border-b pb-3">
-              <div>
-                <h3 className="text-lg font-black text-gray-900">↩️ مرتجع من الفاتورة</h3>
-                <p className="text-xs text-gray-500 mt-1">اكتب الكمية المرتجعة لكل صنف، واترك الباقي فارغًا.</p>
-              </div>
-              <button type="button" onClick={() => setReturnModal({ show: false, invoice: null, items: [] })} className="text-gray-400 font-bold text-lg">✕</button>
-            </div>
-            <div className="border border-gray-200 rounded-2xl overflow-hidden">
-              <table className="w-full text-right text-xs">
-                <thead className="bg-gray-100 text-gray-600">
-                  <tr><th className="p-3">الصنف</th><th className="p-3">المتاح للمرتجع</th><th className="p-3">كمية المرتجع</th></tr>
-                </thead>
-                <tbody className="divide-y">
-                  {returnModal.items.map((item) => (
-                    <tr key={item.key}>
-                      <td className="p-3 font-bold">{item.itemType === 'material' ? 'خامة: ' : 'منتج: '}{item.name}</td>
-                      <td className="p-3 text-gray-500">{item.remaining}</td>
-                      <td className="p-3">
-                        <input
-                          type="number"
-                          min="0"
-                          max={item.remaining}
-                          step="any"
-                          value={item.qty}
-                          onChange={(event) => setReturnModal((previous) => ({
-                            ...previous,
-                            items: previous.items.map((row) => row.key === item.key ? { ...row, qty: event.target.value } : row),
-                          }))}
-                          className="w-28 border border-gray-200 rounded-xl px-2 py-1.5 text-center font-bold"
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="flex gap-2">
-              <button type="button" onClick={() => setReturnModal({ show: false, invoice: null, items: [] })} className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-2xl text-xs font-bold">إلغاء</button>
-              <button
-                type="button"
-                disabled={returnInvoiceMutation.isPending}
-                onClick={() => {
-                  returnInvoiceMutation.mutate({ invoice: returnModal.invoice, returnItems: returnModal.items });
-                  setReturnModal({ show: false, invoice: null, items: [] });
-                }}
-                className="flex-1 bg-violet-600 hover:bg-violet-700 text-white py-3 rounded-2xl text-xs font-bold disabled:opacity-50"
-              >
-                {returnInvoiceMutation.isPending ? 'جارٍ تنفيذ المرتجع...' : 'حفظ المرتجع'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {viewInvoiceModal.show && viewInvoiceModal.invoice && (
         <div className="fixed inset-0 bg-black/65 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div ref={invoicePrintRef} className="bg-white rounded-3xl p-6 max-w-lg w-full shadow-2xl space-y-6 border border-gray-100 animate-in fade-in zoom-in max-h-[90vh] overflow-y-auto">
@@ -1050,12 +867,12 @@ const deleteInvoiceMutation = useMutation({
             <div className="bg-gray-50 p-4 rounded-2xl space-y-2 text-xs border border-gray-200/60">
               <div className="flex justify-between text-gray-600">
                 <span>إجمالي المنتجات:</span>
-                <span className="font-bold">{getInvoiceSubtotal(viewInvoiceModal.invoice).toLocaleString()} ج.م</span>
+                <span className="font-bold">{roundMoney(viewInvoiceModal.invoice.sub_total || 0).toLocaleString()} ج.م</span>
               </div>
-              {Number(viewInvoiceModal.invoice.discount ?? viewInvoiceModal.invoice.discount_amount ?? 0) > 0 && (
+              {Number(viewInvoiceModal.invoice.discount !== undefined ? viewInvoiceModal.invoice.discount : (viewInvoiceModal.invoice.discount_amount || 0)) > 0 && (
                 <div className="flex justify-between text-red-600">
                   <span>الخصم المطبق:</span>
-                  <span className="font-bold">- {roundMoney(viewInvoiceModal.invoice.discount ?? viewInvoiceModal.invoice.discount_amount ?? 0).toLocaleString()} ج.م</span>
+                  <span className="font-bold">- {roundMoney(viewInvoiceModal.invoice.discount !== undefined ? viewInvoiceModal.invoice.discount : (viewInvoiceModal.invoice.discount_amount || 0)).toLocaleString()} ج.م</span>
                 </div>
               )}
               <div className="flex justify-between pt-2 border-t text-emerald-800 font-black text-sm">
@@ -1502,13 +1319,6 @@ const deleteInvoiceMutation = useMutation({
                           تعديل
                         </button>
                         <button
-                          disabled={isClosed || returnInvoiceMutation.isPending}
-                          onClick={() => handleReturnClick(inv)}
-                          className="px-2.5 py-1 bg-violet-50 text-violet-600 hover:bg-violet-100 rounded-xl font-bold transition disabled:opacity-50"
-                        >
-                          مرتجع
-                        </button>
-                        <button
                           disabled={isClosed}
                           onClick={() => {
                             setConfirmModal({
@@ -1535,7 +1345,7 @@ const deleteInvoiceMutation = useMutation({
         )}
       </div>
 
-      {/* قسم سجل التعديلات والحذف */}
+      {/* قسم سجل التعديلات والحذف
       <div className="bg-white p-6 rounded-3xl shadow-xl border border-gray-100 space-y-6">
         <div className="flex flex-col md:flex-row justify-between items-center gap-4 border-b pb-4">
           <h2 className="text-xl font-black text-gray-800">📜 سجل الحركات (التعديل والحذف)</h2>
@@ -1610,7 +1420,7 @@ const deleteInvoiceMutation = useMutation({
             </table>
           </div>
         )}
-      </div>
+      </div> */}
 
     </div>
   );
