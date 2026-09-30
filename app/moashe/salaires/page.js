@@ -18,14 +18,14 @@ function timeValues(checkIn, checkOut) {
   const start = inHour * 60 + inMinute;
   const end = outHour * 60 + outMinute;
   
-  // التأخير: الحضور بعد الساعة 9 صباحاً (540 دقيقة)
-  const late = Math.max(0, (start - 540) / 60);
+ // التأخير: الحضور بعد الساعة 8:30 صباحاً (8 ساعات × 60 + 30 = 510 دقيقة)
+  const late = Math.max(0, (start - 510) / 60);
 
-  // الانصراف المبكر قبل الساعة 4 عصراً يخصم بسعر الساعة
-  const earlyLeave = Math.max(0, (960 - end) / 60);
+  // الانصراف المبكر: الخروج قبل الساعة 4:30 عصراً (16:30 = 16 × 60 + 30 = 990 دقيقة) يخصم بسعر الساعة
+  const earlyLeave = Math.max(0, (990 - end) / 60);
   
-  // الوقت الإضافي يبدأ بعد الساعة 4 عصراً (16:00 = 960 دقيقة)
-  const overtimeStart = 960;
+  // الوقت الإضافي: يبدأ بعد الساعة 4:30 عصراً (16:30 = 990 دقيقة)
+  const overtimeStart = 990;
   const overtimeMinutes = Math.max(0, end - overtimeStart);
   
   // تقريب الدقائق إلى أقرب ربع ساعة (حذف ما قل عن 15 دقيقة)
