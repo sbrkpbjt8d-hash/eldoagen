@@ -1,7 +1,8 @@
 'use client';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../lib/pocketbase';
+import { useReactToPrint } from 'react-to-print';
 
 const money = value => {
   const numericValue = Number(value || 0);
@@ -54,6 +55,19 @@ const convertToArabicWords = (num) => {
 
 export default function ReportsPage() {
   const queryClient = useQueryClient();
+  const reportsPrintRef = useRef(null);
+  const printReports = useReactToPrint({
+    contentRef: reportsPrintRef,
+    documentTitle: 'مركز التقارير',
+    pageStyle: `
+      @page { size: A4 landscape; margin: 10mm; }
+      html, body { direction: rtl; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      * { box-shadow: none !important; }
+      section, tr, .grid > div { break-inside: avoid; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { border-bottom: 1px solid #d1d5db; }
+    `,
+  });
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [openingCapitalInput, setOpeningCapitalInput] = useState(null);
@@ -290,6 +304,9 @@ export default function ReportsPage() {
     map[item.name] = (map[item.name] || 0) + Number(item.qty || 0);
     return map;
   }, {})).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const totalSoldQuantity = periodSales.reduce((sum, invoice) => (
+    sum + (invoice.items || []).reduce((invoiceSum, item) => invoiceSum + Number(item.qty || 0), 0)
+  ), 0);
 
   const customerReport = Object.values(periodSales.reduce((map, invoice) => {
     const name = invoice.customer_name || 'عميل غير معروف';
@@ -342,16 +359,17 @@ export default function ReportsPage() {
   }, {})).sort((first, second) => second[1] - first[1]);
 
   return (
-    <div className="p-4 md:p-8 max-w-7xl mx-auto space-y-8" dir="rtl">
+    <div ref={reportsPrintRef} className="p-4 md:p-8 max-w-7xl mx-auto space-y-8" dir="rtl">
       <div className="border-b pb-5 flex flex-col md:flex-row justify-between gap-4 md:items-center">
         <div>
           <h1 className="text-3xl font-black text-gray-900">📊 مركز التقارير</h1>
           <p className="text-sm text-gray-500 mt-1">صورة مالية وتشغيلية شاملة للمصنع في مكان واحد</p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="border bg-white p-2.5 rounded-xl text-xs" />
-          <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="border bg-white p-2.5 rounded-xl text-xs" />
-          <button onClick={() => { setStartDate(''); setEndDate(''); }} className="bg-gray-900 text-white px-4 py-2 rounded-xl text-xs font-bold">كل الفترات</button>
+        <div className="flex flex-wrap gap-2 print:hidden">
+          <input type="date" aria-label="من تاريخ" value={startDate} onChange={e => setStartDate(e.target.value)} className="border bg-white p-2.5 rounded-xl text-xs" />
+          <input type="date" aria-label="إلى تاريخ" value={endDate} onChange={e => setEndDate(e.target.value)} className="border bg-white p-2.5 rounded-xl text-xs" />
+          <button type="button" onClick={() => { setStartDate(''); setEndDate(''); }} className="bg-gray-900 text-white px-4 py-2 rounded-xl text-xs font-bold">كل الفترات</button>
+          <button type="button" onClick={printReports} className="bg-emerald-700 hover:bg-emerald-800 text-white px-4 py-2 rounded-xl text-xs font-bold">🖨️ طباعة الصفحة كاملة</button>
         </div>
       </div>
 
@@ -472,7 +490,10 @@ export default function ReportsPage() {
       </section>
 
       <section className="bg-white rounded-3xl shadow-xl border p-6">
-        <h2 className="text-lg font-black border-b pb-3">🧾 كل أنواع المصروفات الفرعية</h2>
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-3">
+          <h2 className="text-lg font-black">🧾 كل أنواع المصروفات الفرعية</h2>
+          <p className="text-sm font-black text-red-700">إجمالي المصروفات: {money(expensesTotal)}</p>
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3 mt-4">
           {topExpenseCategories.length ? topExpenseCategories.map(([name, value], index) => (
             <div key={name} className="bg-gray-50 border rounded-2xl p-4">
@@ -495,7 +516,10 @@ export default function ReportsPage() {
         </section>
 
         <section className="bg-white rounded-3xl shadow-xl border p-6">
-          <h2 className="text-lg font-black border-b pb-3">🏆 أعلى 5 منتجات مبيعًا</h2>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-3">
+            <h2 className="text-lg font-black">🏆 أعلى 5 منتجات مبيعًا</h2>
+            <p className="text-sm font-black text-blue-700">إجمالي الكمية المباعة: {totalSoldQuantity.toLocaleString('ar-EG')} طن</p>
+          </div>
           <div className="mt-3 space-y-2">
             {topProducts.length ? topProducts.map(([name, quantity], index) => (
               <div key={name} className="flex justify-between bg-gray-50 p-3 rounded-xl text-xs">
