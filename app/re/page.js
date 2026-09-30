@@ -70,6 +70,8 @@ export default function ReportsPage() {
   });
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [showAllSoldProducts, setShowAllSoldProducts] = useState(false);
+  const [showAllCustomers, setShowAllCustomers] = useState(false);
   const [openingCapitalInput, setOpeningCapitalInput] = useState(null);
   const [reportOpeningCapital, setReportOpeningCapital] = useState(() => {
     if (typeof window === 'undefined') return null;
@@ -300,10 +302,11 @@ export default function ReportsPage() {
   const collectionsTotal = periodClientTransactions.reduce((sum, item) => sum + Number(item.amount || 0), 0);
   const supplierPaymentsTotal = periodSupplierTransactions.reduce((sum, item) => sum + Number(item.amount || 0), 0);
 
-  const topProducts = Object.entries(periodSales.flatMap(invoice => invoice.items || []).reduce((map, item) => {
+  const soldProducts = Object.entries(periodSales.flatMap(invoice => invoice.items || []).reduce((map, item) => {
     map[item.name] = (map[item.name] || 0) + Number(item.qty || 0);
     return map;
-  }, {})).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  }, {})).sort((a, b) => b[1] - a[1]);
+  const displayedSoldProducts = showAllSoldProducts ? soldProducts : soldProducts.slice(0, 5);
   const totalSoldQuantity = periodSales.reduce((sum, invoice) => (
     sum + (invoice.items || []).reduce((invoiceSum, item) => invoiceSum + Number(item.qty || 0), 0)
   ), 0);
@@ -315,7 +318,8 @@ export default function ReportsPage() {
     map[name].invoices += 1;
     (invoice.items || []).forEach(item => { map[name].quantity += Number(item.qty || 0); });
     return map;
-  }, {})).sort((a, b) => b.amount - a.amount).slice(0, 15);
+  }, {})).sort((a, b) => b.amount - a.amount);
+  const displayedCustomerReport = showAllCustomers ? customerReport : customerReport.slice(0, 15);
 
   const supplierReport = Object.values(periodPurchases.reduce((map, invoice) => {
     const name = invoice.supplier_name || 'مورد غير معروف';
@@ -518,10 +522,21 @@ export default function ReportsPage() {
         <section className="bg-white rounded-3xl shadow-xl border p-6">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-3">
             <h2 className="text-lg font-black">🏆 أعلى 5 منتجات مبيعًا</h2>
-            <p className="text-sm font-black text-blue-700">إجمالي الكمية المباعة: {totalSoldQuantity.toLocaleString('ar-EG')} طن</p>
+            <div className="flex flex-wrap items-center gap-3">
+              <p className="text-sm font-black text-blue-700">إجمالي الكمية المباعة: {totalSoldQuantity.toLocaleString('ar-EG')} طن</p>
+              {soldProducts.length > 5 && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllSoldProducts(current => !current)}
+                  className="rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-bold text-blue-700 hover:bg-blue-100 print:hidden"
+                >
+                  {showAllSoldProducts ? 'أعلى 5' : 'الكل'}
+                </button>
+              )}
+            </div>
           </div>
           <div className="mt-3 space-y-2">
-            {topProducts.length ? topProducts.map(([name, quantity], index) => (
+            {displayedSoldProducts.length ? displayedSoldProducts.map(([name, quantity], index) => (
               <div key={name} className="flex justify-between bg-gray-50 p-3 rounded-xl text-xs">
                 <span className="font-bold">{index + 1}. {name}</span>
                 <span className="font-black text-blue-700">{quantity.toLocaleString()} طن</span>
@@ -541,12 +556,23 @@ export default function ReportsPage() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <section className="bg-white rounded-3xl shadow-xl border p-6">
-          <h2 className="text-lg font-black border-b pb-3">👥 أعلى 15 عميل شراء</h2>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-3">
+            <h2 className="text-lg font-black">👥 أعلى 15 عميل شراء</h2>
+            {customerReport.length > 15 && (
+              <button
+                type="button"
+                onClick={() => setShowAllCustomers(current => !current)}
+                className="rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-bold text-blue-700 hover:bg-blue-100 print:hidden"
+              >
+                {showAllCustomers ? 'أعلى 15' : 'الكل'}
+              </button>
+            )}
+          </div>
           <div className="overflow-x-auto mt-3">
             <table className="w-full text-right text-xs">
               <thead className="bg-gray-100"><tr><th className="p-3">#</th><th className="p-3">العميل</th><th className="p-3">الكميات</th><th className="p-3">قيمة المشتريات</th></tr></thead>
               <tbody className="divide-y">
-                {customerReport.map((row, index) => (
+                {displayedCustomerReport.map((row, index) => (
                   <tr key={row.name}>
                     <td className="p-3 text-gray-400">{index + 1}</td>
                     <td className="p-3 font-bold">{row.name}</td>
