@@ -105,6 +105,22 @@ export default function ProductionOrdersPage() {
         await pb.collection('khamat_moashe').update(matId, {
           stock: newStock
         });
+
+        if (matInfo && matId) {
+          await pb.collection('material_adjustments').create({
+            material_id: matId,
+            material_name: matInfo.name,
+            quantity: -totalNeeded,
+            old_stock: currentStock,
+            new_stock: newStock,
+            reason: `استهلاك في أمر تصنيع: ${selectedProduct}`,
+            production_order: selectedProduct,
+            production_order_quantity: qtyToProduce,
+            source_type: 'production_order',
+            actor_name: getCurrentActorName(),
+            date: new Date().toISOString(),
+          }).catch(() => {});
+        }
       }
 
       const existingProductStock = productsStock.find(p => normalizeProductName(p.product_name || p.name) === normalizeProductName(selectedProduct));
@@ -183,10 +199,25 @@ export default function ProductionOrdersPage() {
           const qtyPerUnit = Number(item.quantity_needed || item.quantity || 0);
           const totalToRestore = qtyPerUnit * qtyProduced;
           const currentStock = Number(matInfo.stock || matInfo.quantity || 0);
-          
+          const newStock = currentStock + totalToRestore;
+
           await pb.collection('khamat_moashe').update(matId, {
-            stock: currentStock + totalToRestore
+            stock: newStock
           });
+
+          await pb.collection('material_adjustments').create({
+            material_id: matId,
+            material_name: matInfo.name,
+            quantity: totalToRestore,
+            old_stock: currentStock,
+            new_stock: newStock,
+            reason: `إلغاء أمر تصنيع: ${productName}`,
+            production_order: productName,
+            production_order_quantity: qtyProduced,
+            source_type: 'production_order_cancelled',
+            actor_name: getCurrentActorName(),
+            date: new Date().toISOString(),
+          }).catch(() => {});
         }
       }
 

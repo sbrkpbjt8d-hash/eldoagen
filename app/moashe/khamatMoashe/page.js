@@ -47,7 +47,7 @@ export default function ProductsPage() {
 
   const isAdmin = checkIfAdmin();
 
-  const [openAdjustmentLogs, setOpenAdjustmentLogs] = useState({});
+  const [selectedMaterialLog, setSelectedMaterialLog] = useState(null);
 
   const [confirmModal, setConfirmModal] = useState({
     isOpen: false,
@@ -77,6 +77,11 @@ export default function ProductsPage() {
   const { data: adjustments = [] } = useQuery({
     queryKey: ['material_adjustments'],
     queryFn: async () => await pb.collection('material_adjustments').getFullList().catch(() => []),
+  });
+
+  const { data: productionOrders = [] } = useQuery({
+    queryKey: ['production_orders'],
+    queryFn: async () => await pb.collection('production_orders').getFullList().catch(() => []),
   });
 
   const addProductMutation = useMutation({
@@ -240,6 +245,37 @@ export default function ProductsPage() {
     adjustmentMutation.mutate();
   }
 
+  const getProductionOrderName = (adjustment) => {
+    if (adjustment.production_order || adjustment.production_order_name || adjustment.source_order_name) {
+      return adjustment.production_order || adjustment.production_order_name || adjustment.source_order_name;
+    }
+
+    const reasonText = String(adjustment.reason || '');
+    const matched = reasonText.match(/(?:استهلاك في أمر تصنيع|إلغاء أمر تصنيع)\s*[:\s]*\s*(.+)$/i);
+    return matched ? matched[1].trim() : '—';
+  };
+
+  const getProductionOrderQuantity = (adjustment) => {
+    if (adjustment.production_order_quantity != null) return Number(adjustment.production_order_quantity);
+
+    const orderName = getProductionOrderName(adjustment).trim().toLowerCase();
+    if (!orderName || orderName === '—') return null;
+
+    const adjustmentTime = new Date(adjustment.date || adjustment.created || 0).getTime();
+    const adjustmentDay = String(adjustment.date || adjustment.created || '').slice(0, 10);
+    const matchingOrders = productionOrders.filter((order) => (
+      String(order.product_name || '').trim().toLowerCase() === orderName &&
+      String(order.created || '').slice(0, 10) === adjustmentDay
+    ));
+
+    matchingOrders.sort((first, second) => (
+      Math.abs(new Date(first.created).getTime() - adjustmentTime) -
+      Math.abs(new Date(second.created).getTime() - adjustmentTime)
+    ));
+
+    return matchingOrders.length ? Number(matchingOrders[0].batch_quantity || 0) : null;
+  };
+
   const filteredAdjustments = adjustments.filter((adjustment) => {
     const dateValue = String(adjustment.date || adjustment.created || '').slice(0, 10);
     return (!adjustmentStartDate || dateValue >= adjustmentStartDate) && (!adjustmentEndDate || dateValue <= adjustmentEndDate);
@@ -255,6 +291,10 @@ export default function ProductsPage() {
 
   const filteredInventoryProducts = products.filter((product) =>
     String(product.name || '').toLowerCase().includes(inventorySearchTerm.trim().toLowerCase())
+  );
+
+  const totalInventoryValue = products.reduce((sum, product) =>
+    sum + Number(product.price || 0) * Number(product.stock || 0), 0
   );
 
   return (
@@ -329,11 +369,87 @@ export default function ProductsPage() {
         </div>
       )}
 
+      {selectedMaterialLog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-3xl p-6 max-w-4xl w-full shadow-2xl border border-gray-100 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b pb-3 mb-4">
+              <div>
+                <h3 className="text-lg font-black text-gray-800">📜 سجل خامة: {selectedMaterialLog.name}</h3>
+                <p className="text-xs text-gray-500">عرض كل التغييرات على المخزون، من أوامر التصنيع والتسويات وحتى الخصم والإضافة.</p>
+              </div>
+              <button type="button" onClick={() => setSelectedMaterialLog(null)} className="text-gray-400 hover:text-gray-700 font-black text-xl">✕</button>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-right text-xs border border-gray-100 rounded-xl overflow-hidden">
+                <thead className="bg-gray-100 text-gray-600">
+                  <tr>
+                    <th className="p-3">التاريخ</th>
+                    <th className="p-3">نوع الحركة</th>
+                    <th className="p-3">الكمية</th>
+                    <th className="p-3">قبل</th>
+                    <th className="p-3">بعد</th>
+                    <th className="p-3">القيمة بعد التغيير</th>
+                    <th className="p-3">أمر التصنيع</th>
+                    <th className="p-3">كمية أمر التصنيع</th>
+                  
+                    <th className="p-3">بواسطة</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {filteredAdjustments.filter((adjustment) => {
+                    const matchesById = String(adjustment.material_id || '') === String(selectedMaterialLog.id || '');
+                    const matchesByName = String(adjustment.material_name || '').trim() === String(selectedMaterialLog.name || '').trim();
+                    return matchesById || matchesByName;
+                  }).length ? (
+                    filteredAdjustments.filter((adjustment) => {
+                      const matchesById = String(adjustment.material_id || '') === String(selectedMaterialLog.id || '');
+                      const matchesByName = String(adjustment.material_name || '').trim() === String(selectedMaterialLog.name || '').trim();
+                      return matchesById || matchesByName;
+                    }).sort((a, b) => new Date(b.date || b.created || 0) - new Date(a.date || a.created || 0)).map((adjustment) => (
+                      <tr key={adjustment.id} className="hover:bg-gray-50">
+                        <td className="p-3">{String(adjustment.date || adjustment.created || '').slice(0, 10)}</td>
+                        <td className={`p-3 font-black ${Number(adjustment.quantity) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                          {Number(adjustment.quantity) >= 0 ? 'زيادة' : 'خصم'}
+                        </td>
+                        <td className={`p-3 font-bold ${Number(adjustment.quantity) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                          {Number(adjustment.quantity) >= 0 ? '+' : '-'}{formatNumber(Math.abs(Number(adjustment.quantity || 0)))}
+                        </td>
+                        <td className="p-3">{formatNumber(adjustment.old_stock)}</td>
+                        <td className="p-3 font-bold">{formatNumber(adjustment.new_stock)}</td>
+                        <td className="p-3 font-bold text-amber-700">
+                          {((Number(adjustment.new_stock || 0) * Number(selectedMaterialLog.price || 0))).toLocaleString('ar-EG', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ج.م
+                        </td>
+                        <td className="p-3 font-bold text-violet-700">{getProductionOrderName(adjustment)}</td>
+                        <td className="p-3 font-bold text-blue-700">
+                          {getProductionOrderQuantity(adjustment) != null ? `${formatNumber(getProductionOrderQuantity(adjustment))} طن` : '—'}
+                        </td>
+                        
+                        <td className="p-3 font-bold text-gray-700">{adjustment.actor_name || 'غير معروف'}</td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan="10" className="p-6 text-center text-gray-400">
+                        لا توجد حركات مسجلة لهذه الخامة حتى الآن.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-3 border-b pb-4">
         <h1 className="text-2xl font-black text-gray-800">📦 إدارة خامات الدواجن</h1>
         <div className="flex flex-wrap gap-2 items-center">
           <span className="bg-blue-100 text-blue-800 text-sm font-semibold px-4 py-1.5 rounded-full shadow-sm">
             إجمالي العناصر: {products.length}
+          </span>
+          <span className="bg-emerald-100 text-emerald-800 text-sm font-semibold px-4 py-1.5 rounded-full shadow-sm">
+            إجمالي قيمة الخامات: {totalInventoryValue.toLocaleString('ar-EG', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ج.م
           </span>
           {isAdmin && (
             <span className="bg-purple-100 text-purple-800 text-xs font-bold px-3 py-1.5 rounded-full">
@@ -422,6 +538,13 @@ export default function ProductsPage() {
                     </td>
                     <td className="py-4 px-6 text-xs font-bold text-gray-700">{p.actor_name || 'غير معروف'}</td>
                     <td className="py-4 px-6 text-center flex items-center justify-center gap-2 print:hidden">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedMaterialLog(p)}
+                        className="text-violet-600 hover:text-violet-800 text-xs font-bold bg-violet-50 hover:bg-violet-100 px-3 py-1.5 rounded-xl border border-violet-100 transition"
+                      >
+                        📜 سجل
+                      </button>
                       {isAdmin && (
                         <button
                           onClick={() => setEditModal({ isOpen: true, product: p, newName: p.name, stock: p.stock ?? 0, price: p.price ?? 0 })}
@@ -467,10 +590,13 @@ export default function ProductsPage() {
         </div>
 
         {products.map((product) => {
-          const productAdjustments = filteredAdjustments.filter((adjustment) => adjustment.material_name === product.name);
+          const productAdjustments = filteredAdjustments.filter((adjustment) => {
+            const matchesById = String(adjustment.material_id || '') === String(product.id || '');
+            const matchesByName = String(adjustment.material_name || '').trim() === String(product.name || '').trim();
+            return matchesById || matchesByName;
+          });
           const productIncrease = productAdjustments.filter(a => Number(a.quantity || 0) > 0).reduce((sum, a) => sum + Number(a.quantity || 0), 0);
           const productDecrease = productAdjustments.filter(a => Number(a.quantity || 0) < 0).reduce((sum, a) => sum + Math.abs(Number(a.quantity || 0)), 0);
-          const isLogOpen = !!openAdjustmentLogs[product.id];
 
           return (
             <div key={product.id} className="border-b border-gray-100 last:border-b-0">
@@ -479,12 +605,10 @@ export default function ProductsPage() {
                   <span className="text-base font-black text-gray-900">{product.name}</span>
                   <button
                     type="button"
-                    onClick={() => setOpenAdjustmentLogs(prev => ({ ...prev, [product.id]: !prev[product.id] }))}
-                    className={`px-3 py-1 rounded-xl text-xs font-bold transition flex items-center gap-1 ${
-                      isLogOpen ? 'bg-red-100 text-red-700 hover:bg-red-200' : 'bg-blue-600 text-white hover:bg-blue-700 shadow-sm'
-                    }`}
+                    onClick={() => setSelectedMaterialLog(product)}
+                    className="px-3 py-1 rounded-xl text-xs font-bold transition flex items-center gap-1 bg-blue-600 text-white hover:bg-blue-700 shadow-sm"
                   >
-                    {isLogOpen ? 'إخفاء السجل ✕' : '👁️ '}
+                    👁️ سجل
                   </button>
                 </div>
 
@@ -493,54 +617,6 @@ export default function ProductsPage() {
                   <span className="bg-red-100 text-red-700 px-3 py-1 rounded-full text-[11px] font-bold">خصم: {formatNumber(productDecrease)} طن</span>
                 </div>
               </div>
-
-              {isLogOpen && (
-                <div className="overflow-x-auto bg-white p-2 animate-fadeIn">
-                  <table className="w-full text-right text-xs border border-gray-100 rounded-xl">
-                    <thead className="bg-gray-100 text-gray-600">
-                      <tr>
-                        <th className="p-3">التاريخ</th>
-                        <th className="p-3">التسوية</th>
-                        <th className="p-3">قبل</th>
-                        <th className="p-3">بعد</th>
-                        <th className="p-3">السبب</th>
-                        <th className="p-3">بواسطة</th>
-                        {isAdmin && <th className="p-3 text-center">إجراء</th>}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y">
-                      {productAdjustments.length ? productAdjustments.map((adjustment) => (
-                        <tr key={adjustment.id} className="hover:bg-gray-50">
-                          <td className="p-3">{String(adjustment.date || adjustment.created || '').slice(0, 10)}</td>
-                          <td className={`p-3 font-black ${Number(adjustment.quantity) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                            {Number(adjustment.quantity) >= 0 ? '+' : ''}{formatNumber(adjustment.quantity)}
-                          </td>
-                          <td className="p-3">{formatNumber(adjustment.old_stock)}</td>
-                          <td className="p-3 font-bold">{formatNumber(adjustment.new_stock)}</td>
-                          <td className="p-3 text-gray-500">{adjustment.reason}</td>
-                          <td className="p-3 font-bold text-gray-700">{adjustment.actor_name || 'غير معروف'}</td>
-                          
-                          {isAdmin && (
-                            <td className="p-3 text-center">
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteAdjustmentClick(adjustment)}
-                                className="bg-red-50 hover:bg-red-100 text-red-600 px-2.5 py-1 rounded-lg text-xs font-bold transition"
-                              >
-                                🗑️ حذف التسوية
-                              </button>
-                            </td>
-                          )}
-                        </tr>
-                      )) : (
-                        <tr>
-                          <td colSpan={isAdmin ? "7" : "6"} className="p-4 text-center text-gray-400">لا توجد تسويات مسجلة لهذه الخامة في هذه الفترة.</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              )}
             </div>
           );
         })}
