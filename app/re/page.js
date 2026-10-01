@@ -113,18 +113,18 @@ export default function ReportsPage() {
   });
   const { data: treasuryTransactions = [] } = useQuery({ queryKey: ['report_treasury_transactions'], queryFn: () => fetchRecords('treasury_transactions') });
 
-  const treasury = [...treasuryRecords].sort((first, second) => {
-    const firstScore = Math.abs(Number(first.opening_balance ?? first.balance ?? 0)) + Math.abs(Number(first.balance ?? 0));
-    const secondScore = Math.abs(Number(second.opening_balance ?? second.balance ?? 0)) + Math.abs(Number(second.balance ?? 0));
-
-    if (secondScore !== firstScore) return secondScore - firstScore;
-
-    const firstTime = new Date(first.updated || first.created || 0).getTime();
-    const secondTime = new Date(second.updated || second.created || 0).getTime();
-    return secondTime - firstTime;
-  })[0] || {};
-
-  const treasuryOpeningBalance = Number(treasury.opening_balance ?? treasury.balance ?? 0);
+  const sortedTreasuryRecords = [...treasuryRecords].sort((first, second) => (
+    new Date(second.updated || second.created || 0) - new Date(first.updated || first.created || 0)
+  ));
+  const treasury = sortedTreasuryRecords.find((record) => (
+    Object.prototype.hasOwnProperty.call(record, 'opening_balance')
+  )) || sortedTreasuryRecords[0] || {};
+  const hasTreasuryOpeningRecord = treasuryRecords.some((record) => (
+    Object.prototype.hasOwnProperty.call(record, 'opening_balance')
+  ));
+  const treasuryOpeningBalance = hasTreasuryOpeningRecord && treasury
+    ? Number(treasury.opening_balance || 0)
+    : 0;
   const openingCapital = reportOpeningCapital ?? treasuryOpeningBalance;
 
   const treasuryMovementEntries = [
@@ -133,7 +133,7 @@ export default function ReportsPage() {
         const itemBankId = String(expense.bank_id || '').trim().toLowerCase();
         const itemBank = String(expense.bank || '').trim().toLowerCase();
         const itemNotes = String(expense.notes || '').toLowerCase();
-        const categoryName = String(expense.category_name || expense.expand?.category_id?.name || '').toLowerCase();
+        const categoryName = String(expense.expand?.category_id?.name || '').toLowerCase();
         const isBankExpense = itemBankId !== '' && itemBankId !== 'null' && itemBankId !== 'treasury' && itemBankId !== 'الخزنة';
         const isBankNamed = itemBank !== '' && itemBank !== 'null' && !itemBank.includes('خزن');
         const isBankNote = itemNotes.includes('بنك') || itemNotes.includes('تحويل بنكي') || itemNotes.includes('visa');
@@ -145,7 +145,7 @@ export default function ReportsPage() {
         date: expense.date || expense.created || '',
       })),
     ...advances
-      .filter((advance) => !(String(advance.advance_type || '').toLowerCase() === 'other'))
+      .filter((advance) => Boolean(advance.employee_id) && String(advance.advance_type || '').toLowerCase() !== 'other')
       .map((advance) => ({
         amount: -Number(advance.amount || 0),
         date: advance.date || advance.created || '',
@@ -155,10 +155,19 @@ export default function ReportsPage() {
         amount: -Number(salary.amount || salary.total_amount || salary.net_salary || 0),
         date: salary.date || salary.created || '',
       })),
-    ...supplierTransactions
+    ...treasuryRecords
+      .filter((record) => String(record.type || '').toLowerCase().includes('مرتبات'))
+      .map((record) => ({
+        amount: -Number(record.amount || 0),
+        date: record.date || record.created || '',
+      })),
+    ...supplierLedgerTransactions
       .filter((transaction) => {
-        const isOpening = String(transaction.type || '').toLowerCase().includes('open') || String(transaction.notes || '').toLowerCase().includes('افتتاحي');
-        return !isOpening && ['treasury', 'خزنة', 'كاش', ''].includes(String(transaction.destination || ''));
+        const transactionType = String(transaction.type || '').toLowerCase();
+        const transactionNotes = String(transaction.notes || '').toLowerCase();
+        const isOpening = transactionType.includes('open') || transactionNotes.includes('افتتاحي');
+        const isCashMovement = ['treasury', 'خزنة', 'كاش', ''].includes(String(transaction.destination || '').trim());
+        return !isOpening && isCashMovement;
       })
       .map((transaction) => ({
         amount: -Number(transaction.amount || 0),
@@ -185,15 +194,16 @@ export default function ReportsPage() {
         date: invoice.date || invoice.created || '',
       })),
     ...treasuryTransactions
-      .filter((transaction) => [
-        'bank_deposit',
-        'bank_transfer',
-        'cash_deposit',
-        'sales_return',
-        'salary',
-        'other_advance',
-        'other_advance_return',
-      ].includes(String(transaction.movement_type || '').toLowerCase()) || String(transaction.type || '').toLowerCase() === 'salary')
+      .filter((transaction) => {
+        const movementType = String(transaction.movement_type || '').toLowerCase();
+        const transactionType = String(transaction.type || '').toLowerCase();
+        return movementType === 'sales_return' || transactionType === 'salary' ||
+          (['other_advance', 'other_advance_return'].includes(movementType) &&
+            String(transaction.source_type || 'treasury') === 'treasury') ||
+          (movementType === 'bank_deposit' && String(transaction.source_type || '') === 'treasury') ||
+          (movementType === 'bank_transfer' && String(transaction.title || '').includes('إلى الخزنة')) ||
+          (movementType === 'cash_deposit' && String(transaction.source_type || '') === 'treasury');
+      })
       .map((transaction) => {
         const movementType = String(transaction.movement_type || '').toLowerCase();
         const transactionType = String(transaction.type || '').toLowerCase();
@@ -233,11 +243,7 @@ export default function ReportsPage() {
       .filter((transaction) => transaction.date && (transaction.amount !== 0 || String(transaction.amount || '').trim() !== '')),
   ].filter((entry) => entry.date).sort((first, second) => new Date(first.date) - new Date(second.date));
 
-  const derivedTreasuryBalance = treasuryOpeningBalance + treasuryMovementEntries.reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
-  const storedTreasuryBalance = Number(treasury.balance ?? treasury.opening_balance ?? 0);
-  const treasuryBalance = Math.abs(storedTreasuryBalance - derivedTreasuryBalance) > 1
-    ? derivedTreasuryBalance
-    : storedTreasuryBalance || derivedTreasuryBalance;
+  const treasuryBalance = treasuryOpeningBalance + treasuryMovementEntries.reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
 
   const saveOpeningCapitalMutation = useMutation({
     mutationFn: async () => {
@@ -602,7 +608,7 @@ export default function ReportsPage() {
                   <tr key={row.name}>
                     <td className="p-3 text-gray-400">{index + 1}</td>
                     <td className="p-3 font-bold">{row.name}</td>
-                    <td className="p-3">{row.quantity.toLocaleString()} وحدة</td>
+                    <td className="p-3">{row.quantity.toLocaleString()} طن</td>
                     <td className="p-3 font-black text-emerald-700">{money(row.amount)}</td>
                   </tr>
                 ))}
@@ -621,7 +627,7 @@ export default function ReportsPage() {
                 {supplierReport.map(row => (
                   <tr key={row.name}>
                     <td className="p-3 font-bold">{row.name}</td>
-                    <td className="p-3">{row.quantity.toLocaleString()} وحدة</td>
+                    <td className="p-3">{row.quantity.toLocaleString()} طن</td>
                     <td className="p-3 font-black text-blue-700">{money(row.amount)}</td>
                     <td className="p-3 font-black text-red-700">{money(supplierPaymentsByName[row.name] || 0)}</td>
                   </tr>
