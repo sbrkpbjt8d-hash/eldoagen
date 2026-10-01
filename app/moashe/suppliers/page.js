@@ -63,7 +63,7 @@ export default function SuppliersPage() {
   // جلب كافة فواتير الشراء وحركات الموردين دفعة واحدة لتحسين الأداء وإظهار (آخر فاتورة شراء) و(آخر مرة سداد) في الجدول الرئيسي
   const { data: allTransactions = [] } = useQuery({
     queryKey: ['all_supplier_transactions'],
-    queryFn: () => pb.collection('supplier_transactions').getFullList({ sort: '-date,-created' }).catch(() => []),
+    queryFn: () => pb.collection('supplier_transactions').getFullList().catch(() => []),
   });
 
   const { data: allPurchaseInvoices = [] } = useQuery({
@@ -367,30 +367,7 @@ export default function SuppliersPage() {
 
 
 const getSupplierDerivedBalance = (supplierId) => {
-  // 1. هات كل معاملات وسدادات المورد من الـ state العامة
-  const supTransactions = (transactionsList || []).filter(t => t.supplier === supplierId || t.supplierId === supplierId);
-  // 2. هات كل فواتير الشراء الخاصة بالمورد
-  const supPurchases = (purchasesList || []).filter(p => p.supplier === supplierId || p.supplierId === supplierId);
-
-  // 3. هات الرصيد الافتتاحي الأساسي المسجل للمورد من جدول الموردين
-  const currentSupplier = (suppliers || []).find((item) => item.id === supplierId);
-  const openingBalance = Number(currentSupplier?.balance || 0);
-
-  // 4. ادمج كل الحركات (فواتير + معاملات وسداد وتسويات) مع بعض
-  const allRows = [...supTransactions, ...supPurchases];
-
-  // 5. ترتيب الحركات تصاعدياً حسب التاريخ لضمان دقة التراكم
-  const sortedRows = allRows.flat().sort((a, b) => 
-    new Date(a.date || a.created) - new Date(b.date || b.created)
-  );
-
-  // 6. ابدأ الرصيد التراكمي بـ "الرصيد الافتتاحي" مش بـ صفر
-  let runningBalance = openingBalance;
-  for (const row of sortedRows) {
-    runningBalance += Number(row.effectAmount || 0);
-  }
-
-  return Number.isFinite(runningBalance) ? runningBalance : 0;
+  return getSupplierStatementRunningBalance(supplierId);
 };
 
 
@@ -719,7 +696,7 @@ const getSupplierDerivedBalance = (supplierId) => {
             <thead className="bg-gray-100 text-gray-600">
               <tr>
                 <th className="p-3">المورد</th>
-                {/* <th className="p-3">الرصيد المستحق</th> */}
+                <th className="p-3">الرصيد المستحق</th>
                 <th className="p-3">الإجراءات</th>
               </tr>
             </thead>
@@ -730,9 +707,9 @@ const getSupplierDerivedBalance = (supplierId) => {
                 return (
                   <tr key={supplier.id} className="hover:bg-gray-50">
                     <td className="p-3 font-bold">{supplier.name}</td>                    
-              {/* <td className="p-3 font-black text-red-600">
+              <td className="p-3 font-black text-red-600">
   {Number(getSupplierDerivedBalance(supplier.id) || 0).toLocaleString()} ج.م
-</td> */}
+</td>
                     <td className="p-3 flex flex-wrap gap-1">
                       <button onClick={() => { setStartDate(''); setEndDate(''); setStatementModal({ open: true, supplier }); }} className="bg-blue-50 text-blue-700 px-2.5 py-1.5 rounded-lg font-bold">كشف الحساب</button>
                       <button onClick={() => { setPaymentAmount(''); setPaymentNotes(''); setPaymentDestination('treasury'); setPaymentBankId(''); setPaymentModal({ open: true, supplier }); }} className="bg-emerald-50 text-emerald-700 px-2.5 py-1.5 rounded-lg font-bold">سداد</button>

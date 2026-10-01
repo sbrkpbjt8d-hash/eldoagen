@@ -163,16 +163,53 @@ export default function BanksPage() {
   const updateBankMutation = useMutation({
     mutationFn: async ({ id, name, opening_balance, balance, notes }) => {
       if (!isAdmin) throw new Error('عذراً، التعديل مقتصر على المسؤولين فقط.');
-      return await pb.collection('banks').update(id, {
+      const bank = banks.find((item) => item.id === id);
+      if (!bank) throw new Error('البنك المحدد غير موجود.');
+      const nextOpeningBalance = Number(opening_balance || 0);
+      const nextBalance = Number(balance || 0);
+      const adjustment = nextBalance - (getBankLedgerBalance(bank) + nextOpeningBalance - Number(bank.opening_balance || 0));
+      const previousValues = {
+        name: bank.name,
+        opening_balance: Number(bank.opening_balance || 0),
+        balance: Number(bank.balance || 0),
+        notes: bank.notes || '',
+        actor_name: bank.actor_name || currentUserName(),
+      };
+
+      const updatedBank = await pb.collection('banks').update(id, {
         name,
-        opening_balance: Number(opening_balance || 0),
-        balance: Number(balance || 0),
+        opening_balance: nextOpeningBalance,
+        balance: nextBalance,
         notes,
         actor_name: currentUserName(),
       });
+
+      if (adjustment !== 0) {
+        try {
+          await pb.collection('treasury_transactions').create({
+            type: 'purchase',
+            movement_type: 'bank_adjustment',
+            source_type: 'bank',
+            bank_id: id,
+            amount: adjustment,
+            title: `تعديل رصيد البنك: ${name}`,
+            notes: 'تعديل الرصيد من بيانات البنك',
+            date: new Date().toISOString(),
+            actor_name: currentUserName(),
+          });
+        } catch (error) {
+          await pb.collection('banks').update(id, previousValues).catch(() => {});
+          throw error;
+        }
+      }
+
+      return updatedBank;
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['banks'] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['banks'] }),
+        queryClient.invalidateQueries({ queryKey: ['treasury_transactions_banks'] }),
+      ]);
       setEditModal({ isOpen: false, bank: null });
       showFeedback('✨ تم تحديث بيانات البنك بنجاح!', 'success');
     },
@@ -186,28 +223,34 @@ export default function BanksPage() {
       if (!isAdmin) throw new Error('عذراً، التسوية مقتصرة على المسؤولين فقط.');
       const bank = reconciliationModal.bank;
       const actualBalance = Number(reconciledBalance);
-      const currentBalance = Number(bank?.balance || 0);
+      const currentBalance = getBankLedgerBalance(bank);
       const difference = actualBalance - currentBalance;
 
       if (!bank) throw new Error('اختر البنك المراد تسويته.');
       if (!Number.isFinite(actualBalance) || actualBalance < 0) throw new Error('اكتب الرصيد الفعلي بشكل صحيح.');
       if (difference === 0) throw new Error('الرصيد الفعلي يساوي الرصيد الحالي، لا توجد تسوية.');
 
+      const previousBalance = Number(bank.balance || 0);
       await pb.collection('banks').update(bank.id, {
         balance: actualBalance,
         actor_name: currentUserName(),
       });
-      return await pb.collection('treasury_transactions').create({
-        type: 'purchase',
-        movement_type: 'bank_adjustment',
-        source_type: 'bank',
-        bank_id: bank.id,
-        amount: difference,
-        title: `تسوية رصيد البنك: ${bank.name}`,
-        notes: reconciliationNotes.trim() || 'تسوية رصيد البنك',
-        date: new Date().toISOString(),
-        actor_name: currentUserName(),
-      });
+      try {
+        return await pb.collection('treasury_transactions').create({
+          type: 'purchase',
+          movement_type: 'bank_adjustment',
+          source_type: 'bank',
+          bank_id: bank.id,
+          amount: difference,
+          title: `تسوية رصيد البنك: ${bank.name}`,
+          notes: reconciliationNotes.trim() || 'تسوية رصيد البنك',
+          date: new Date().toISOString(),
+          actor_name: currentUserName(),
+        });
+      } catch (error) {
+        await pb.collection('banks').update(bank.id, { balance: previousBalance }).catch(() => {});
+        throw error;
+      }
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['banks'] });
@@ -233,19 +276,23 @@ export default function BanksPage() {
         throw new Error('اختر بنكاً مستقبلاً مختلفاً عن البنك المصدر.');
       }
       if (!Number.isFinite(amount) || amount <= 0) throw new Error('اكتب مبلغ تحويل صحيح.');
-      if (amount > Number(sourceBank.balance || 0)) throw new Error('مبلغ التحويل أكبر من رصيد البنك المصدر.');
+      const sourceBalance = getBankLedgerBalance(sourceBank);
+      const sourceStoredBalance = Number(sourceBank.balance || 0);
+      const destinationBalance = destinationBank ? getBankLedgerBalance(destinationBank) : 0;
+      const destinationStoredBalance = Number(destinationBank?.balance || 0);
+      if (amount > sourceBalance) throw new Error('مبلغ التحويل أكبر من رصيد البنك المصدر.');
       if (transferDestination === 'treasury' && !treasury?.id) throw new Error('لم يتم إعداد سجل الخزنة بعد.');
 
       const actorName = currentUserName();
       const date = new Date().toISOString();
       await pb.collection('banks').update(sourceBank.id, {
-        balance: Number(sourceBank.balance || 0) - amount,
+        balance: sourceBalance - amount,
         actor_name: actorName,
       });
 
       if (destinationBank) {
         await pb.collection('banks').update(destinationBank.id, {
-          balance: Number(destinationBank.balance || 0) + amount,
+          balance: destinationBalance + amount,
           actor_name: actorName,
         });
       } else {
@@ -272,12 +319,12 @@ export default function BanksPage() {
         });
       } catch (error) {
         await pb.collection('banks').update(sourceBank.id, {
-          balance: Number(sourceBank.balance || 0),
+          balance: sourceStoredBalance,
           actor_name: actorName,
         });
         if (destinationBank) {
           await pb.collection('banks').update(destinationBank.id, {
-            balance: Number(destinationBank.balance || 0),
+            balance: destinationStoredBalance,
             actor_name: actorName,
           });
         } else {
@@ -313,7 +360,8 @@ export default function BanksPage() {
       if (!bankDepositDescription.trim()) throw new Error('اكتب وصف الإيداع.');
 
       const actorName = currentUserName();
-      const previousBalance = Number(bank.balance || 0);
+      const previousBalance = getBankLedgerBalance(bank);
+      const previousStoredBalance = Number(bank.balance || 0);
       await pb.collection('banks').update(bank.id, {
         balance: previousBalance + amount,
         actor_name: actorName,
@@ -333,7 +381,7 @@ export default function BanksPage() {
         });
       } catch (error) {
         await pb.collection('banks').update(bank.id, {
-          balance: previousBalance,
+          balance: previousStoredBalance,
           actor_name: actorName,
         });
         throw error;
@@ -384,7 +432,7 @@ export default function BanksPage() {
 
       const reverseBalance = (delta) => {
         return pb.collection('banks').update(bankId, {
-          balance: Number(bank.balance || 0) + Number(delta || 0),
+          balance: getBankLedgerBalance(bank) + Number(delta || 0),
           actor_name: currentUserName(),
         });
       };
@@ -473,8 +521,6 @@ export default function BanksPage() {
   const filteredBanks = banks.filter(bank =>
     bank.name?.toLowerCase().includes(searchTerm.toLowerCase())
   );
-
-  const totalCurrentBalances = banks.reduce((sum, bank) => sum + Number(bank.balance || 0), 0);
 
   const currentBankExpenses = historyModal.bank 
     ? expenses.filter(item => String(item.bank_id || '').trim() === String(historyModal.bank.id))
@@ -575,6 +621,41 @@ export default function BanksPage() {
       ? Number(transaction.amount || 0)
       : -Number(transaction.amount || 0);
   };
+
+  const getBankLedgerBalance = (bank) => {
+    if (!bank) return 0;
+    const bankId = String(bank.id || '');
+    const linkedBankId = (value) => String(typeof value === 'string' ? value : value?.id || '').trim();
+    const movements = [
+      ...expenses.filter((item) => linkedBankId(item.bank_id) === bankId).map((item) => ({ ...item, movementType: 'expense' })),
+      ...clientTransactions.filter((item) => linkedBankId(item.bank_id) === bankId).map((item) => ({ ...item, movementType: 'client_payment' })),
+      ...supplierTransactions.filter((item) => linkedBankId(item.bank_id) === bankId).map((item) => ({ ...item, movementType: 'supplier_payment' })),
+      ...treasuryTransactions.filter((item) => {
+        const movementType = String(item.movement_type || '').toLowerCase();
+        const itemBankId = linkedBankId(item.bank_id);
+        const destinationBankId = linkedBankId(item.destination_bank_id);
+        if (['other_advance', 'other_advance_return'].includes(movementType)) {
+          return item.source_type === 'bank' && itemBankId === bankId;
+        }
+        if (movementType === 'bank_deposit') return item.source_type === 'treasury' && itemBankId === bankId;
+        if (movementType === 'bank_adjustment') return item.source_type === 'bank' && itemBankId === bankId;
+        if (movementType === 'bank_transfer') {
+          return itemBankId === bankId || destinationBankId === bankId || String(item.title || '').includes(`إلى بنك ${bank.name}`);
+        }
+        return false;
+      }).map((item) => ({
+        ...item,
+        movementType: String(item.movement_type || '').toLowerCase(),
+        isIncoming: linkedBankId(item.destination_bank_id) === bankId || String(item.title || '').includes(`إلى بنك ${bank.name}`),
+      })),
+    ];
+
+    return Number(bank.opening_balance || 0) + movements.reduce((balance, movement) => (
+      balance + getBankTransactionSignedAmount(movement)
+    ), 0);
+  };
+
+  const totalCurrentBalances = banks.reduce((sum, bank) => sum + getBankLedgerBalance(bank), 0);
 
   const transactionsWithBankBalance = [...currentBankTransactions]
     .sort((first, second) => new Date(first.date || first.created) - new Date(second.date || second.created))
@@ -700,7 +781,7 @@ export default function BanksPage() {
               </div>
               <button onClick={() => setReconciliationModal({ isOpen: false, bank: null })} className="text-gray-400 font-bold text-lg hover:text-gray-700">✕</button>
             </div>
-            <p className="text-xs text-gray-600">الرصيد الحالي: <span className="font-black text-blue-600">{Number(reconciliationModal.bank.balance || 0).toLocaleString()} ج.م</span></p>
+            <p className="text-xs text-gray-600">الرصيد الدفتري الحالي: <span className="font-black text-blue-600">{getBankLedgerBalance(reconciliationModal.bank).toLocaleString()} ج.م</span></p>
             <form onSubmit={(event) => { event.preventDefault(); reconcileBankMutation.mutate(); }} className="space-y-3">
               <div>
                 <label className="text-xs font-bold text-gray-700">الرصيد الفعلي بعد التسوية</label>
@@ -728,7 +809,7 @@ export default function BanksPage() {
       <div className="flex justify-between items-center border-b pb-2">
         <div>
           <h3 className="text-base font-black text-gray-800">📜 سجل حركات البنك: {historyModal.bank.name}</h3>
-          <p className="text-[11px] text-gray-500 mt-0.5">الرصيد الحالي: <span className="font-black text-emerald-600">{Number(historyModal.bank.balance || 0).toLocaleString()} ج.م</span></p>
+          <p className="text-[11px] text-gray-500 mt-0.5">الرصيد الحالي حسب السجل: <span className="font-black text-emerald-600">{getBankLedgerBalance(historyModal.bank).toLocaleString()} ج.م</span></p>
         </div>
         <button onClick={() => setHistoryModal({ isOpen: false, bank: null })} className="text-gray-400 font-bold text-lg hover:text-gray-700 print:hidden">✕</button>
       </div>
@@ -870,7 +951,7 @@ export default function BanksPage() {
                 <label className="text-xs font-bold text-gray-700">البنك المصدر</label>
                 <select value={transferSourceBankId} onChange={(event) => setTransferSourceBankId(event.target.value)} className="w-full border p-3 rounded-xl text-xs mt-1 outline-none focus:border-blue-500" required>
                   <option value="">اختر البنك المصدر</option>
-                  {banks.map((bank) => <option key={bank.id} value={bank.id}>{bank.name} - {Number(bank.balance || 0).toLocaleString()} ج.م</option>)}
+                  {banks.map((bank) => <option key={bank.id} value={bank.id}>{bank.name} - {getBankLedgerBalance(bank).toLocaleString()} ج.م</option>)}
                 </select>
               </div>
               <div>
@@ -1025,8 +1106,8 @@ export default function BanksPage() {
               <tr className="border-b text-xs text-gray-500 bg-gray-50">
                 <th className="p-3">اسم البنك</th>
                 <th className="p-3">الرصيد الافتتاحي</th>
-                {/* <th className="p-3">الرصيد الحالي</th> */}
-                <th className="p-3">ملاحظات</th>
+                <th className="p-3">الرصيد الحالي</th>
+                {/* <th className="p-3">ملاحظات</th> */}
                 <th className="p-3">أُضيف/عُدِّل بواسطة</th>
                 <th className="p-3 text-center">الإجراءات والسجل</th>
               </tr>
@@ -1036,8 +1117,8 @@ export default function BanksPage() {
                 <tr key={bank.id} className="hover:bg-gray-50/50 transition">
                   <td className="p-3 font-black text-gray-900">{bank.name}</td>
                   <td className="p-3 font-bold text-gray-600">{Number(bank.opening_balance || 0).toLocaleString()} ج.م</td>
-                  {/* <td className="p-3 font-black text-emerald-600">{Number(bank.balance || 0).toLocaleString()} ج.م</td> */}
-                  <td className="p-3 text-xs text-gray-500">{bank.notes || '-'}</td>
+                  <td className="p-3 font-black text-emerald-600">{getBankLedgerBalance(bank).toLocaleString()} ج.م</td>
+                  {/* <td className="p-3 text-xs text-gray-500">{bank.notes || '-'}</td> */}
                   <td className="p-3 text-xs font-bold text-gray-700">{bank.actor_name || 'غير معروف'}</td>
                   <td className="p-3 text-center">
                     <div className="flex justify-center gap-2">
@@ -1074,7 +1155,7 @@ export default function BanksPage() {
                             onClick={() => {
                               setEditName(bank.name || '');
                               setEditOpeningBalance(bank.opening_balance ?? '');
-                              setEditBalance(bank.balance ?? '');
+                              setEditBalance(getBankLedgerBalance(bank));
                               setEditNotes(bank.notes || '');
                               setEditModal({ isOpen: true, bank });
                             }}

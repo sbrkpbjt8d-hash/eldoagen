@@ -7,7 +7,7 @@ import { useReactToPrint } from 'react-to-print';
 const money = value => {
   const numericValue = Number(value || 0);
   const absValue = Math.abs(numericValue);
-  return `${numericValue < 0 ? '-' : ''}${absValue.toLocaleString('ar-EG', { maximumFractionDigits: 1 })} ج.م`;
+  return `${numericValue < 0 ? '-' : ''}${absValue.toLocaleString('ar-EG', { maximumFractionDigits: 2 })} ج.م`;
 };
 
 const dateValue = value => String(value || '').slice(0, 10);
@@ -106,6 +106,10 @@ export default function ReportsPage() {
     queryFn: () => fetchRecords('supplier_transactions', {
       filter: '(destination = "treasury" || destination = "خزنة" || destination = "كاش" || destination = "") && type != "opening_balance" && type != "opening"',
     }),
+  });
+  const { data: supplierLedgerTransactions = [] } = useQuery({
+    queryKey: ['report_supplier_ledger_transactions'],
+    queryFn: () => fetchRecords('supplier_transactions'),
   });
   const { data: treasuryTransactions = [] } = useQuery({ queryKey: ['report_treasury_transactions'], queryFn: () => fetchRecords('treasury_transactions') });
 
@@ -251,6 +255,28 @@ export default function ReportsPage() {
   });
 
   const materialValue = materials.reduce((sum, item) => sum + Number(item.stock || 0) * Number(item.price || 0), 0);
+  const getSupplierLedgerBalance = (supplier) => {
+    const transactions = supplierLedgerTransactions
+      .filter((transaction) => String(transaction.supplier_id || '') === String(supplier.id))
+      .map((transaction) => ({
+        amount: transaction.type === 'payment'
+          ? -Number(transaction.amount || 0)
+          : Number(transaction.amount || 0),
+        date: transaction.date || transaction.created,
+      }));
+    const invoices = purchaseInvoices
+      .filter((invoice) => String(invoice.supplier_id || '') === String(supplier.id))
+      .map((invoice) => ({
+        amount: Number(invoice.total_amount || 0),
+        date: invoice.created || invoice.date,
+      }));
+    const movements = [...transactions, ...invoices]
+      .sort((first, second) => new Date(first.date || 0) - new Date(second.date || 0));
+
+    return movements.length
+      ? movements.reduce((balance, movement) => balance + movement.amount, 0)
+      : Number(supplier.balance || 0);
+  };
   const recipeCost = productName => recipes.filter(item => (item.product_name || item.name) === productName).reduce((sum, item) => {
     const material = materials.find(record => record.id === (item.raw_material_id || item.material_id));
     return sum + Number(material?.price || 0) * Number(item.quantity_needed || item.quantity || 0);
@@ -265,7 +291,7 @@ export default function ReportsPage() {
   const productValue = productRows.reduce((sum, item) => sum + item.value, 0);
   const banksBalance = banks.reduce((sum, bank) => sum + Number(bank.balance || 0), 0);
   const customerDebts = clients.reduce((sum, item) => sum + Number(item.balance || 0), 0);
-  const supplierDebts = suppliers.reduce((sum, item) => sum + Number(item.balance || 0), 0);
+  const supplierDebts = suppliers.reduce((sum, supplier) => sum + getSupplierLedgerBalance(supplier), 0);
   
   const currentCapital = materialValue + productValue + treasuryBalance + banksBalance + customerDebts - supplierDebts;
   const profitLossValue = currentCapital - openingCapital;

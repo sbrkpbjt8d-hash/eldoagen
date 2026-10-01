@@ -109,6 +109,38 @@ export default function ClientsPage() {
     },
   });
 
+  const getClientLedgerBalance = (client) => {
+    if (!client) return 0;
+
+    const clientMovements = allTransactions
+      .filter((transaction) => String(transaction.client_id || '') === String(client.id))
+      .map((transaction) => ({
+        type: transaction.type === 'opening_balance' ? 'opening_balance' : transaction.type === 'settlement' ? 'settlement' : 'payment',
+        amount: Number(transaction.amount || 0),
+        notes: transaction.notes || '-',
+        date: transaction.created || transaction.date,
+      }));
+    const invoiceMovements = allInvoices
+      .filter((invoice) => invoice.customer_name === client.name)
+      .map((invoice) => ({
+        type: 'invoice',
+        amount: Number(invoice.total_amount || 0),
+        notes: 'فاتورة مبيعات',
+        date: invoice.created,
+      }));
+
+    return [...clientMovements, ...invoiceMovements]
+      .sort((first, second) => new Date(first.date || 0) - new Date(second.date || 0))
+      .reduce((balance, movement) => {
+        const amountChange = movement.type === 'payment'
+          ? -movement.amount
+          : movement.type === 'settlement' && movement.notes.includes('خصم/تخفيض')
+            ? -movement.amount
+            : movement.amount;
+        return balance + amountChange;
+      }, 0);
+  };
+
   // 3. جلب حركات كشف الحساب للعميل المحدد (التحصيل، التسويات، والأرصدة الافتتاحية)
   const { data: transactions = [], isLoading: loadingTransactions } = useQuery({
     queryKey: ['client_transactions', statementModal.client?.id],
@@ -229,7 +261,7 @@ const combinedStatement = [...statementWithBalance].reverse();
   const payMutation = useMutation({
     mutationFn: async ({ client, amount, destination, notes }) => {
       const numericAmount = Number(amount);
-      const currentClientBalance = Number(client.balance || 0);
+      const currentClientBalance = getClientLedgerBalance(client);
       const newClientBalance = roundMoney(currentClientBalance - numericAmount);
       const paymentAgentId = client.sales_agent_id || '';
       const paymentAgent = salesAgents.find((agent) => agent.id === paymentAgentId);
@@ -295,7 +327,7 @@ const combinedStatement = [...statementWithBalance].reverse();
   const settlementMutation = useMutation({
     mutationFn: async ({ client, amount, type, notes }) => {
       const numericAmount = Number(amount);
-      const currentClientBalance = Number(client.balance || 0);
+      const currentClientBalance = getClientLedgerBalance(client);
       
       const newClientBalance = type === 'minus' 
         ? currentClientBalance - numericAmount 
@@ -318,6 +350,7 @@ const combinedStatement = [...statementWithBalance].reverse();
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
       await queryClient.invalidateQueries({ queryKey: ['client_transactions'] });
+      await queryClient.invalidateQueries({ queryKey: ['all_client_transactions_summary'] });
       showFeedback('⚙️ تم إجراء التسوية وتحديث الحساب بنجاح!', 'success');
       setSettlementModal({ isOpen: false, client: null });
       setSettlementAmount('');
@@ -373,7 +406,7 @@ const combinedStatement = [...statementWithBalance].reverse();
 
       if (client) {
         await pb.collection('clientsmoashe').update(client.id, {
-          balance: roundMoney(Number(client.balance || 0) + amount),
+          balance: roundMoney(getClientLedgerBalance(client) + amount),
         });
       }
 
@@ -418,6 +451,7 @@ const combinedStatement = [...statementWithBalance].reverse();
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
       await queryClient.invalidateQueries({ queryKey: ['client_transactions'] });
+      await queryClient.invalidateQueries({ queryKey: ['all_client_transactions_summary'] });
       showFeedback('✨ تم تحديث الرصيد الافتتاحي بنجاح', 'success');
       setOpeningModal({ isOpen: false, client: null });
       setOpeningAmount('');
@@ -526,7 +560,7 @@ const combinedStatement = [...statementWithBalance].reverse();
     const daysSinceCollection = lastActivityDate
       ? Math.floor((nowDate.getTime() - new Date(lastActivityDate).getTime()) / (1000 * 60 * 60 * 24))
       : 0;
-    const isOverdue = Number(client.balance || 0) > 0 && daysSinceCollection > 20;
+    const isOverdue = getClientLedgerBalance(client) > 0 && daysSinceCollection > 20;
 
     return { lastPayment, lastInvoice, lastActivityDate, daysSinceCollection, isOverdue };
   };
@@ -544,7 +578,7 @@ const combinedStatement = [...statementWithBalance].reverse();
       return 0;
     });
 
-  const totalBalances = clients.reduce((sum, client) => sum + Number(client.balance || 0), 0);
+  const totalBalances = clients.reduce((sum, client) => sum + getClientLedgerBalance(client), 0);
 
   return (
     <div className="p-4 md:p-8 max-w-6xl mx-auto space-y-8 relative" dir="rtl">
@@ -605,7 +639,7 @@ const combinedStatement = [...statementWithBalance].reverse();
               <div>
                 <label className="text-xs font-bold text-gray-600">المديونية الحالية:</label>
                 <p className="text-lg font-black text-red-600">
-                  {Number(paymentModal.client?.totalDebt || paymentModal.client?.balance || 0).toLocaleString()} ج.م
+                  {getClientLedgerBalance(paymentModal.client).toLocaleString()} ج.م
                 </p>
               </div>
               <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
@@ -678,7 +712,7 @@ const combinedStatement = [...statementWithBalance].reverse();
             <form onSubmit={handleSettlementSubmit} className="space-y-3">
               <div>
                 <label className="text-xs font-bold text-gray-600">المديونية الحالية:</label>
-                <p className="text-lg font-black text-red-600">{Number(settlementModal.client?.balance || 0).toLocaleString()} ج.م</p>
+                <p className="text-lg font-black text-red-600">{getClientLedgerBalance(settlementModal.client).toLocaleString()} ج.م</p>
               </div>
               <div>
                 <label className="text-xs font-bold text-gray-700">نوع التسوية</label>
@@ -730,7 +764,7 @@ const combinedStatement = [...statementWithBalance].reverse();
             <div className="flex justify-between items-center border-b pb-3">
               <div>
                 <h3 className="text-lg font-black text-gray-800">📄 كشف حساب العميل: {statementModal.client?.name}</h3>
-                <p className="text-xs text-gray-500">المديونية الحالية: <span className="font-bold text-red-600">{Number(statementModal.client?.balance || 0).toLocaleString()} ج.م</span></p>
+                <p className="text-xs text-gray-500">المديونية الحالية: <span className="font-bold text-red-600">{getClientLedgerBalance(statementModal.client).toLocaleString()} ج.م</span></p>
               </div>
               <button onClick={() => setStatementModal({ isOpen: false, client: null })} className="text-gray-400 font-bold text-lg">✕</button>
             </div>
@@ -925,7 +959,7 @@ const combinedStatement = [...statementWithBalance].reverse();
                     </td>
                     {/* <td className="p-3 font-bold text-gray-700">{client.phone || '-'}</td> */}
                     <td className="p-3 text-gray-600">{client.address || '-'}</td>
-                    <td className="p-3 font-black text-red-600">{Number(client.balance || 0).toLocaleString()} ج.م</td>
+                    <td className="p-3 font-black text-red-600">{getClientLedgerBalance(client).toLocaleString()} ج.م</td>
                     
                     {/* عمود آخر تحصيل */}
                     <td className="p-3 text-xs">
