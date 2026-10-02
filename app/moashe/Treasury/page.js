@@ -119,25 +119,6 @@ export default function TreasuryPage() {
     },
   });
 
-  // 7. جلب سلف الموظفين لتأثيرها على الخزنة
-  const { data: employeeAdvances = [] } = useQuery({
-    queryKey: ['advances_treasury'],
-    queryFn: async () => {
-      return await pb.collection('advances').getFullList({
-        expand: 'employee_id',
-      }).catch(() => []);
-    },
-  });
-
-  // 8. جلب صرف المرتبات لتأثيرها على الخزنة
-  const { data: salariesPayouts = [] } = useQuery({
-    queryKey: ['salaries_payouts_treasury'],
-    queryFn: async () => {
-      return await pb.collection('salaries_payouts').getFullList({
-        expand: 'employee_id',
-      }).catch(() => []);
-    },
-  });
   const { data: treasuryTransactions = [] } = useQuery({
     queryKey: ['treasury_transactions_treasury'],
     queryFn: async () => {
@@ -238,8 +219,6 @@ export default function TreasuryPage() {
       queryClient.invalidateQueries({ queryKey: ['client_transactions_treasury'] });
       queryClient.invalidateQueries({ queryKey: ['supplier_transactions_treasury'] });
       queryClient.invalidateQueries({ queryKey: ['sales_invoices_treasury'] });
-      queryClient.invalidateQueries({ queryKey: ['advances_treasury'] });
-      queryClient.invalidateQueries({ queryKey: ['salaries_payouts_treasury'] });
       queryClient.invalidateQueries({ queryKey: ['treasury_transactions_treasury'] });
       queryClient.invalidateQueries({ queryKey: ['treasury'] });
       showToast('🗑️ تم حذف الحركة بنجاح وتحديث الرصيد!');
@@ -497,105 +476,6 @@ export default function TreasuryPage() {
       actor: transaction.actor_name || 'غير معروف',
     }));
 
-  // تجهيز سلف الموظفين فقط (استبعاد العهدة/الحسابات الأخرى التي تستخدم نفس الجدول)
-  const employeeAdvanceRecords = employeeAdvances.filter((adv) => {
-    const hasEmployee = Boolean(adv.employee_id);
-    const isOtherAdvance = String(adv.advance_type || '').toLowerCase() === 'other';
-    return hasEmployee && !isOtherAdvance;
-  });
-
-  const formattedAdvances = employeeAdvanceRecords
-    .filter(adv => {
-      const advDate = String(adv.date || adv.created || '').slice(0, 10);
-      if (startDate && advDate < startDate) return false;
-      if (endDate && advDate > endDate) return false;
-      return true;
-    })
-    .map(adv => {
-      const empName = adv.expand?.employee_id?.name || 'موظف';
-      return {
-        id: adv.id,
-        collection: 'advances',
-        date: adv.date || adv.created,
-        created: adv.created,
-        movementType: 'employee_advance',
-        title: `صرف سلفة موظف: ${empName}`,
-        amount: Number(adv.amount || 0),
-        signedAmount: -Number(adv.amount || 0),
-        notes: adv.notes || 'سلفة نقدية',
-        actor: adv.actor_name || 'غير معروف',
-      };
-    });
-
-  // تجهيز صرف المرتبات
-  const formattedSalaries = salariesPayouts
-    .filter(sal => {
-      const salDate = String(sal.date || sal.created || '').slice(0, 10);
-      if (startDate && salDate < startDate) return false;
-      if (endDate && salDate > endDate) return false;
-      return true;
-    })
-    .map(sal => {
-      const empName = sal.expand?.employee_id?.name || sal.employee_name || 'موظف';
-      const payoutAmount = Number(sal.amount || sal.total_amount || sal.net_salary || 0);
-
-      return {
-        id: sal.id,
-        collection: 'salaries_payouts',
-        date: sal.date || sal.created,
-        created: sal.created,
-        movementType: 'salary_payout',
-        title: `صرف مرتب: ${empName}`,
-        amount: payoutAmount,
-        signedAmount: -payoutAmount,
-        notes: sal.notes || sal.description || 'مرتبات',
-        actor: sal.actor_name || 'غير معروف',
-      };
-    });
-
-  // صرف المرتبات المسجل في مجموعة treasury عند عدم وجود مجموعة مستقلة للمرتبات
-  const formattedTreasurySalaries = treasuryRecords
-    .filter(record => String(record.type || '').toLowerCase().includes('مرتبات'))
-    .filter(record => {
-      const salaryDate = String(record.date || record.created || '').slice(0, 10);
-      if (startDate && salaryDate < startDate) return false;
-      if (endDate && salaryDate > endDate) return false;
-      return true;
-    })
-    .map(record => ({
-      id: record.id,
-      collection: 'treasury',
-      date: record.date || record.created,
-      created: record.created,
-      movementType: 'salary_payout',
-      title: record.description || 'صرف مرتب',
-      amount: Number(record.amount || 0),
-      signedAmount: -Number(record.amount || 0),
-      notes: record.notes || 'مرتبات',
-      actor: record.actor_name || 'غير معروف',
-    }));
-
-  const formattedTreasuryTransactionSalaries = treasuryTransactions
-    .filter(transaction => String(transaction.type || '').toLowerCase() === 'salary')
-    .filter(transaction => {
-      const salaryDate = String(transaction.date || transaction.created || '').slice(0, 10);
-      if (startDate && salaryDate < startDate) return false;
-      if (endDate && salaryDate > endDate) return false;
-      return true;
-    })
-    .map(transaction => ({
-      id: transaction.id,
-      collection: 'treasury_transactions',
-      date: transaction.date || transaction.created,
-      created: transaction.created,
-      movementType: 'salary_payout',
-      title: transaction.title || 'صرف مرتب',
-      amount: Number(transaction.amount || 0),
-      signedAmount: -Number(transaction.amount || 0),
-      notes: transaction.notes || 'مرتبات',
-      actor: transaction.actor_name || 'غير معروف',
-    }));
-
   const formattedOtherAdvanceTransactions = treasuryTransactions
     .filter(transaction => ['other_advance', 'other_advance_return'].includes(String(transaction.movement_type || '').toLowerCase()))
     .filter(transaction => String(transaction.source_type || 'treasury') === 'treasury')
@@ -704,10 +584,6 @@ const sortedAscTransactions = [
   ...formattedSupplierPayments,
   ...formattedSalesInvoices,
   ...formattedSalesReturns,
-  ...formattedAdvances,
-  ...formattedSalaries,
-  ...formattedTreasurySalaries,
-  ...formattedTreasuryTransactionSalaries,
   ...formattedOtherAdvanceTransactions,
   ...formattedBankDeposits,
   ...formattedBankTransfers,
@@ -808,8 +684,6 @@ const currentBalance = allTransactions.length > 0
           queryClient.invalidateQueries({ queryKey: ['client_transactions_treasury'] }); 
           queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
           queryClient.invalidateQueries({ queryKey: ['sales_invoices_treasury'] });
-          queryClient.invalidateQueries({ queryKey: ['advances_treasury'] });
-          queryClient.invalidateQueries({ queryKey: ['salaries_payouts_treasury'] });
           queryClient.invalidateQueries({ queryKey: ['treasury_transactions_treasury'] });
         }} className="bg-gray-100 text-gray-700 px-4 py-2 rounded-xl text-xs font-bold">🔄 تحديث</button>
         </div>

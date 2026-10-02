@@ -420,7 +420,7 @@ export default function ReportsPage() {
 
         {/* رأس المال الأساسي */}
         <div className="bg-white p-6 rounded-3xl shadow-xl border border-gray-100 space-y-2">
-          <p className="text-xs text-gray-500 font-bold">رأس المال الأساسي</p>
+          <p className="text-xs text-gray-500 font-bold">رأس المال بدايه العام</p>
           <h2 className="text-3xl font-black text-blue-700">{money(openingCapital)}</h2>
           <p className="text-xs text-blue-600 font-bold">({convertToArabicWords(openingCapital)})</p>
           <p className="text-xs text-gray-400 pt-1">اكتب القيمة الأساسية يدويًا</p>

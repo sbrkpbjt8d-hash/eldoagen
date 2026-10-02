@@ -166,6 +166,39 @@ export default function ProductionStockPage() {
     }).format(date);
   };
 
+  const getStockMovementCustomer = (transaction, product) => {
+    if (transaction.customer_name || transaction.client_name) {
+      return transaction.customer_name || transaction.client_name;
+    }
+
+    const linkedInvoice = salesInvoices.find((invoice) => invoice.id === transaction.source_id);
+    if (linkedInvoice?.customer_name) return linkedInvoice.customer_name;
+
+    if (transaction.movement_type !== 'sale' && !String(transaction.title || '').includes('فاتورة بيع')) {
+      return '';
+    }
+
+    const normalizeName = (value) => String(value || '').replace(/\s+/g, '').trim().toLowerCase();
+    const productName = normalizeName(product.product_name);
+    const movementTimestamp = getMovementTimestamp(transaction.movement_at || transaction.created);
+    const movementDay = String(transaction.movement_at || transaction.created || '').slice(0, 10);
+    const movementQuantity = Math.abs(Number(transaction.quantity || 0));
+    const matchingInvoices = salesInvoices.filter((invoice) => (
+      String(invoice.created || invoice.date || '').slice(0, 10) === movementDay &&
+      (Array.isArray(invoice.items) ? invoice.items : []).some((item) => (
+        normalizeName(item.name || item.product_name) === productName &&
+        Number(item.qty || 0) === movementQuantity
+      ))
+    ));
+
+    matchingInvoices.sort((first, second) => (
+      Math.abs(getMovementTimestamp(first.created || first.date) - movementTimestamp) -
+      Math.abs(getMovementTimestamp(second.created || second.date) - movementTimestamp)
+    ));
+
+    return matchingInvoices[0]?.customer_name || '';
+  };
+
   const getProductLedgerRows = (product) => {
     const normalizeName = (value) => String(value || '').replace(/\s+/g, '').trim().toLowerCase();
     const productKey = normalizeName(product.product_name);
@@ -187,6 +220,7 @@ export default function ProductionStockPage() {
         type: Number(transaction.quantity || 0) >= 0 ? 'إضافة' : 'سحب',
         title: transaction.title || 'حركة مخزن منتجات',
         quantity: Number(transaction.quantity || 0),
+        customerName: getStockMovementCustomer(transaction, product),
         actor: transaction.actor_name || 'غير معروف',
         notes: transaction.notes || '-',
         editable: ['adjustment', 'stock_edit'].includes(transaction.movement_type),
@@ -842,6 +876,7 @@ export default function ProductionStockPage() {
                     <th className="p-3">التاريخ</th>
                     <th className="p-3">نوع الحركة</th>
                     <th className="p-3">البيان</th>
+                    <th className="p-3">العميل</th>
                     <th className="p-3">الكمية</th>
                     <th className="p-3">رصيد المخزن بعد الحركة</th>
                     <th className="p-3">بواسطة</th>
@@ -853,6 +888,7 @@ export default function ProductionStockPage() {
                       <td className="p-3 text-gray-600">{formatMovementDate(item.date)}</td>
                       <td className={`p-3 font-black ${item.quantity >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>{item.type}</td>
                       <td className="p-3 font-bold text-blue-700">{item.title}<div className="text-[10px] text-gray-500 mt-1">{item.notes}</div></td>
+                      <td className="p-3 font-bold text-violet-700">{item.customerName || '—'}</td>
                       <td className={`p-3 font-black ${item.quantity >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>{item.quantity >= 0 ? '+' : '-'} {Math.abs(item.quantity).toLocaleString()} طن</td>
                       <td className="p-3 font-black text-indigo-700">{item.balance.toLocaleString()} طن</td>
                       <td className="p-3 font-bold text-gray-700">
@@ -889,7 +925,7 @@ export default function ProductionStockPage() {
                         )}
                       </td>
                     </tr>
-                  )) : <tr><td colSpan="6" className="p-8 text-center text-gray-400">لا توجد حركات مسجلة لهذا المنتج.</td></tr>}
+                  )) : <tr><td colSpan="7" className="p-8 text-center text-gray-400">لا توجد حركات مسجلة لهذا المنتج.</td></tr>}
                 </tbody>
               </table>
             </div>

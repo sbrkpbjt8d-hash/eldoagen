@@ -114,9 +114,15 @@ export default function SalariesPage() {
     queryFn: () => pb.collection('advances').getFullList({ sort: '-created' }).catch(() => []),
   });
   const { data: treasuryTransactions = [] } = useQuery({
-    queryKey: ['treasury_transactions'],
-    queryFn: () => pb.collection('treasury_transactions').getFullList({ sort: '-date' }).catch(() => []),
+    queryKey: ['salary_advisory_payouts'],
+    queryFn: () => pb.collection('salaries_payouts').getFullList({ sort: '-date' }).catch(() => []),
   });
+
+  const getUnpaidAdvancesForEmployee = (employeeId, month = selectedDate.slice(0, 7)) => advances.filter((advance) => (
+    advance.employee_id === employeeId &&
+    !advance.is_deducted &&
+    String(advance.date || advance.created || '').slice(0, 7) === month
+  ));
 
   const getDraft = (employeeId, existing) => drafts[employeeId] || recordValues(existing);
   const updateDraft = (employeeId, changes) => setDrafts((current) => {
@@ -268,25 +274,28 @@ export default function SalariesPage() {
       ));
       if (alreadyPaid) throw new Error('تم صرف مرتب هذا الموظف لهذا الشهر من قبل.');
 
-      await pb.collection('treasury_transactions').create({
+      await pb.collection('salaries_payouts').create({
         type: 'salary',
         amount: sheet.net,
         title: `صرف مرتب للموظف: ${employee.name}`,
         notes: `صافي المرتب بعد الخصومات والسلف لشهر ${month}`,
         date: selectedDate,
+        employee_id: employee.id,
+        employee_name: employee.name,
+        month,
         actor_name: pb.authStore.model?.name || pb.authStore.model?.email || 'مشرف النظام',
       });
 
-      const employeeAdvances = advances.filter((item) => item.employee_id === employee.id && !item.is_deducted);
+      const employeeAdvances = getUnpaidAdvancesForEmployee(employee.id, month);
       for (const adv of employeeAdvances) {
         await pb.collection('advances').update(adv.id, { is_deducted: true });
       }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['advances'] });
-      queryClient.invalidateQueries({ queryKey: ['treasury_transactions'] });
       queryClient.invalidateQueries({ queryKey: ['attendance_all'] });
-      notify('تم صرف المرتب وتسجيله في الخزنة بنجاح.');
+      queryClient.invalidateQueries({ queryKey: ['salary_advisory_payouts'] });
+      notify('تم تسجيل صرف المرتب استرشادياً دون التأثير على الخزنة.');
     },
     onError: (error) => {
       notify(`فشل صرف المرتب: ${error.message || error.data?.message}`, 'error');
@@ -314,17 +323,19 @@ export default function SalariesPage() {
       });
       if (!confirmed) return false;
 
-      await pb.collection('treasury_transactions').create({
+      await pb.collection('salaries_payouts').create({
         type: 'salary',
         amount: totalAmount,
         title: `صرف إجمالي صافي المرتبات لشهر ${month}`,
         notes: `صرف جماعي لمرتبات ${employeesToPay.length} موظف عن شهر ${month}`,
         date: selectedDate,
+        month,
+        employee_count: employeesToPay.length,
         actor_name: pb.authStore.model?.name || pb.authStore.model?.email || 'مشرف النظام',
       });
 
       for (const employee of employeesToPay) {
-        const employeeAdvances = advances.filter((item) => item.employee_id === employee.id && !item.is_deducted);
+        const employeeAdvances = getUnpaidAdvancesForEmployee(employee.id, month);
         for (const advance of employeeAdvances) {
           await pb.collection('advances').update(advance.id, { is_deducted: true });
         }
@@ -335,9 +346,8 @@ export default function SalariesPage() {
     onSuccess: (saved) => {
       if (!saved) return;
       queryClient.invalidateQueries({ queryKey: ['advances'] });
-      queryClient.invalidateQueries({ queryKey: ['treasury_transactions'] });
-      queryClient.invalidateQueries({ queryKey: ['treasury_transactions_treasury'] });
-      notify('تم صرف إجمالي صافي المرتبات وتسجيله في الخزنة.');
+      queryClient.invalidateQueries({ queryKey: ['salary_advisory_payouts'] });
+      notify('تم تسجيل صرف إجمالي المرتبات استرشادياً دون التأثير على الخزنة.');
     },
     onError: (error) => notify(`فشل صرف إجمالي المرتبات: ${error.message}`, 'error'),
   });
@@ -410,7 +420,7 @@ export default function SalariesPage() {
     const lateDeduction = Math.floor(monthlyLate * rate);
     const earlyLeaveDeduction = Math.floor(monthlyEarlyLeave * rate);
     const overtimeAddition = Math.floor(monthlyOvertime * 25);
-    const advancesTotal = advances.filter((item) => item.employee_id === employee.id && !item.is_deducted).reduce((sum, item) => sum + number(item.amount), 0);
+    const advancesTotal = getUnpaidAdvancesForEmployee(employee.id, month).reduce((sum, item) => sum + number(item.amount), 0);
 
     const net = Math.max(0, Math.floor(number(employee.base_salary) - absenceDeduction - lateDeduction - earlyLeaveDeduction + overtimeAddition - advancesTotal));
 
@@ -445,13 +455,13 @@ export default function SalariesPage() {
           <p className="mt-1 text-sm text-slate-500">إدارة يومية الموظفين والحسابات في شاشة واحدة.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button
+          {/* <button
             onClick={() => payAllSalaries.mutate()}
             disabled={payAllSalaries.isPending}
             className="rounded-xl bg-emerald-700 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-emerald-800 disabled:opacity-50"
           >
             {payAllSalaries.isPending ? 'جاري الصرف...' : 'صرف إجمالي صافي المرتبات'}
-          </button>
+          </button> */}
           <button onClick={() => setModal('advance')} className="rounded-xl bg-violet-600 px-4 py-2.5 text-xs font-bold text-white">+ سلفة</button>
           <button onClick={() => setModal('employee')} className="rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-bold text-white">+ موظف</button>
         </div>
@@ -550,13 +560,13 @@ export default function SalariesPage() {
                     <td className="p-3 font-bold text-violet-700">{sheet.advancesTotal ? `${sheet.advancesTotal.toLocaleString()} ج.م` : '-'}</td>
                     <td className="p-3 text-sm font-black text-emerald-700">{sheet.net.toLocaleString()} ج.م</td>
                     <td className="p-3 flex items-center justify-center gap-1">
-                      <button 
+                      {/* <button 
                         onClick={() => paySalary.mutate(employee)} 
                         className="rounded-lg bg-emerald-600 px-2 py-1 text-[11px] font-bold text-white hover:bg-emerald-700 transition"
                         title="صرف المرتب للموظف وتسجيله في الخزنة"
                       >
                         صرف المرتب
-                      </button>
+                      </button> */}
                       <button 
                         onClick={() => deleteEmployee.mutate(employee.id)} 
                         className="rounded-lg bg-red-50 px-2 py-1 text-[11px] font-bold text-red-600 hover:bg-red-100 transition"

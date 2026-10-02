@@ -84,6 +84,16 @@ export default function ProductsPage() {
     queryFn: async () => await pb.collection('production_orders').getFullList().catch(() => []),
   });
 
+  const { data: purchaseInvoices = [] } = useQuery({
+    queryKey: ['purchase_invoices'],
+    queryFn: async () => await pb.collection('purchase_invoices').getFullList().catch(() => []),
+  });
+
+  const { data: salesInvoices = [] } = useQuery({
+    queryKey: ['sales_invoices'],
+    queryFn: async () => await pb.collection('sales_invoices').getFullList().catch(() => []),
+  });
+
   const addProductMutation = useMutation({
     mutationFn: async (newProduct) => {
       return await pb.collection('khamat_moashe').create(newProduct);
@@ -281,6 +291,70 @@ export default function ProductsPage() {
     return (!adjustmentStartDate || dateValue >= adjustmentStartDate) && (!adjustmentEndDate || dateValue <= adjustmentEndDate);
   });
 
+  const materialLogRows = selectedMaterialLog ? (() => {
+    const materialId = String(selectedMaterialLog.id || '');
+    const materialName = String(selectedMaterialLog.name || '').trim();
+    const matchesMaterial = (recordId, recordName) => (
+      (recordId && String(recordId) === materialId) ||
+      (!recordId && String(recordName || '').trim() === materialName)
+    );
+
+    const adjustmentRows = adjustments
+      .filter(adjustment => matchesMaterial(adjustment.material_id, adjustment.material_name))
+      .map(adjustment => ({
+        id: `adjustment-${adjustment.id}`,
+        date: adjustment.date || adjustment.created,
+        quantity: Number(adjustment.quantity || 0),
+        source: adjustment.source_type === 'production_order' || adjustment.source_type === 'production_order_cancelled' ? 'تصنيع' : 'تسوية مخزون',
+        reference: getProductionOrderName(adjustment) !== '—' ? getProductionOrderName(adjustment) : '—',
+        relatedParty: getProductionOrderQuantity(adjustment) != null ? `دفعة تصنيع ${formatNumber(getProductionOrderQuantity(adjustment))} طن` : '—',
+        reason: adjustment.reason || 'بدون سبب',
+        actor: adjustment.actor_name || 'غير معروف',
+      }));
+
+    const purchaseRows = purchaseInvoices.flatMap(invoice => (invoice.items || [])
+      .filter(item => matchesMaterial(item.materialId || item.material_id, item.name))
+      .map((item, index) => ({
+        id: `purchase-${invoice.id}-${item.materialId || item.material_id || index}`,
+        date: invoice.created || invoice.date,
+        quantity: Math.abs(Number(item.qty || item.quantity || 0)),
+        source: 'فاتورة شراء',
+        reference: invoice.invoice_number || 'فاتورة شراء',
+        relatedParty: invoice.supplier_name || 'مورد غير معروف',
+        reason: 'إضافة خامة للمخزون',
+        actor: invoice.actor_name || 'غير معروف',
+      })));
+
+    const salesRows = salesInvoices.flatMap(invoice => (invoice.items || [])
+      .filter(item => item.itemType === 'material' && matchesMaterial(item.materialId || item.material_id, item.name))
+      .map((item, index) => ({
+        id: `sale-${invoice.id}-${item.materialId || item.material_id || index}`,
+        date: invoice.created || invoice.date,
+        quantity: -Math.abs(Number(item.qty || item.quantity || 0)),
+        source: 'فاتورة بيع',
+        reference: invoice.invoice_number || 'فاتورة بيع',
+        relatedParty: invoice.customer_name || 'عميل غير معروف',
+        reason: 'بيع خامة',
+        actor: invoice.actor_name || 'غير معروف',
+      })));
+
+    const rows = [...adjustmentRows, ...purchaseRows, ...salesRows]
+      .filter(row => row.date)
+      .sort((first, second) => new Date(first.date) - new Date(second.date));
+    const currentStock = Number(selectedMaterialLog.stock ?? selectedMaterialLog.quantity ?? 0);
+    const openingStock = currentStock - rows.reduce((sum, row) => sum + row.quantity, 0);
+    let runningStock = openingStock;
+
+    return rows.map(row => {
+      const oldStock = runningStock;
+      runningStock += row.quantity;
+      return { ...row, oldStock, newStock: runningStock };
+    }).filter(row => {
+      const dateValue = String(row.date || '').slice(0, 10);
+      return (!adjustmentStartDate || dateValue >= adjustmentStartDate) && (!adjustmentEndDate || dateValue <= adjustmentEndDate);
+    }).reverse();
+  })() : [];
+
   const totalIncrease = filteredAdjustments
     .filter(adjustment => Number(adjustment.quantity || 0) > 0)
     .reduce((sum, adjustment) => sum + Number(adjustment.quantity || 0), 0);
@@ -375,7 +449,7 @@ export default function ProductsPage() {
             <div className="flex items-center justify-between border-b pb-3 mb-4">
               <div>
                 <h3 className="text-lg font-black text-gray-800">📜 سجل خامة: {selectedMaterialLog.name}</h3>
-                <p className="text-xs text-gray-500">عرض كل التغييرات على المخزون، من أوامر التصنيع والتسويات وحتى الخصم والإضافة.</p>
+                <p className="text-xs text-gray-500">حركات التصنيع والتسويات وفواتير شراء وبيع الخامة.</p>
               </div>
               <button type="button" onClick={() => setSelectedMaterialLog(null)} className="text-gray-400 hover:text-gray-700 font-black text-xl">✕</button>
             </div>
@@ -390,45 +464,31 @@ export default function ProductsPage() {
                     <th className="p-3">قبل</th>
                     <th className="p-3">بعد</th>
                     <th className="p-3">القيمة بعد التغيير</th>
-                    <th className="p-3">أمر التصنيع</th>
-                    <th className="p-3">كمية أمر التصنيع</th>
-                  
+                    <th className="p-3">الفاتورة / أمر التصنيع</th>
+                    <th className="p-3">المورد / العميل / الدفعة</th>
+                    <th className="p-3">السبب</th>
                     <th className="p-3">بواسطة</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {filteredAdjustments.filter((adjustment) => {
-                    const matchesById = String(adjustment.material_id || '') === String(selectedMaterialLog.id || '');
-                    const matchesByName = String(adjustment.material_name || '').trim() === String(selectedMaterialLog.name || '').trim();
-                    return matchesById || matchesByName;
-                  }).length ? (
-                    filteredAdjustments.filter((adjustment) => {
-                      const matchesById = String(adjustment.material_id || '') === String(selectedMaterialLog.id || '');
-                      const matchesByName = String(adjustment.material_name || '').trim() === String(selectedMaterialLog.name || '').trim();
-                      return matchesById || matchesByName;
-                    }).sort((a, b) => new Date(b.date || b.created || 0) - new Date(a.date || a.created || 0)).map((adjustment) => (
-                      <tr key={adjustment.id} className="hover:bg-gray-50">
-                        <td className="p-3">{String(adjustment.date || adjustment.created || '').slice(0, 10)}</td>
-                        <td className={`p-3 font-black ${Number(adjustment.quantity) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                          {Number(adjustment.quantity) >= 0 ? 'زيادة' : 'خصم'}
-                        </td>
-                        <td className={`p-3 font-bold ${Number(adjustment.quantity) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                          {Number(adjustment.quantity) >= 0 ? '+' : '-'}{formatNumber(Math.abs(Number(adjustment.quantity || 0)))}
-                        </td>
-                        <td className="p-3">{formatNumber(adjustment.old_stock)}</td>
-                        <td className="p-3 font-bold">{formatNumber(adjustment.new_stock)}</td>
-                        <td className="p-3 font-bold text-amber-700">
-                          {((Number(adjustment.new_stock || 0) * Number(selectedMaterialLog.price || 0))).toLocaleString('ar-EG', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ج.م
-                        </td>
-                        <td className="p-3 font-bold text-violet-700">{getProductionOrderName(adjustment)}</td>
-                        <td className="p-3 font-bold text-blue-700">
-                          {getProductionOrderQuantity(adjustment) != null ? `${formatNumber(getProductionOrderQuantity(adjustment))} طن` : '—'}
-                        </td>
-                        
-                        <td className="p-3 font-bold text-gray-700">{adjustment.actor_name || 'غير معروف'}</td>
-                      </tr>
-                    ))
-                  ) : (
+                  {materialLogRows.length ? materialLogRows.map((row) => (
+                    <tr key={row.id} className="hover:bg-gray-50">
+                      <td className="p-3">{String(row.date || '').slice(0, 10)}</td>
+                      <td className={`p-3 font-black ${row.quantity >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{row.source}</td>
+                      <td className={`p-3 font-bold ${row.quantity >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                        {row.quantity >= 0 ? '+' : '-'}{formatNumber(Math.abs(row.quantity))}
+                      </td>
+                      <td className="p-3">{formatNumber(row.oldStock)}</td>
+                      <td className="p-3 font-bold">{formatNumber(row.newStock)}</td>
+                      <td className="p-3 font-bold text-amber-700">
+                        {(row.newStock * Number(selectedMaterialLog.price || 0)).toLocaleString('ar-EG', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ج.م
+                      </td>
+                      <td className="p-3 font-bold text-violet-700">{row.reference}</td>
+                      <td className="p-3 font-bold text-blue-700">{row.relatedParty}</td>
+                      <td className="p-3 text-gray-500">{row.reason}</td>
+                      <td className="p-3 font-bold text-gray-700">{row.actor}</td>
+                    </tr>
+                  )) : (
                     <tr>
                       <td colSpan="10" className="p-6 text-center text-gray-400">
                         لا توجد حركات مسجلة لهذه الخامة حتى الآن.

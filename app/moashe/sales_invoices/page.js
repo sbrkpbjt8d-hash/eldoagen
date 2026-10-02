@@ -257,6 +257,7 @@ export default function SalesInvoicesPage() {
       title: movement.title || (quantityChange < 0 ? 'سحب من فاتورة بيع' : 'إضافة للمخزن'),
       notes: movement.notes || '-',
       actor_name: currentUserName,
+      customer_name: movement.customerName || '',
       source_type: movement.sourceType || 'sales_invoice',
       source_id: movement.sourceId || '',
       product_stock_id: stockRecord.id,
@@ -271,6 +272,10 @@ export default function SalesInvoicesPage() {
 
   const saveInvoiceMutation = useMutation({
     mutationFn: async () => {
+      const invoiceCustomerName = customerType === 'walk-in'
+        ? (walkInName.trim() || 'عميل فوري')
+        : (customers.find(c => c.id === selectedCustomer)?.name || 'عميل مسجل');
+
       if (editingInvoiceId && oldInvoiceItems.length > 0) {
         for (const oldProd of oldInvoiceItems) {
           if (oldProd.itemType === 'material' && oldProd.materialId) {
@@ -281,6 +286,7 @@ export default function SalesInvoicesPage() {
             type: 'invoice_edit',
             title: 'تعديل فاتورة بيع - إرجاع القديم',
             sourceId: editingInvoiceId,
+            customerName: oldInvoiceData?.customer_name || invoiceCustomerName,
           });
         }
 
@@ -307,12 +313,11 @@ export default function SalesInvoicesPage() {
           type: 'sale',
           title: 'فاتورة بيع - سحب من المخزن',
           sourceId: editingInvoiceId || 'new-sale',
+          customerName: invoiceCustomerName,
         });
       }
 
-      const customerName = customerType === 'walk-in' 
-        ? (walkInName.trim() || 'عميل فوري') 
-        : (customers.find(c => c.id === selectedCustomer)?.name || 'عميل مسجل');
+      const customerName = invoiceCustomerName;
 
       let matchedCustomerById = null;
       if (customerType === 'registered' && selectedCustomer) {
@@ -459,6 +464,7 @@ const deleteInvoiceMutation = useMutation({
           type: 'return',
           title: 'حذف فاتورة بيع - إرجاع للمخزن',
           sourceId: invoice.id,
+          customerName: invoice.customer_name || 'عميل غير معروف',
         });
       }
 
