@@ -92,28 +92,28 @@ export default function ReportsPage() {
   const { data: salesAgents = [] } = useQuery({ queryKey: ['report_sales_agents'], queryFn: () => fetchRecords('sales_agents') });
   const { data: salesInvoices = [] } = useQuery({ queryKey: ['report_sales'], queryFn: () => fetchRecords('sales_invoices') });
   const { data: purchaseInvoices = [] } = useQuery({ queryKey: ['report_purchases'], queryFn: () => fetchRecords('purchase_invoices') });
-  const { data: expenses = [] } = useQuery({ queryKey: ['report_expenses'], queryFn: () => fetchRecords('expenses') });
-  const { data: advances = [] } = useQuery({ queryKey: ['report_advances'], queryFn: () => fetchRecords('advances') });
-  const { data: salariesPayouts = [] } = useQuery({ queryKey: ['report_salaries_payouts'], queryFn: () => fetchRecords('salaries_payouts') });
+  const { data: expenses = [] } = useQuery({ queryKey: ['report_expenses'], queryFn: () => fetchRecords('expenses', { expand: 'category_id' }) });
   const { data: clientTransactions = [] } = useQuery({
     queryKey: ['report_client_transactions'],
     queryFn: () => fetchRecords('client_transactions', {
+      requestKey: null,
       filter: '(destination = "treasury" || destination = "خزنة" || destination = "كاش" || destination = "") && type != "opening_balance" && type != "opening"',
     }),
   });
   const { data: allClientTransactions = [] } = useQuery({
     queryKey: ['report_all_client_transactions'],
-    queryFn: () => fetchRecords('client_transactions'),
+    queryFn: () => fetchRecords('client_transactions', { requestKey: null }),
   });
   const { data: supplierTransactions = [] } = useQuery({
     queryKey: ['report_supplier_transactions'],
     queryFn: () => fetchRecords('supplier_transactions', {
+      requestKey: null,
       filter: '(destination = "treasury" || destination = "خزنة" || destination = "كاش" || destination = "") && type != "opening_balance" && type != "opening"',
     }),
   });
   const { data: supplierLedgerTransactions = [] } = useQuery({
     queryKey: ['report_supplier_ledger_transactions'],
-    queryFn: () => fetchRecords('supplier_transactions'),
+    queryFn: () => fetchRecords('supplier_transactions', { requestKey: null }),
   });
   const { data: treasuryTransactions = [] } = useQuery({ queryKey: ['report_treasury_transactions'], queryFn: () => fetchRecords('treasury_transactions') });
 
@@ -147,23 +147,6 @@ export default function ReportsPage() {
       .map((expense) => ({
         amount: -Number(expense.amount || 0),
         date: expense.date || expense.created || '',
-      })),
-    ...advances
-      .filter((advance) => Boolean(advance.employee_id) && String(advance.advance_type || '').toLowerCase() !== 'other')
-      .map((advance) => ({
-        amount: -Number(advance.amount || 0),
-        date: advance.date || advance.created || '',
-      })),
-    ...salariesPayouts
-      .map((salary) => ({
-        amount: -Number(salary.amount || salary.total_amount || salary.net_salary || 0),
-        date: salary.date || salary.created || '',
-      })),
-    ...treasuryRecords
-      .filter((record) => String(record.type || '').toLowerCase().includes('مرتبات'))
-      .map((record) => ({
-        amount: -Number(record.amount || 0),
-        date: record.date || record.created || '',
       })),
     ...supplierLedgerTransactions
       .filter((transaction) => {
@@ -200,8 +183,7 @@ export default function ReportsPage() {
     ...treasuryTransactions
       .filter((transaction) => {
         const movementType = String(transaction.movement_type || '').toLowerCase();
-        const transactionType = String(transaction.type || '').toLowerCase();
-        return movementType === 'sales_return' || transactionType === 'salary' ||
+        return movementType === 'sales_return' ||
           (['other_advance', 'other_advance_return'].includes(movementType) &&
             String(transaction.source_type || 'treasury') === 'treasury') ||
           (movementType === 'bank_deposit' && String(transaction.source_type || '') === 'treasury') ||
@@ -210,7 +192,6 @@ export default function ReportsPage() {
       })
       .map((transaction) => {
         const movementType = String(transaction.movement_type || '').toLowerCase();
-        const transactionType = String(transaction.type || '').toLowerCase();
         const title = String(transaction.title || '').toLowerCase();
         let amount = Number(transaction.amount || 0);
 
@@ -222,7 +203,7 @@ export default function ReportsPage() {
           amount *= 1;
         }
 
-        if (movementType === 'bank_deposit' || movementType === 'salary' || movementType === 'sales_return' || transactionType === 'salary') {
+        if (movementType === 'bank_deposit' || movementType === 'sales_return') {
           amount *= -1;
         }
 
