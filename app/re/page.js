@@ -101,6 +101,10 @@ export default function ReportsPage() {
       filter: '(destination = "treasury" || destination = "خزنة" || destination = "كاش" || destination = "") && type != "opening_balance" && type != "opening"',
     }),
   });
+  const { data: allClientTransactions = [] } = useQuery({
+    queryKey: ['report_all_client_transactions'],
+    queryFn: () => fetchRecords('client_transactions'),
+  });
   const { data: supplierTransactions = [] } = useQuery({
     queryKey: ['report_supplier_transactions'],
     queryFn: () => fetchRecords('supplier_transactions', {
@@ -334,10 +338,86 @@ export default function ReportsPage() {
   const collectionsTotal = periodClientTransactions.reduce((sum, item) => sum + Number(item.amount || 0), 0);
   const supplierPaymentsTotal = periodSupplierTransactions.reduce((sum, item) => sum + Number(item.amount || 0), 0);
 
-  const soldProducts = Object.entries(periodSales.flatMap(invoice => invoice.items || []).reduce((map, item) => {
-    map[item.name] = (map[item.name] || 0) + Number(item.qty || 0);
-    return map;
-  }, {})).sort((a, b) => b[1] - a[1]);
+  const getMaterialPurchaseCost = (saleItem, saleDate) => {
+    const materialId = String(saleItem.materialId || saleItem.material_id || '');
+    const materialName = String(saleItem.name || saleItem.product_name || '').trim().toLowerCase();
+    const purchaseLines = purchaseInvoices
+      .filter((invoice) => new Date(invoice.created || invoice.date || 0) <= new Date(saleDate || Date.now()))
+      .flatMap((invoice) => {
+        const items = Array.isArray(invoice.items) ? invoice.items : [];
+        const subtotal = Number(invoice.sub_total || items.reduce((sum, item) => (
+          sum + Number(item.price || 0) * Number(item.qty || 0)
+        ), 0));
+        const discount = Number(invoice.discount || invoice.discount_amount || 0);
+
+        return items.filter((item) => {
+          const itemMaterialId = String(item.materialId || item.material_id || '');
+          const itemName = String(item.name || item.material_name || '').trim().toLowerCase();
+          return materialId
+            ? itemMaterialId === materialId || (!itemMaterialId && itemName === materialName)
+            : itemName === materialName;
+        }).map((item) => {
+          const quantity = Number(item.qty || item.quantity || 0);
+          const lineAmount = Number(item.price || 0) * quantity;
+          const lineDiscount = subtotal > 0 ? discount * lineAmount / subtotal : 0;
+          return { quantity, amount: lineAmount - lineDiscount };
+        });
+      });
+    const purchasedQuantity = purchaseLines.reduce((sum, line) => sum + line.quantity, 0);
+    const purchasedValue = purchaseLines.reduce((sum, line) => sum + line.amount, 0);
+
+    if (purchasedQuantity > 0) return purchasedValue / purchasedQuantity;
+
+    const material = materials.find((item) => (
+      (materialId && item.id === materialId) ||
+      String(item.name || '').trim().toLowerCase() === materialName
+    ));
+    return material && Number.isFinite(Number(material.price)) ? Number(material.price) : null;
+  };
+
+  const soldProducts = Object.values(periodSales.reduce((productsByName, invoice) => {
+    const invoiceItems = Array.isArray(invoice.items) ? invoice.items : [];
+    const invoiceSubtotal = invoiceItems.reduce((sum, item) => (
+      sum + Number(item.price || 0) * Number(item.qty || 0)
+    ), 0);
+    const invoiceDiscount = Number(invoice.discount ?? invoice.discount_amount ?? 0);
+
+    invoiceItems.forEach((item) => {
+      const name = item.name || item.product_name || 'منتج بدون اسم';
+      const quantity = Number(item.qty || 0);
+      const itemSales = Number(item.price || 0) * quantity;
+      const allocatedDiscount = invoiceSubtotal > 0 ? invoiceDiscount * itemSales / invoiceSubtotal : 0;
+      const recipesForProduct = recipes.filter(recipe => (recipe.product_name || recipe.name) === name);
+      const isRawMaterial = item.itemType === 'material' || Boolean(item.materialId || item.material_id);
+      const rawMaterialUnitCost = isRawMaterial ? getMaterialPurchaseCost(item, invoice.created || invoice.date) : null;
+      const hasProductRecipeCost = recipesForProduct.length > 0 && recipesForProduct.every(recipe => {
+        const material = materials.find(record => record.id === (recipe.raw_material_id || recipe.material_id));
+        return Boolean(material) && Number.isFinite(Number(material.price));
+      });
+      const hasCost = isRawMaterial ? rawMaterialUnitCost != null : hasProductRecipeCost;
+      const itemCost = isRawMaterial ? rawMaterialUnitCost : (hasProductRecipeCost ? recipeCost(name) : null);
+
+      if (!productsByName[name]) {
+        productsByName[name] = {
+          name,
+          quantity: 0,
+          sales: 0,
+          cost: 0,
+          hasCost: true,
+        };
+      }
+
+      productsByName[name].quantity += quantity;
+      productsByName[name].sales += itemSales - allocatedDiscount;
+      productsByName[name].hasCost = productsByName[name].hasCost && hasCost;
+      if (hasCost) productsByName[name].cost += itemCost * quantity;
+    });
+
+    return productsByName;
+  }, {})).map(product => ({
+    ...product,
+    profit: product.hasCost ? product.sales - product.cost : null,
+  })).sort((first, second) => second.quantity - first.quantity);
   const displayedSoldProducts = showAllSoldProducts ? soldProducts : soldProducts.slice(0, 5);
   const totalSoldQuantity = periodSales.reduce((sum, invoice) => (
     sum + (invoice.items || []).reduce((invoiceSum, item) => invoiceSum + Number(item.qty || 0), 0)
@@ -345,13 +425,79 @@ export default function ReportsPage() {
 
   const customerReport = Object.values(periodSales.reduce((map, invoice) => {
     const name = invoice.customer_name || 'عميل غير معروف';
-    if (!map[name]) map[name] = { name, amount: 0, quantity: 0, invoices: 0 };
-    map[name].amount += Number(invoice.total_amount || 0);
-    map[name].invoices += 1;
-    (invoice.items || []).forEach(item => { map[name].quantity += Number(item.qty || 0); });
+    const normalizedName = String(name).normalize('NFKC').replace(/[\u064B-\u065F\u0670\u0640]/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه').replace(/\s+/g, ' ').trim();
+    const linkedClient = clients.find(client => (
+      (invoice.customer_id && client.id === invoice.customer_id) ||
+      String(client.name || '').normalize('NFKC').replace(/[\u064B-\u065F\u0670\u0640]/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه').replace(/\s+/g, ' ').trim() === normalizedName
+    ));
+    const key = linkedClient ? `id:${linkedClient.id}` : `name:${normalizedName}`;
+    if (!map[key]) map[key] = { name, amount: 0, quantity: 0, invoices: 0, collections: 0 };
+    map[key].name = name;
+    map[key].amount += Number(invoice.total_amount || 0);
+    map[key].invoices += 1;
+    (invoice.items || []).forEach(item => { map[key].quantity += Number(item.qty || 0); });
     return map;
   }, {})).sort((a, b) => b.amount - a.amount);
-  const displayedCustomerReport = showAllCustomers ? customerReport : customerReport.slice(0, 15);
+  const periodAllClientPayments = allClientTransactions.filter(transaction => (
+    inPeriod(transaction) && String(transaction.type || '').toLowerCase() === 'payment'
+  ));
+  const normalizeReportCustomerName = (value) => String(value || '')
+    .normalize('NFKC')
+    .replace(/[\u064B-\u065F\u0670\u0640]/g, '')
+    .replace(/[أإآٱ]/g, 'ا')
+    .replace(/ى/g, 'ي')
+    .replace(/ة/g, 'ه')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const customerCollections = periodAllClientPayments.reduce((map, transaction) => {
+    const linkedClient = clients.find(client => client.id === transaction.client_id);
+    const transactionName = linkedClient?.name || transaction.client_name || transaction.name || '';
+    const normalizedName = String(transactionName).normalize('NFKC').replace(/[\u064B-\u065F\u0670\u0640]/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه').replace(/\s+/g, ' ').trim();
+    const key = linkedClient ? `id:${linkedClient.id}` : `name:${normalizedName}`;
+    map[key] = (map[key] || 0) + Number(transaction.amount || 0);
+    return map;
+  }, {});
+  const customerReportWithCollections = customerReport.map(row => {
+    const normalizedName = normalizeReportCustomerName(row.name);
+    const linkedClient = clients.find(client => (
+      String(client.name || '').normalize('NFKC').replace(/[\u064B-\u065F\u0670\u0640]/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه').replace(/\s+/g, ' ').trim() === normalizedName
+    ));
+    const key = linkedClient ? `id:${linkedClient.id}` : `name:${normalizedName}`;
+    const customerTransactions = allClientTransactions
+      .filter((transaction) => linkedClient
+        ? String(transaction.client_id || '') === String(linkedClient.id)
+        : normalizeReportCustomerName(transaction.client_name || transaction.name || '') === normalizedName)
+      .map((transaction) => ({
+        type: transaction.type === 'opening_balance' ? 'opening_balance' : transaction.type === 'settlement' ? 'settlement' : 'payment',
+        amount: Number(transaction.amount || 0),
+        notes: transaction.notes || '-',
+        date: transaction.created || transaction.date,
+      }));
+    const customerInvoices = salesInvoices
+      .filter((invoice) => linkedClient
+        ? String(invoice.customer_id || '') === String(linkedClient.id) || normalizeReportCustomerName(invoice.customer_name) === normalizedName
+        : normalizeReportCustomerName(invoice.customer_name) === normalizedName)
+      .map((invoice) => ({
+        type: 'invoice',
+        amount: Number(invoice.total_amount || 0),
+        notes: '',
+        date: invoice.created || invoice.date,
+      }));
+    const currentDebt = [...customerTransactions, ...customerInvoices]
+      .sort((first, second) => new Date(first.date || 0) - new Date(second.date || 0))
+      .reduce((balance, movement) => {
+        const amountChange = movement.type === 'payment'
+          ? -movement.amount
+          : movement.type === 'settlement' && movement.notes.includes('خصم/تخفيض')
+            ? -movement.amount
+            : movement.amount;
+        return balance + amountChange;
+      }, 0);
+
+    return { ...row, collections: customerCollections[key] || 0, currentDebt };
+  });
+  const displayedCustomerReport = showAllCustomers ? customerReportWithCollections : customerReportWithCollections.slice(0, 15);
 
   const supplierReport = Object.values(periodPurchases.reduce((map, invoice) => {
     const name = invoice.supplier_name || 'مورد غير معروف';
@@ -568,10 +714,20 @@ export default function ReportsPage() {
             </div>
           </div>
           <div className="mt-3 space-y-2">
-            {displayedSoldProducts.length ? displayedSoldProducts.map(([name, quantity], index) => (
-              <div key={name} className="flex justify-between bg-gray-50 p-3 rounded-xl text-xs">
-                <span className="font-bold">{index + 1}. {name}</span>
-                <span className="font-black text-blue-700">{quantity.toLocaleString()} طن</span>
+            {displayedSoldProducts.length ? displayedSoldProducts.map((product, index) => (
+              <div key={product.name} className="flex flex-wrap items-center justify-between gap-2 bg-gray-50 p-3 rounded-xl text-xs">
+                <span className="font-bold">{index + 1}. {product.name}</span>
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                  <span className="font-black text-blue-700">الكمية: {product.quantity.toLocaleString('ar-EG')} طن</span>
+                  <span className={`font-black ${product.profit == null ? 'text-gray-500' : product.profit >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+                    الربح: {product.profit == null ? 'التكلفة غير مسجلة' : money(product.profit)}
+                  </span>
+                </div>
+                {product.hasRecipeCost && (
+                  <p className="w-full text-[10px] text-gray-500">
+                    صافي البيع: {money(product.sales)} | التكلفة: {money(product.cost)}
+                  </p>
+                )}
               </div>
             )) : <p className="text-xs text-gray-400 py-5 text-center">لا توجد مبيعات في الفترة.</p>}
           </div>
@@ -602,7 +758,7 @@ export default function ReportsPage() {
           </div>
           <div className="overflow-x-auto mt-3">
             <table className="w-full text-right text-xs">
-              <thead className="bg-gray-100"><tr><th className="p-3">#</th><th className="p-3">العميل</th><th className="p-3">الكميات</th><th className="p-3">قيمة المشتريات</th></tr></thead>
+              <thead className="bg-gray-100"><tr><th className="p-3">#</th><th className="p-3">العميل</th><th className="p-3">الكميات</th><th className="p-3">قيمة المبيعات</th><th className="p-3">إجمالي التحصيلات</th><th className="p-3">المديونية الحالية</th></tr></thead>
               <tbody className="divide-y">
                 {displayedCustomerReport.map((row, index) => (
                   <tr key={row.name}>
@@ -610,9 +766,11 @@ export default function ReportsPage() {
                     <td className="p-3 font-bold">{row.name}</td>
                     <td className="p-3">{row.quantity.toLocaleString()} طن</td>
                     <td className="p-3 font-black text-emerald-700">{money(row.amount)}</td>
+                    <td className="p-3 font-black text-cyan-700">{money(row.collections)}</td>
+                    <td className={`p-3 font-black ${row.currentDebt > 0 ? 'text-red-700' : 'text-emerald-700'}`}>{money(row.currentDebt)}</td>
                   </tr>
                 ))}
-                {!customerReport.length && <tr><td colSpan="4" className="p-6 text-center text-gray-400">لا توجد مشتريات عملاء في الفترة.</td></tr>}
+                {!customerReportWithCollections.length && <tr><td colSpan="6" className="p-6 text-center text-gray-400">لا توجد مشتريات عملاء في الفترة.</td></tr>}
               </tbody>
             </table>
           </div>
