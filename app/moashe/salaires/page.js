@@ -71,6 +71,7 @@ function latestAttendanceRecord(records, employeeId, date) {
 export default function SalariesPage() {
   const queryClient = useQueryClient();
   const [selectedDate, setSelectedDate] = useState(today);
+  const [employeeSearch, setEmployeeSearch] = useState('');
   const salaryPrintRef = useRef(null);
   const printSalaries = useReactToPrint({
     contentRef: salaryPrintRef,
@@ -453,8 +454,11 @@ export default function SalariesPage() {
     };
   };
 
+  const filteredEmployees = employees.filter((employee) => (
+    String(employee.name || '').toLocaleLowerCase().includes(employeeSearch.trim().toLocaleLowerCase())
+  ));
   const filteredRecords = allRecords.filter((record) => { const date = String(record.date || '').slice(0, 10); return (!rangeStart || date >= rangeStart) && (!rangeEnd || date <= rangeEnd); });
-  const totalNet = employees.reduce((sum, employee) => sum + calculate(employee).net, 0);
+  const totalNet = filteredEmployees.reduce((sum, employee) => sum + calculate(employee).net, 0);
 
   const getMaxAdvanceForEmployee = (employee) => Math.max(0, Math.floor(calculate(employee).net));
 
@@ -469,7 +473,7 @@ export default function SalariesPage() {
           <p className="mt-1 text-sm text-slate-500">إدارة يومية الموظفين والحسابات في شاشة واحدة.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button type="button" onClick={printSalaries} className="rounded-xl bg-emerald-700 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-emerald-800 print:hidden">
+          <button type="button" onClick={printSalaries} disabled={!filteredEmployees.length} className="rounded-xl bg-emerald-700 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50 print:hidden">
             🖨️ طباعة كشف المرتبات
           </button>
           {/* <button
@@ -485,10 +489,16 @@ export default function SalariesPage() {
       </header>
 
       <section className="mx-auto mb-5 flex max-w-7xl flex-col justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm md:flex-row md:items-center">
+        <div className="flex flex-wrap items-center gap-4">
         <label className="flex items-center gap-3 text-xs font-bold text-slate-700">
           يوم الحضور
           <input type="date" value={selectedDate} onChange={(event) => { setSelectedDate(event.target.value); setDrafts({}); }} className="rounded-lg border border-slate-300 bg-slate-50 p-2" />
         </label>
+        <label className="flex items-center gap-2 text-xs font-bold text-slate-700">
+          بحث الموظف
+          <input type="search" value={employeeSearch} onChange={(event) => setEmployeeSearch(event.target.value)} placeholder="اكتب اسم الموظف" className="w-56 rounded-lg border border-slate-300 bg-slate-50 p-2 text-xs" />
+        </label>
+        </div>
         
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs font-bold text-slate-500">المحدد ({selectedIds.length})</span>
@@ -509,6 +519,7 @@ export default function SalariesPage() {
         <header className="mb-4 hidden border-b border-slate-300 pb-3 text-center print:block">
           <h2 className="text-xl font-black">كشف المرتبات</h2>
           <p className="mt-1 text-sm">تاريخ الكشف: {selectedDate}</p>
+          {employeeSearch.trim() && <p className="mt-1 text-sm">الموظف: {employeeSearch.trim()}</p>}
         </header>
       <section className="mx-auto mb-6 max-w-7xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm print:mb-4 print:border-0 print:shadow-none">
         <div className="overflow-x-auto">
@@ -519,13 +530,11 @@ export default function SalariesPage() {
                   <input 
                     type="checkbox" 
                     onChange={(e) => {
-                      if (e.target.checked) {
-                        setSelectedIds(employees.map(emp => emp.id));
-                      } else {
-                        setSelectedIds([]);
-                      }
+                      setSelectedIds((current) => e.target.checked
+                        ? [...new Set([...current, ...filteredEmployees.map((employee) => employee.id)])]
+                        : current.filter((id) => !filteredEmployees.some((employee) => employee.id === id)));
                     }}
-                    checked={employees.length > 0 && selectedIds.length === employees.length}
+                    checked={filteredEmployees.length > 0 && filteredEmployees.every((employee) => selectedIds.includes(employee.id))}
                     className="h-4 w-4 accent-emerald-600 cursor-pointer"
                   />
                 </th>
@@ -544,7 +553,7 @@ export default function SalariesPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {employees.map((employee) => { 
+              {filteredEmployees.map((employee) => { 
                 const sheet = calculate(employee); 
                 const checked = selectedIds.includes(employee.id); 
                 return (
@@ -608,6 +617,7 @@ export default function SalariesPage() {
         </div>
         {isLoading && <p className="p-6 text-center text-sm font-bold text-slate-500">جاري تحميل حضور اليوم...</p>}
         {!isLoading && !employees.length && <p className="p-8 text-center text-sm text-slate-400">لا يوجد موظفون حتى الآن.</p>}
+        {!isLoading && employees.length > 0 && !filteredEmployees.length && <p className="p-8 text-center text-sm text-slate-400">لا يوجد موظفون يطابقون البحث.</p>}
       </section>
       <section className="mx-auto mt-4 flex max-w-7xl items-center justify-between rounded-2xl bg-slate-900 p-5 text-white print:border-t print:border-slate-300 print:bg-white print:px-0 print:text-slate-900">
         <div>
