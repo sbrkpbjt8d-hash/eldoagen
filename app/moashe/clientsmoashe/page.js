@@ -4,6 +4,10 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
 
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+const EGYPT_TIME_ZONE = 'Africa/Cairo';
+const isCreditInvoice = (invoice) => ['credit', 'آجل', 'اجل'].includes(
+  String(invoice?.payment_type || invoice?.payment_method || invoice?.type || '').trim().toLowerCase(),
+);
 
 export default function ClientsPage() {
   const queryClient = useQueryClient();
@@ -121,7 +125,10 @@ export default function ClientsPage() {
         date: transaction.created || transaction.date,
       }));
     const invoiceMovements = allInvoices
-      .filter((invoice) => invoice.customer_name === client.name)
+      .filter((invoice) => (
+        (String(invoice.customer_id || '') === String(client.id) || invoice.customer_name === client.name) &&
+        isCreditInvoice(invoice)
+      ))
       .map((invoice) => ({
         type: 'invoice',
         amount: Number(invoice.total_amount || 0),
@@ -180,9 +187,10 @@ export default function ClientsPage() {
     id: inv.id,
     date: inv.created,
     type: 'invoice',
+    isCash: !isCreditInvoice(inv),
     amount: Number(inv.total_amount || 0),
     destination: '-',
-    notes: `فاتورة مبيعات`,
+    notes: isCreditInvoice(inv) ? 'فاتورة مبيعات آجلة' : 'فاتورة مبيعات كاش',
   }));
 
   const statementByDate = [...formattedTransactions, ...formattedInvoices].sort((a, b) => new Date(a.date) - new Date(b.date));
@@ -191,6 +199,8 @@ export default function ClientsPage() {
       ? -tx.amount
       : tx.type === 'settlement' && tx.notes.includes('خصم/تخفيض')
         ? -tx.amount
+        : tx.type === 'invoice' && tx.isCash
+          ? 0
         : tx.amount;
     const previousBalance = statement[statement.length - 1]?.accountValue || 0;
 
@@ -203,6 +213,7 @@ const combinedStatement = [...statementWithBalance].reverse();
     if (!dateString) return 'لا يوجد';
     const date = new Date(dateString);
     return date.toLocaleDateString('ar-EG', {
+      timeZone: EGYPT_TIME_ZONE,
       year: 'numeric',
       month: 'numeric',
       day: 'numeric',
@@ -540,7 +551,12 @@ const combinedStatement = [...statementWithBalance].reverse();
   // تصفية كشف الحساب بالتاريخ
   const filteredStatement = combinedStatement.filter(tx => {
     if (!startDate && !endDate) return true;
-    const txDate = new Date(tx.date).toISOString().split('T')[0];
+    const txDate = new Intl.DateTimeFormat('en-CA', {
+      timeZone: EGYPT_TIME_ZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date(tx.date));
     if (startDate && txDate < startDate) return false;
     if (endDate && txDate > endDate) return false;
     return true;
@@ -807,12 +823,14 @@ const combinedStatement = [...statementWithBalance].reverse();
                   <tbody className="divide-y">
                     {filteredStatement.map((tx) => (
                       <tr key={tx.id} className="hover:bg-gray-50">
-                        <td className="p-3 text-gray-600">{new Date(tx.date).toLocaleString()}</td>
+                        <td className="p-3 text-gray-600">{new Date(tx.date).toLocaleString('ar-EG', { timeZone: EGYPT_TIME_ZONE })}</td>
                         <td className="p-3 font-bold">
                           {tx.type === 'opening_balance' ? (
                             <span className="text-blue-600 bg-blue-50 px-2 py-1 rounded-md">رصيد افتتاحى</span>
                           ) : tx.type === 'invoice' ? (
-                            <span className="text-purple-700 bg-purple-50 px-2 py-1 rounded-md">فاتورة مبيعات</span>
+                            <span className={`${tx.isCash ? 'text-emerald-700 bg-emerald-50' : 'text-purple-700 bg-purple-50'} px-2 py-1 rounded-md`}>
+                              {tx.isCash ? 'فاتورة كاش' : 'فاتورة آجلة'}
+                            </span>
                           ) : tx.type === 'settlement' ? (
                             <span className="text-amber-700 bg-amber-50 px-2 py-1 rounded-md">تسوية حساب</span>
                           ) : (

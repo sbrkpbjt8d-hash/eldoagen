@@ -1,8 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
+import { useReactToPrint } from 'react-to-print';
 
 const today = (() => {
   const date = new Date();
@@ -70,6 +71,19 @@ function latestAttendanceRecord(records, employeeId, date) {
 export default function SalariesPage() {
   const queryClient = useQueryClient();
   const [selectedDate, setSelectedDate] = useState(today);
+  const salaryPrintRef = useRef(null);
+  const printSalaries = useReactToPrint({
+    contentRef: salaryPrintRef,
+    documentTitle: `كشف مرتبات ${selectedDate}`,
+    pageStyle: `
+      @page { size: A4 landscape; margin: 10mm; }
+      html, body { direction: rtl; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .salary-print-document { width: 100%; max-width: none; color: #111827; background: #fff; }
+      .salary-print-document table { width: 100%; min-width: 0 !important; table-layout: fixed; border-collapse: collapse; font-size: 9px; }
+      .salary-print-document th, .salary-print-document td { padding: 6px 4px !important; border: 1px solid #cbd5e1; line-height: 1.35; }
+      .salary-print-document tr { break-inside: avoid; }
+    `,
+  });
   const [rangeStart, setRangeStart] = useState('');
   const [rangeEnd, setRangeEnd] = useState('');
   const [selectedIds, setSelectedIds] = useState([]);
@@ -455,6 +469,9 @@ export default function SalariesPage() {
           <p className="mt-1 text-sm text-slate-500">إدارة يومية الموظفين والحسابات في شاشة واحدة.</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={printSalaries} className="rounded-xl bg-emerald-700 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-emerald-800 print:hidden">
+            🖨️ طباعة كشف المرتبات
+          </button>
           {/* <button
             onClick={() => payAllSalaries.mutate()}
             disabled={payAllSalaries.isPending}
@@ -488,12 +505,17 @@ export default function SalariesPage() {
         </div>
       </section>
 
-      <section className="mx-auto mb-6 max-w-7xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div ref={salaryPrintRef} className="salary-print-document mx-auto max-w-7xl">
+        <header className="mb-4 hidden border-b border-slate-300 pb-3 text-center print:block">
+          <h2 className="text-xl font-black">كشف المرتبات</h2>
+          <p className="mt-1 text-sm">تاريخ الكشف: {selectedDate}</p>
+        </header>
+      <section className="mx-auto mb-6 max-w-7xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm print:mb-4 print:border-0 print:shadow-none">
         <div className="overflow-x-auto">
           <table className="w-full min-w-300 text-right text-xs">
             <thead className="bg-slate-900 text-white">
               <tr>
-                <th className="p-3 text-center">
+                <th className="p-3 text-center print:hidden">
                   <input 
                     type="checkbox" 
                     onChange={(e) => {
@@ -518,7 +540,7 @@ export default function SalariesPage() {
                 <th className="p-3">الإضافي </th>
                 <th className="p-3">السلف</th>
                 <th className="p-3">الصافي</th>
-                <th className="p-3 text-center">الإجراءات</th>
+                <th className="p-3 text-center print:hidden">الإجراءات</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -527,22 +549,25 @@ export default function SalariesPage() {
                 const checked = selectedIds.includes(employee.id); 
                 return (
                   <tr key={employee.id} className="hover:bg-slate-50">
-                    <td className="p-3 text-center">
+                    <td className="p-3 text-center print:hidden">
                       <input type="checkbox" checked={checked} onChange={() => setSelectedIds((current) => checked ? current.filter((id) => id !== employee.id) : [...current, employee.id])} className="h-4 w-4 accent-emerald-600" />
                     </td>
                     <td className="p-3 font-bold text-slate-900">{employee.name}</td>
                     <td className="p-3 font-bold">{Math.floor(number(employee.base_salary)).toLocaleString()} ج.م</td>
                     <td className="p-3">
-                      <select value={sheet.current.status} onChange={(event) => updateDraft(employee.id, { status: event.target.value })} className="rounded-lg border border-slate-300 p-1.5 font-bold">
+                      <select value={sheet.current.status} onChange={(event) => updateDraft(employee.id, { status: event.target.value })} className="rounded-lg border border-slate-300 p-1.5 font-bold print:hidden">
                         <option value="حضور">حضور</option>
                         <option value="غياب">غياب</option>
                       </select>
+                      <span className="hidden print:inline">{sheet.current.status}</span>
                     </td>
                     <td className="p-3">
-                      <input type="time" value={sheet.current.check_in} disabled={sheet.current.status === 'غياب'} onChange={(event) => updateDraft(employee.id, { check_in: event.target.value })} className="rounded-lg border border-slate-300 p-1.5" />
+                      <input type="time" value={sheet.current.check_in} disabled={sheet.current.status === 'غياب'} onChange={(event) => updateDraft(employee.id, { check_in: event.target.value })} className="rounded-lg border border-slate-300 p-1.5 print:hidden" />
+                      <span className="hidden print:inline">{sheet.current.check_in || '-'}</span>
                     </td>
                     <td className="p-3">
-                      <input type="time" value={sheet.current.check_out} disabled={sheet.current.status === 'غياب'} onChange={(event) => updateDraft(employee.id, { check_out: event.target.value })} className="rounded-lg border border-slate-300 p-1.5" />
+                      <input type="time" value={sheet.current.check_out} disabled={sheet.current.status === 'غياب'} onChange={(event) => updateDraft(employee.id, { check_out: event.target.value })} className="rounded-lg border border-slate-300 p-1.5 print:hidden" />
+                      <span className="hidden print:inline">{sheet.current.check_out || '-'}</span>
                     </td>
                     <td className="p-3 font-bold text-red-600">{sheet.absent} يوم<br /><span className="text-[10px]">خصم {sheet.absenceDeduction} ج</span></td>
                     <td className="p-3">
@@ -559,7 +584,7 @@ export default function SalariesPage() {
                     </td>
                     <td className="p-3 font-bold text-violet-700">{sheet.advancesTotal ? `${sheet.advancesTotal.toLocaleString()} ج.م` : '-'}</td>
                     <td className="p-3 text-sm font-black text-emerald-700">{sheet.net.toLocaleString()} ج.م</td>
-                    <td className="p-3 flex items-center justify-center gap-1">
+                    <td className="p-3 flex items-center justify-center gap-1 print:hidden">
                       {/* <button 
                         onClick={() => paySalary.mutate(employee)} 
                         className="rounded-lg bg-emerald-600 px-2 py-1 text-[11px] font-bold text-white hover:bg-emerald-700 transition"
@@ -584,6 +609,14 @@ export default function SalariesPage() {
         {isLoading && <p className="p-6 text-center text-sm font-bold text-slate-500">جاري تحميل حضور اليوم...</p>}
         {!isLoading && !employees.length && <p className="p-8 text-center text-sm text-slate-400">لا يوجد موظفون حتى الآن.</p>}
       </section>
+      <section className="mx-auto mt-4 flex max-w-7xl items-center justify-between rounded-2xl bg-slate-900 p-5 text-white print:border-t print:border-slate-300 print:bg-white print:px-0 print:text-slate-900">
+        <div>
+          <p className="text-xs text-slate-300 print:text-slate-600">إجمالي صافي المرتبات الحالية</p>
+          <p className="mt-1 text-2xl font-black">{totalNet.toLocaleString()} ج.م</p>
+        </div>
+        <span className="text-xs text-slate-300 print:hidden">الانصراف قبل 4 عصراً يخصم بسعر الساعة، والإضافي بعد 4 عصراً (الساعة بـ 25 ج)</span>
+      </section>
+      </div>
 
       <section className="mx-auto max-w-7xl rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="mb-4 flex flex-col justify-between gap-3 border-b border-slate-100 pb-4 md:flex-row md:items-center">
@@ -646,14 +679,6 @@ export default function SalariesPage() {
           </table>
         </div>
         {!filteredRecords.length && <p className="p-6 text-center text-sm text-slate-400">لا توجد سجلات في الفترة المحددة.</p>}
-      </section>
-
-      <section className="mx-auto mt-6 flex max-w-7xl items-center justify-between rounded-2xl bg-slate-900 p-5 text-white">
-        <div>
-          <p className="text-xs text-slate-300">إجمالي صافي المرتبات الحالية</p>
-          <p className="mt-1 text-2xl font-black">{totalNet.toLocaleString()} ج.م</p>
-        </div>
-        <span className="text-xs text-slate-300">الانصراف قبل 4 عصراً يخصم بسعر الساعة، والإضافي بعد 4 عصراً (الساعة بـ 25 ج)</span>
       </section>
 
       {batchModalOpen && (
