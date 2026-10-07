@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata = {
-  title: "Factory ERP",
-  description: "ERP System for Management",
+  title: "مصنع أعلاف الزعيم",
+  description: "مصنع أعلاف الزعيم - أعلاف لمراحل التربية المختلفة",
 };
 
 export default function RootLayout({ children }) {

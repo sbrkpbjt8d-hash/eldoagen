@@ -41,7 +41,7 @@ export default function Sidebar() {
   
   const navLinkClass = href => `flex items-center rounded-xl border px-3 py-2.5 text-sm font-bold transition-all duration-200 ${pathname === href ? (isPoultryPath ? 'border-emerald-400/30 bg-gradient-to-r from-emerald-500 to-emerald-600 text-white shadow-lg shadow-emerald-950/30' : 'border-blue-400/30 bg-gradient-to-r from-blue-500 to-cyan-500 text-white shadow-lg shadow-blue-950/30') : 'border-transparent text-slate-300 hover:border-slate-600 hover:bg-slate-800/80 hover:text-white'}`;
 
-  if (pathname === '/login') return null;
+  if (pathname === '/' || pathname === '/login') return null;
 
   return (
     <>
