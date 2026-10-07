@@ -2,6 +2,7 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
+import { addQuantities, formatQuantity, roundQuantity } from '../../lib/quantity';
 import toast, { Toaster } from 'react-hot-toast';
 
 export default function ProductionOrdersPage() {
@@ -85,12 +86,13 @@ export default function ProductionOrdersPage() {
   // تنفيذ أمر التصنيع، خصم الخامات، وتحديث مخزن المنتجات النهائية (products_stock)
   const executeProductionMutation = useMutation({
     mutationFn: async ({ qtyToProduce, currentRecipe }) => {
+      const normalizedQty = roundQuantity(qtyToProduce);
       const costToAdd = currentRecipe.reduce((sum, item) => {
         const matId = item.raw_material_id || item.material_id;
         const matInfo = materials.find(m => m.id === matId);
         const matPrice = matInfo ? Number(matInfo.price || 0) : 0;
         const qtyPerUnit = Number(item.quantity_needed || item.quantity || 0);
-        const totalQtyNeeded = qtyPerUnit * qtyToProduce;
+        const totalQtyNeeded = qtyPerUnit * normalizedQty;
         return sum + (matPrice * totalQtyNeeded);
       }, 0);
 
@@ -98,7 +100,7 @@ export default function ProductionOrdersPage() {
         const matId = item.raw_material_id || item.material_id;
         const matInfo = materials.find(m => m.id === matId);
         const qtyPerUnit = Number(item.quantity_needed || item.quantity || 0);
-        const totalNeeded = qtyPerUnit * qtyToProduce;
+        const totalNeeded = qtyPerUnit * normalizedQty;
         const currentStock = Number(matInfo?.stock || matInfo?.quantity || 0);
         const newStock = currentStock - totalNeeded;
 
@@ -124,11 +126,11 @@ export default function ProductionOrdersPage() {
       }
 
       const existingProductStock = productsStock.find(p => normalizeProductName(p.product_name || p.name) === normalizeProductName(selectedProduct));
-      const finalProductStock = Number(existingProductStock?.stock || 0) + qtyToProduce;
+      const finalProductStock = roundQuantity(addQuantities(existingProductStock?.stock || 0, normalizedQty));
       let productStockId = existingProductStock?.id || '';
 
       if (existingProductStock) {
-        const updatedStock = Number(existingProductStock.stock || 0) + qtyToProduce;
+        const updatedStock = finalProductStock;
         const updatedCost = Number(existingProductStock.total_cost || 0) + costToAdd;
         await pb.collection('products_stock').update(existingProductStock.id, {
           stock: updatedStock,
@@ -138,7 +140,7 @@ export default function ProductionOrdersPage() {
       } else {
         const createdProductStock = await pb.collection('products_stock').create({
           product_name: selectedProduct,
-          stock: qtyToProduce,
+          stock: normalizedQty,
           total_cost: costToAdd,
           actor_name: getCurrentActorName(),
         });
@@ -147,10 +149,10 @@ export default function ProductionOrdersPage() {
 
       await pb.collection('product_stock_transactions').create({
         product_name: selectedProduct,
-        quantity: qtyToProduce,
+        quantity: normalizedQty,
         movement_type: 'production',
         title: 'أمر تصنيع',
-        notes: `تم تصنيع ${qtyToProduce} من المنتج`,
+        notes: `تم تصنيع ${normalizedQty} من المنتج`,
         actor_name: getCurrentActorName(),
         source_type: 'production_order',
         source_id: selectedProduct,
@@ -161,7 +163,7 @@ export default function ProductionOrdersPage() {
 
       return await pb.collection('production_orders').create({
         product_name: selectedProduct,
-        batch_quantity: qtyToProduce,
+        batch_quantity: normalizedQty,
         total_cost: costToAdd,
         status: 'مكتمل',
         actor_name: getCurrentActorName()
@@ -188,7 +190,7 @@ export default function ProductionOrdersPage() {
   const deleteProductionMutation = useMutation({
     mutationFn: async (order) => {
       const productName = order.product_name;
-      const qtyProduced = Number(order.batch_quantity || 0);
+      const qtyProduced = roundQuantity(order.batch_quantity || 0);
       const orderCost = Number(order.total_cost || 0);
 
       const recipe = allRecipes.filter(r => normalizeProductName(r.product_name || r.name || r.product) === normalizeProductName(productName));
@@ -225,9 +227,9 @@ export default function ProductionOrdersPage() {
       const matchingProductStocks = freshProductsStock.filter(p => (
         normalizeProductName(p.product_name || p.name) === normalizeProductName(productName)
       ));
-      const totalCurrentStock = matchingProductStocks.reduce((sum, productStock) => sum + Number(productStock.stock || 0), 0);
+      const totalCurrentStock = matchingProductStocks.reduce((sum, productStock) => addQuantities(sum, productStock.stock), 0);
       const totalCurrentCost = matchingProductStocks.reduce((sum, productStock) => sum + Number(productStock.total_cost || 0), 0);
-      const updatedStock = Math.max(0, totalCurrentStock - qtyProduced);
+      const updatedStock = Math.max(0, addQuantities(totalCurrentStock, -qtyProduced));
       const updatedCost = Math.max(0, totalCurrentCost - orderCost);
 
       if (matchingProductStocks.length > 0) {
@@ -299,7 +301,7 @@ export default function ProductionOrdersPage() {
   const handleExecuteProduction = (e) => {
     e.preventDefault();
 
-    const qtyToProduce = Number(productionQty);
+    const qtyToProduce = roundQuantity(productionQty);
 
     if (!selectedProduct || !qtyToProduce || qtyToProduce <= 0) {
       toast.error('الرجاء اختيار المنتج وتحديد كمية صحيحة للإنتاج!');
@@ -355,7 +357,7 @@ export default function ProductionOrdersPage() {
   });
 
   // حساب إجمالي الكمية المصنعة بناءً على الأوامر المفلترة حالياً
-  const totalProducedQty = filteredOrders.reduce((sum, order) => sum + Number(order.batch_quantity || 0), 0);
+  const totalProducedQty = filteredOrders.reduce((sum, order) => addQuantities(sum, order.batch_quantity), 0);
   
   // حساب يومية العمال (إجمالي الكمية المصنعة × 75)
   const workerDailyPay = totalProducedQty * 75;
@@ -430,7 +432,7 @@ export default function ProductionOrdersPage() {
                 value={productionQty}
                 onChange={(e) => setProductionQty(e.target.value)}
                 className="w-full border border-gray-300 p-2.5 rounded-xl text-black bg-gray-50 text-sm outline-none focus:ring-2 focus:ring-blue-500"
-                step="any"
+                step="0.001"
                 min="0.001"
                 required
               />
@@ -543,7 +545,7 @@ export default function ProductionOrdersPage() {
                   <div className="flex items-center gap-2">
                     <div className="bg-blue-50 border px-3 py-1.5 rounded-xl text-center">
                       <span className="text-[10px] text-blue-600 block">الكمية المصنعة</span>
-                      <span className="font-bold text-blue-700 text-sm">{Number(order.batch_quantity || 0)} طن</span>
+                      <span className="font-bold text-blue-700 text-sm">{formatQuantity(order.batch_quantity || 0)} طن</span>
                     </div>
                     <div className="bg-amber-50 border px-3 py-1.5 rounded-xl text-center">
                       <span className="text-[10px] text-amber-700 block">التكلفة</span>

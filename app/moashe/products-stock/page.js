@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
+import { addQuantities, formatQuantity, roundQuantity } from '../../lib/quantity';
 import toast, { Toaster } from 'react-hot-toast';
 
 export default function ProductionStockPage() {
@@ -78,7 +79,7 @@ export default function ProductionStockPage() {
         const legacyMatch = !transaction.product_stock_id && nameMatches;
         return nameMatches || idMatches || sourceMatches || legacyMatch;
       })
-      .reduce((sum, transaction) => sum + Number(transaction.quantity || 0), 0);
+      .reduce((sum, transaction) => addQuantities(sum, transaction.quantity), 0);
 
     return Number.isFinite(ledgerStock) ? ledgerStock : 0;
   };
@@ -86,13 +87,13 @@ export default function ProductionStockPage() {
   const inventoryList = productsStock.map(item => {
     const productName = item.product_name || item.name || 'منتج بدون اسم';
     const stockFromLedger = getLedgerStockForProduct(productName, item.id);
-    const stock = stockFromLedger !== 0 || stockTransactions.some((transaction) => {
+    const stock = roundQuantity(stockFromLedger !== 0 || stockTransactions.some((transaction) => {
       const sameName = normalizeProductName(transaction.product_name) === normalizeProductName(productName);
       const sameId = String(transaction.product_stock_id || '').trim() === String(item.id || '').trim();
       return sameName || sameId;
     }) ? stockFromLedger : Number(item.stock ?? productionOrders
       .filter(order => (order.product_name || order.name) === productName)
-      .reduce((sum, order) => sum + Number(order.batch_quantity || order.quantity || 0), 0));
+      .reduce((sum, order) => addQuantities(sum, order.batch_quantity || order.quantity), 0)));
     const productRecipes = recipes.filter(recipe => (recipe.product_name || recipe.name) === productName);
     const recipeUnitCost = productRecipes.reduce((sum, recipe) => {
       const materialId = recipe.raw_material_id || recipe.material_id;
@@ -129,7 +130,7 @@ export default function ProductionStockPage() {
         return (Array.isArray(invoice.items) ? invoice.items : [])
           .filter((item) => normalizeName(item.name || item.product_name) === productName)
           .map((item) => ({
-            quantity: Number(item.qty || 0),
+            quantity: roundQuantity(item.qty || 0),
             total: Number(item.price || 0) * Number(item.qty || 0),
           }));
       });
@@ -137,13 +138,13 @@ export default function ProductionStockPage() {
       return {
         ...product,
         salesCount: productSales.length,
-        soldQuantity: productSales.reduce((sum, sale) => sum + sale.quantity, 0),
+        soldQuantity: productSales.reduce((sum, sale) => addQuantities(sum, sale.quantity), 0),
         salesTotal: productSales.reduce((sum, sale) => sum + sale.total, 0),
       };
     })
     .filter((product) => String(product.product_name || '').toLowerCase().includes(salesSearchTerm.toLowerCase().trim()));
 
-  const salesSummaryQuantity = salesSummary.reduce((sum, product) => sum + product.soldQuantity, 0);
+  const salesSummaryQuantity = salesSummary.reduce((sum, product) => addQuantities(sum, product.soldQuantity), 0);
   const salesSummaryTotal = salesSummary.reduce((sum, product) => sum + product.salesTotal, 0);
 
   const getMovementTimestamp = (value) => {
@@ -219,7 +220,7 @@ export default function ProductionStockPage() {
         date: transaction.movement_at || transaction.updated || transaction.created,
         type: Number(transaction.quantity || 0) >= 0 ? 'إضافة' : 'سحب',
         title: transaction.title || 'حركة مخزن منتجات',
-        quantity: Number(transaction.quantity || 0),
+        quantity: roundQuantity(transaction.quantity || 0),
         customerName: getStockMovementCustomer(transaction, product),
         actor: transaction.actor_name || 'غير معروف',
         notes: transaction.notes || '-',
@@ -234,7 +235,7 @@ export default function ProductionStockPage() {
         const previousBalance = index === 0 ? 0 : rows[index - 1]?.balance ?? 0;
         rows.push({
           ...item,
-          balance: previousBalance + Number(item.quantity || 0),
+          balance: addQuantities(previousBalance, item.quantity),
         });
         return rows;
       }, []);
@@ -264,11 +265,11 @@ export default function ProductionStockPage() {
     });
 
     const openingBalance = openingRows.length ? openingRows[openingRows.length - 1].balance : 0;
-    const additions = filteredRows.reduce((sum, item) => sum + (Number(item.quantity || 0) > 0 ? Number(item.quantity || 0) : 0), 0);
-    const withdrawals = filteredRows.reduce((sum, item) => sum + (Number(item.quantity || 0) < 0 ? Math.abs(Number(item.quantity || 0)) : 0), 0);
+    const additions = filteredRows.reduce((sum, item) => addQuantities(sum, Number(item.quantity || 0) > 0 ? item.quantity : 0), 0);
+    const withdrawals = filteredRows.reduce((sum, item) => addQuantities(sum, Number(item.quantity || 0) < 0 ? Math.abs(item.quantity) : 0), 0);
     const currentBalance = (!historyStartDate && !historyEndDate)
       ? (allRows.length ? allRows[allRows.length - 1].balance : 0)
-      : openingBalance + additions - withdrawals;
+      : addQuantities(addQuantities(openingBalance, additions), -withdrawals);
 
     return {
       openingBalance,
@@ -307,11 +308,11 @@ export default function ProductionStockPage() {
     mutationFn: async () => {
       if (!isAdmin) throw new Error('عفواً، تسوية مخزن المنتجات متاحة للأدمن فقط!');
       const product = adjustmentModal.product;
-      const quantity = Number(adjustmentQuantity);
+      const quantity = roundQuantity(adjustmentQuantity);
       if (!product) throw new Error('اختر المنتج أولاً');
-      if (!Number.isFinite(quantity) || quantity === 0) throw new Error('أدخل كمية تسوية صحيحة');
+      if (!Number.isFinite(quantity) || quantity === 0) throw new Error('أدخل كمية تسوية صحيحة لا تقل عن 0.001');
 
-      const newStock = product.stock + quantity;
+      const newStock = addQuantities(product.stock, quantity);
       if (newStock < 0) throw new Error('لا يمكن أن تكون كمية المخزون أقل من صفر');
 
       const updatedProduct = await pb.collection('products_stock').update(product.id, {
@@ -348,12 +349,12 @@ export default function ProductionStockPage() {
     mutationFn: async () => {
       if (!isAdmin) throw new Error('تعديل كمية المنتج متاح للأدمن فقط');
       const product = editStockModal.product;
-      const nextStock = Number(editStockQuantity);
+      const nextStock = roundQuantity(editStockQuantity);
       if (!product || !Number.isFinite(nextStock) || nextStock < 0) {
         throw new Error('أدخل كمية صحيحة لا تقل عن صفر');
       }
 
-      const previousStock = Number(product.stock || 0);
+      const previousStock = roundQuantity(product.stock || 0);
       const updatedProduct = await pb.collection('products_stock').update(product.id, {
         stock: nextStock,
         total_cost: product.unit_cost * nextStock,
@@ -361,7 +362,7 @@ export default function ProductionStockPage() {
       });
       await pb.collection('product_stock_transactions').create({
         product_name: product.product_name,
-        quantity: nextStock - previousStock,
+        quantity: addQuantities(nextStock, -previousStock),
         movement_type: 'stock_edit',
         title: 'تعديل الكمية الحالية',
         notes: `تم تعديل الكمية من ${previousStock} إلى ${nextStock}`,
@@ -389,7 +390,7 @@ export default function ProductionStockPage() {
       if (!isAdmin) throw new Error('حذف المنتج متاح للأدمن فقط');
       await pb.collection('product_stock_transactions').create({
         product_name: product.product_name,
-        quantity: -Number(product.stock || 0),
+        quantity: -roundQuantity(product.stock || 0),
         movement_type: 'delete',
         title: 'حذف المنتج من المخزن',
         notes: `تم حذف المنتج وإخراج رصيد ${product.stock || 0} من المخزن`,
@@ -418,14 +419,14 @@ export default function ProductionStockPage() {
       if (!isAdmin) throw new Error('تعديل سجل المخزن متاح للأدمن فقط');
       const item = historyEditModal.item;
       const product = historyEditModal.product;
-      const nextQuantity = Number(historyEditQuantity);
+      const nextQuantity = roundQuantity(historyEditQuantity);
       if (!item || !product || !Number.isFinite(nextQuantity) || nextQuantity === 0) {
         throw new Error('أدخل كمية صحيحة غير صفرية');
       }
 
       const transaction = await pb.collection('product_stock_transactions').getOne(item.sourceId);
-      const delta = nextQuantity - Number(transaction.quantity || 0);
-      const nextStock = Number(product.stock || 0) + delta;
+      const delta = addQuantities(nextQuantity, -Number(transaction.quantity || 0));
+      const nextStock = addQuantities(product.stock || 0, delta);
       if (nextStock < 0) throw new Error('لا يمكن أن تصبح كمية المخزن أقل من صفر');
 
       await pb.collection('products_stock').update(product.id, {
@@ -435,7 +436,7 @@ export default function ProductionStockPage() {
       await pb.collection('product_stock_transactions').update(item.sourceId, {
         quantity: nextQuantity,
         notes: `تم تعديل حركة المخزن إلى كمية ${nextQuantity > 0 ? '+' : ''}${nextQuantity}`,
-        balance_after: Number(transaction.balance_after || 0) + delta,
+        balance_after: addQuantities(transaction.balance_after || 0, delta),
       });
 
       const normalizeName = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
@@ -456,7 +457,7 @@ export default function ProductionStockPage() {
         }
         if (targetFound) {
           await pb.collection('product_stock_transactions').update(record.id, {
-            balance_after: Number(record.balance_after || 0) + delta,
+            balance_after: addQuantities(record.balance_after || 0, delta),
           });
         }
       }
@@ -476,7 +477,7 @@ export default function ProductionStockPage() {
       if (!isAdmin) throw new Error('حذف سجل المخزن متاح للأدمن فقط');
       const product = historyModal.product;
       if (!product) throw new Error('لم يتم اختيار منتج');
-      const nextStock = Number(product.stock || 0) - Number(item.quantity || 0);
+      const nextStock = addQuantities(product.stock || 0, -Number(item.quantity || 0));
       if (nextStock < 0) throw new Error('لا يمكن أن تصبح كمية المخزن أقل من صفر');
 
       await pb.collection('products_stock').update(product.id, {
@@ -525,7 +526,7 @@ export default function ProductionStockPage() {
   }
 
   // حساب الإجماليات للمنتجات المصفاة
-  const totalQuantity = filteredOrders.reduce((sum, item) => sum + item.stock, 0);
+  const totalQuantity = filteredOrders.reduce((sum, item) => addQuantities(sum, item.stock), 0);
   const totalCostSum = filteredOrders.reduce((sum, item) => sum + item.total_cost, 0);
 
   return (
@@ -550,15 +551,15 @@ export default function ProductionStockPage() {
             >
               <option value="">-- اختر المنتج --</option>
               {inventoryList.map((item) => (
-                <option key={item.id} value={item.id}>{item.product_name} (الرصيد: {item.stock.toLocaleString()})</option>
+                <option key={item.id} value={item.id}>{item.product_name} (الرصيد: {formatQuantity(item.stock)})</option>
               ))}
             </select>
             <p className="text-sm font-bold text-gray-700">{adjustmentModal.product?.product_name}</p>
-            <p className="text-xs text-gray-500">الرصيد الحالي: {adjustmentModal.product?.stock?.toLocaleString()}</p>
+            <p className="text-xs text-gray-500">الرصيد الحالي: {formatQuantity(adjustmentModal.product?.stock || 0)}</p>
             <input
               required
               type="number"
-              step="any"
+              step="0.001"
               value={adjustmentQuantity}
               onChange={(event) => setAdjustmentQuantity(event.target.value)}
               placeholder="كمية التسوية (+ / -)"
@@ -588,11 +589,11 @@ export default function ProductionStockPage() {
               <button type="button" onClick={() => setEditStockModal({ isOpen: false, product: null })} className="text-gray-400 hover:text-gray-700 text-xl">✕</button>
             </div>
             <p className="text-sm font-bold text-gray-700">{editStockModal.product.product_name}</p>
-            <p className="text-xs text-gray-500">الكمية الحالية: {editStockModal.product.stock.toLocaleString()} طن</p>
+            <p className="text-xs text-gray-500">الكمية الحالية: {formatQuantity(editStockModal.product.stock)} طن</p>
             <input
               type="number"
               min="0"
-              step="any"
+              step="0.001"
               value={editStockQuantity}
               onChange={(event) => setEditStockQuantity(event.target.value)}
               className="w-full border border-gray-200 p-3 rounded-xl text-sm bg-white text-black"
@@ -637,7 +638,7 @@ export default function ProductionStockPage() {
         <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex items-center justify-between">
           <div>
             <p className="text-xs font-bold text-gray-400">إجمالي الكميات المتوفرة</p>
-            <h3 className="text-xl font-black text-emerald-700 mt-1">{totalQuantity.toLocaleString()} طن </h3>
+            <h3 className="text-xl font-black text-emerald-700 mt-1">{formatQuantity(totalQuantity)} طن </h3>
           </div>
           <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl font-bold">📦</div>
         </div>
@@ -684,7 +685,7 @@ export default function ProductionStockPage() {
                   {filteredOrders.map((item) => (
                     <tr key={item.id} className="hover:bg-gray-50/50 transition">
                       <td className="p-3 font-black text-gray-900">{item.product_name}</td>
-                      <td className="p-3 font-bold text-emerald-700">{item.stock.toLocaleString()}</td>
+                      <td className="p-3 font-bold text-emerald-700">{formatQuantity(item.stock)}</td>
                       <td className="p-3 font-bold text-amber-700">{item.unit_cost.toLocaleString('ar-EG', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ج.م</td>
                       <td className="p-3 font-bold text-gray-700">{item.total_cost.toLocaleString()} ج.م</td>
                       <td className="p-3">
@@ -780,8 +781,8 @@ export default function ProductionStockPage() {
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 border-b border-gray-100">
           <div className="rounded-xl bg-gray-50 p-3 text-xs font-bold text-gray-600">المنتجات الظاهرة: <span className="text-gray-900">{salesSummary.length}</span></div>
-          <div className="rounded-xl bg-blue-50 p-3 text-xs font-bold text-blue-700">إجمالي الكمية المباعة: <span className="font-black">{salesSummaryQuantity.toLocaleString()}</span></div>
-          <div className="rounded-xl bg-emerald-50 p-3 text-xs font-bold text-emerald-700">إجمالي قيمة المبيعات: <span className="font-black">{salesSummaryTotal.toLocaleString()} ج.م</span></div>
+          <div className="rounded-xl bg-blue-50 p-3 text-xs font-bold text-blue-700">إجمالي الكمية المباعة: <span className="font-black">{formatQuantity(salesSummaryQuantity)}</span></div>
+          {/* <div className="rounded-xl bg-emerald-50 p-3 text-xs font-bold text-emerald-700">إجمالي قيمة المبيعات: <span className="font-black">{salesSummaryTotal.toLocaleString()} ج.م</span></div> */}
         </div>
         <div className="overflow-x-auto p-4">
           <table className="w-full text-right text-xs">
@@ -799,9 +800,9 @@ export default function ProductionStockPage() {
                 <tr key={product.id} className="hover:bg-gray-50">
                   <td className="p-3 font-black text-gray-900">{product.product_name}</td>
                   <td className="p-3 font-bold text-blue-700">{product.salesCount.toLocaleString()}</td>
-                  <td className="p-3 font-black text-red-700">{product.soldQuantity.toLocaleString()}</td>
+                  <td className="p-3 font-black text-red-700">{formatQuantity(product.soldQuantity)}</td>
                   {/* <td className="p-3 font-black text-emerald-700">{product.salesTotal.toLocaleString()} ج.م</td> */}
-                  <td className="p-3 font-bold text-indigo-700">{product.stock.toLocaleString()}</td>
+                  <td className="p-3 font-bold text-indigo-700">{formatQuantity(product.stock)}</td>
                 </tr>
               ))}
               {!salesSummary.length && (
@@ -818,7 +819,7 @@ export default function ProductionStockPage() {
             <div className="flex justify-between items-center border-b pb-3">
               <div>
                 <h2 className="text-lg font-black text-gray-800">📜 سجل حركة المنتج: {historyModal.product.product_name}</h2>
-                <p className="text-xs text-gray-500 mt-1">الرصيد الحالي: <span className="font-black text-emerald-700">{historyModal.product.stock.toLocaleString()} طن</span></p>
+                <p className="text-xs text-gray-500 mt-1">الرصيد الحالي: <span className="font-black text-emerald-700">{formatQuantity(historyModal.product.stock)} طن</span></p>
               </div>
               <div className="flex items-center gap-3">
                 {isAdmin && (
@@ -843,19 +844,19 @@ export default function ProductionStockPage() {
             <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                 <p className="text-[10px] font-bold text-slate-700">رصيد أول المدة</p>
-                <p className="mt-1 text-base font-black text-slate-700">{getProductHistorySummary(historyModal.product).openingBalance.toLocaleString()} طن</p>
+                <p className="mt-1 text-base font-black text-slate-700">{formatQuantity(getProductHistorySummary(historyModal.product).openingBalance)} طن</p>
               </div>
               <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3">
                 <p className="text-[10px] font-bold text-emerald-700">إجمالي الإيداعات</p>
-                <p className="mt-1 text-base font-black text-emerald-700">{getProductHistorySummary(historyModal.product).additions.toLocaleString()} طن</p>
+                <p className="mt-1 text-base font-black text-emerald-700">{formatQuantity(getProductHistorySummary(historyModal.product).additions)} طن</p>
               </div>
               <div className="rounded-2xl border border-red-200 bg-red-50 p-3">
                 <p className="text-[10px] font-bold text-red-700">إجمالي المسحوبات</p>
-                <p className="mt-1 text-base font-black text-red-700">{getProductHistorySummary(historyModal.product).withdrawals.toLocaleString()} طن</p>
+                <p className="mt-1 text-base font-black text-red-700">{formatQuantity(getProductHistorySummary(historyModal.product).withdrawals)} طن</p>
               </div>
               <div className="rounded-2xl border border-blue-200 bg-blue-50 p-3">
                 <p className="text-[10px] font-bold text-blue-700">الرصيد الحالي</p>
-                <p className="mt-1 text-base font-black text-blue-700">{getProductHistorySummary(historyModal.product).currentBalance.toLocaleString()} طن</p>
+                <p className="mt-1 text-base font-black text-blue-700">{formatQuantity(getProductHistorySummary(historyModal.product).currentBalance)} طن</p>
               </div>
             </div>
 
@@ -889,8 +890,8 @@ export default function ProductionStockPage() {
                       <td className={`p-3 font-black ${item.quantity >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>{item.type}</td>
                       <td className="p-3 font-bold text-blue-700">{item.title}<div className="text-[10px] text-gray-500 mt-1">{item.notes}</div></td>
                       <td className="p-3 font-bold text-violet-700">{item.customerName || '—'}</td>
-                      <td className={`p-3 font-black ${item.quantity >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>{item.quantity >= 0 ? '+' : '-'} {Math.abs(item.quantity).toLocaleString()} طن</td>
-                      <td className="p-3 font-black text-indigo-700">{item.balance.toLocaleString()} طن</td>
+                      <td className={`p-3 font-black ${item.quantity >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>{item.quantity >= 0 ? '+' : '-'} {formatQuantity(Math.abs(item.quantity))} طن</td>
+                      <td className="p-3 font-black text-indigo-700">{formatQuantity(item.balance)} طن</td>
                       <td className="p-3 font-bold text-gray-700">
                         <div>{item.actor}</div>
                         {isAdmin && (
@@ -984,7 +985,7 @@ export default function ProductionStockPage() {
                     <tr key={sale.id} className="hover:bg-gray-50">
                       <td className="p-3 font-bold text-blue-700">{sale.invoiceNumber}</td>
                       <td className="p-3 font-bold text-gray-800">{sale.customer}</td>
-                      <td className="p-3 font-black text-red-700">{sale.quantity.toLocaleString()}</td>
+                      <td className="p-3 font-black text-red-700">{formatQuantity(sale.quantity)}</td>
                       <td className="p-3 text-gray-600">{sale.unitPrice.toLocaleString()} ج.م</td>
                       <td className="p-3 font-black text-emerald-700">{sale.total.toLocaleString()} ج.م</td>
                       <td className="p-3">{sale.paymentType}</td>
@@ -1017,7 +1018,7 @@ export default function ProductionStockPage() {
             <p className="text-xs text-gray-500">{historyEditModal.product?.product_name}</p>
             <input
               type="number"
-              step="any"
+              step="0.001"
               value={historyEditQuantity}
               onChange={(event) => setHistoryEditQuantity(event.target.value)}
               className="w-full border border-gray-200 p-3 rounded-xl text-sm text-black"

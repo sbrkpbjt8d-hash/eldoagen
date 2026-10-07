@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
+import { addQuantities, roundQuantity } from '../../lib/quantity';
 import { useReactToPrint } from 'react-to-print';
 const currentUserName = localStorage.getItem('userName') || 'مسؤول النظام';
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
@@ -245,14 +246,15 @@ export default function SalesInvoicesPage() {
     const stockRecord = stockRecords.find(record => normalizeProductName(record.product_name || record.name) === normalizedName);
     if (!stockRecord) return;
 
-    const currentStock = Number(stockRecord.stock || 0);
-    const nextStock = currentStock + quantityChange;
+    const normalizedChange = roundQuantity(quantityChange);
+    const currentStock = roundQuantity(stockRecord.stock || 0);
+    const nextStock = addQuantities(currentStock, normalizedChange);
     await pb.collection('products_stock').update(stockRecord.id, {
       stock: nextStock,
     });
     await pb.collection('product_stock_transactions').create({
       product_name: stockRecord.product_name || stockRecord.name || productName,
-      quantity: quantityChange,
+      quantity: normalizedChange,
       movement_type: movement.type || (quantityChange < 0 ? 'sale' : 'return'),
       title: movement.title || (quantityChange < 0 ? 'سحب من فاتورة بيع' : 'إضافة للمخزن'),
       notes: movement.notes || '-',
@@ -1131,8 +1133,8 @@ const deleteInvoiceMutation = useMutation({
                       <td className="p-3">
                         <input
                           type="number"
-                          step="any"
-                          min="0.0001"
+                          step={p.itemType === 'material' ? 'any' : '0.001'}
+                          min={p.itemType === 'material' ? '0.0001' : '0.001'}
                           value={p.qty}
                           onChange={(e) => handleQtyChange(itemKey, e.target.value)}
                           className="w-20 bg-gray-50 border border-gray-200 rounded-xl px-2 py-1 text-xs font-bold text-center focus:outline-none focus:ring-2 focus:ring-emerald-500"
