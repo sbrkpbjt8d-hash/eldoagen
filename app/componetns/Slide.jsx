@@ -106,9 +106,11 @@ export default function Sidebar() {
 
               {openRaw && (
                 <div className="mr-3 mt-2 space-y-1 border-r-2 border-blue-500/70 pr-3 pb-2">
+                     <Link href="/re" className={navLinkClass('/re')}>التقارير</Link>
                   <Link href="/moashe/khamatMoashe" className={navLinkClass('/moashe/khamatMoashe')}>الخامات </Link>
                   <Link href="/moashe/products" className={navLinkClass('/moashe/products')}>المنتجات </Link>
                   <Link href="/moashe/orders" className={navLinkClass('/moashe/orders')}>امر تصنيع</Link>
+                  <Link href="/moashe/analytics" className={navLinkClass('/moashe/analytics')}>تحليلات المصنع</Link>
                   <Link href="/moashe/products-stock" className={navLinkClass('/moashe/products-stock')}>مخزن المنتجات</Link>
                   <Link href="/purchase-invoices" className={navLinkClass('/purchase-invoices')}>فواتير الشراء </Link>
                   <Link href="/moashe/sales_invoices" className={navLinkClass('/moashe/sales_invoices')}>فواتير البيع </Link>
