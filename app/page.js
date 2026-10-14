@@ -53,7 +53,7 @@ export default function Home() {
           <div className="relative mx-auto flex w-[88%] max-w-[540px] flex-col items-center justify-center sm:w-[76%] lg:w-full" aria-label="مصنع أعلاف الزعيم">
             <div className="absolute -right-5 top-[5%] z-[1] bg-[#b84335] px-3.5 py-2.5 text-[11px] font-extrabold text-[#fffdf8] sm:-right-7">من أرضنا.. لغذاءٍ أفضل</div>
             <div className="relative aspect-[4/3] rounded-2xl w-full overflow-hidden border border-[#142c4533] bg-[#142c45] shadow-[16px_16px_0_#eadbb7]">
-              <Image src="/factory.jpg" alt="صورة لمصنع أعلاف" fill priority sizes="(max-width: 760px) 88vw, 42vw" className="object-cover  brightness-110 contrast-105" />
+              <Image src="/boster.jpg" alt="صورة لمصنع أعلاف" fill priority sizes="(max-width: 760px) 88vw, 42vw" className="object-cover  brightness-110 contrast-105" />
               <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-[#0e2237]/80 via-[#0e2237]/25 to-transparent px-4 pb-4 pt-16 text-xs font-bold text-white sm:px-6 sm:pb-6">مصنع أعلاف الزعيم</div>
             </div>
             <div className="mt-5 flex w-full justify-between text-[11px] font-bold text-[#6d7580]"><span className="text-[#b84335]">01</span><span>رعاية تبدأ من العلف</span></div>
@@ -117,7 +117,7 @@ export default function Home() {
 
           <figure className="m-0">
             <div className="relative aspect-[4/3] overflow-hidden bg-[#142c45] shadow-[14px_14px_0_#eadbb7]">
-              <Image src="/factory.jpg" alt="منشأة لإنتاج الأعلاف" fill sizes="(max-width: 1024px) 100vw, 45vw" className="object-cover brightness-125 contrast-110" />
+              <Image src="/bags.jpg" alt="منشأة لإنتاج الأعلاف" fill sizes="(max-width: 1024px) 100vw, 45vw" className="object-cover brightness-125 contrast-110" />
               <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-[#0e2237]/90 to-transparent px-5 pb-5 pt-16 text-sm font-bold text-white sm:px-7 sm:pb-7">منشأة لإنتاج الأعلاف</div>
             </div>
             <figcaption className="mt-4 text-xs leading-6 text-[#65717d]">الرعاية الجيدة تبدأ ببيئة مناسبة ومتابعة مستمرة لاحتياجات القطيع.</figcaption>

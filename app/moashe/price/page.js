@@ -6,17 +6,17 @@ import { pb } from '../../lib/pocketbase'; // تأكد من مطابقة مسا�
 
 // البيانات الافتراضية كاملة (الأسماء، التعبئة، الأسعار، التصنيف)
 const initialFeedData = [
-  { id: 'p1', name: 'سوبر بادي ۲۳ %', weight: '25 / 50 كجم', price: 24500, category: 'poultry' },
-  { id: 'p2', name: 'سوبر نامي ۲۱,٥ %', weight: '25 / 50 كجم', price: 24400, category: 'poultry' },
-  { id: 'p3', name: 'سوبر ناهي ۱۹ %', weight: '25 / 50 كجم', price: 24250, category: 'poultry' },
-  { id: 'p4', name: 'سوبر بادي ۲۳ %', weight: '10 كجم', price: 24700, category: 'poultry' },
-  { id: 'p5', name: 'بادي نامي ۲۱,٥ %', weight: '25 كجم', price: 23000, category: 'poultry' },
-  { id: 'p6', name: 'بادي نامي ۲۱,٥ %', weight: '10 كجم', price: 23200, category: 'poultry' },
-  { id: 'p7', name: 'النور ( تربية منزلية ) ۲۱ %', weight: '25 كجم', price: 21500, category: 'poultry' },
-  { id: 'p8', name: 'النور ( تربية منزلية ) ۲۱ %', weight: '10 كجم', price: 21700, category: 'poultry' },
-  { id: 'p9', name: 'حمام ۱۷ %', weight: '10 كجم', price: 20000, category: 'poultry' },
-  { id: 'p10', name: 'بياض ۱4 %', weight: '10 كجم', price: 18700, category: 'poultry' },
-  { id: 'p11', name: 'بياض ۱4 %', weight: '25 كجم', price: 18500, category: 'poultry' },
+  { id: 'p1', name: 'سوبر بادي ۲۳ %', weight: '25 / 50 كجم', price: 24800, category: 'poultry' },
+  { id: 'p2', name: 'سوبر نامي ۲۱,٥ %', weight: '25 / 50 كجم', price: 24700, category: 'poultry' },
+  { id: 'p3', name: 'سوبر ناهي ۱۹ %', weight: '25 / 50 كجم', price: 24550, category: 'poultry' },
+  { id: 'p4', name: 'سوبر بادي ۲۳ %', weight: '10 كجم', price: 25000, category: 'poultry' },
+  { id: 'p5', name: 'بادي نامي ۲۱,٥ %', weight: '25 كجم', price: 23300, category: 'poultry' },
+  { id: 'p6', name: 'بادي نامي ۲۱,٥ %', weight: '10 كجم', price: 23500, category: 'poultry' },
+  { id: 'p7', name: 'النور ( تربية منزلية ) ۲۱ %', weight: '25 كجم', price: 21800, category: 'poultry' },
+  { id: 'p8', name: 'النور ( تربية منزلية ) ۲۱ %', weight: '10 كجم', price: 22000, category: 'poultry' },
+  { id: 'p9', name: 'حمام ۱۷ %', weight: '10 كجم', price: 20300, category: 'poultry' },
+  { id: 'p10', name: 'بياض ۱4 %', weight: '10 كجم', price: 19000, category: 'poultry' },
+  { id: 'p11', name: 'بياض ۱4 %', weight: '25 كجم', price: 18800, category: 'poultry' },
 
   { id: 'l1', name: 'الزعيم تسمين ۱٦ %', weight: '( 50ك / 5ك )', price: 17150, category: 'livestock' },
   { id: 'l2', name: 'الزعيم تسمين ۱۴ %', weight: '( 50ك / 5ك )', price: 16850, category: 'livestock' },
