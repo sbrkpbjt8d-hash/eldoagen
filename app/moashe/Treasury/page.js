@@ -17,6 +17,9 @@ export default function TreasuryPage() {
   const [cashDepositFormOpen, setCashDepositFormOpen] = useState(false);
   const [cashDepositAmount, setCashDepositAmount] = useState('');
   const [cashDepositDescription, setCashDepositDescription] = useState('');
+  const [cashWithdrawalFormOpen, setCashWithdrawalFormOpen] = useState(false);
+  const [cashWithdrawalAmount, setCashWithdrawalAmount] = useState('');
+  const [cashWithdrawalReason, setCashWithdrawalReason] = useState('');
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [confirmation, setConfirmation] = useState(null);
 
@@ -95,7 +98,7 @@ export default function TreasuryPage() {
     queryFn: async () => {
       return await pb.collection('client_transactions').getFullList({
         filter: '(destination = "treasury" || destination = "خزنة" || destination = "كاش" || destination = "") && type != "opening_balance" && type != "opening"',
-        expand: 'client_id,clientsmoashe,client',
+        expand: 'client_id',
       }).catch(() => []);
     },
   });
@@ -317,6 +320,46 @@ export default function TreasuryPage() {
     onError: (err) => showToast('❌ فشل تسجيل الإيداع: ' + err.message, 'error'),
   });
 
+  const cashWithdrawalMutation = useMutation({
+    mutationFn: async () => {
+      const amount = Number(cashWithdrawalAmount);
+      const reason = cashWithdrawalReason.trim();
+      if (!Number.isFinite(amount) || amount <= 0) throw new Error('اكتب مبلغ سحب صحيح.');
+      if (!reason) throw new Error('اكتب سبب السحب.');
+
+      const actorName = currentUser?.name || currentUser?.email || 'مستخدم النظام';
+      const date = new Date().toISOString();
+      const treasuryTargetBalance = roundMoney(currentBalance - amount);
+      const transaction = await pb.collection('treasury_transactions').create({
+        type: 'purchase',
+        movement_type: 'cash_withdrawal',
+        source_type: 'treasury',
+        amount,
+        title: 'سحب نقدي من الخزنة',
+        notes: reason,
+        date,
+        actor_name: actorName,
+      });
+
+      if (treasury?.id) {
+        await pb.collection('treasury').update(treasury.id, { balance: treasuryTargetBalance });
+      } else {
+        await pb.collection('treasury').create({ opening_balance: 0, balance: treasuryTargetBalance });
+      }
+
+      return transaction;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['treasury'] });
+      queryClient.invalidateQueries({ queryKey: ['treasury_transactions_treasury'] });
+      setCashWithdrawalAmount('');
+      setCashWithdrawalReason('');
+      setCashWithdrawalFormOpen(false);
+      showToast('تم تسجيل السحب وتحديث رصيد الخزنة.');
+    },
+    onError: (err) => showToast('❌ فشل تسجيل السحب: ' + err.message, 'error'),
+  });
+
   // تصفية المصروفات
   const formattedExpenses = expenses
     .filter(exp => {
@@ -368,7 +411,7 @@ export default function TreasuryPage() {
       return true;
     })
     .map(tx => {
-      const expandedClient = tx.expand?.client_id || tx.expand?.clientsmoashe || tx.expand?.client;
+      const expandedClient = tx.expand?.client_id;
       
       const clientName = 
         expandedClient?.name || 
@@ -564,6 +607,27 @@ export default function TreasuryPage() {
       actor: transaction.actor_name || 'غير معروف',
     }));
 
+  const formattedCashWithdrawals = treasuryTransactions
+    .filter(transaction => String(transaction.movement_type || '').toLowerCase() === 'cash_withdrawal' && String(transaction.source_type || '') === 'treasury')
+    .filter(transaction => {
+      const transactionDate = String(transaction.date || transaction.created || '').slice(0, 10);
+      if (startDate && transactionDate < startDate) return false;
+      if (endDate && transactionDate > endDate) return false;
+      return true;
+    })
+    .map(transaction => ({
+      id: transaction.id,
+      collection: 'treasury_transactions',
+      date: transaction.date || transaction.created,
+      created: transaction.created,
+      movementType: 'cash_withdrawal',
+      title: transaction.title || 'سحب نقدي من الخزنة',
+      amount: Math.abs(Number(transaction.amount || 0)),
+      signedAmount: -Math.abs(Number(transaction.amount || 0)),
+      notes: transaction.notes || 'سحب نقدي',
+      actor: transaction.actor_name || 'غير معروف',
+    }));
+
   const getTransactionDate = (transaction) => {
     return transaction.date || transaction.created;
   };
@@ -588,6 +652,7 @@ const sortedAscTransactions = [
   ...formattedBankDeposits,
   ...formattedBankTransfers,
   ...formattedCashDeposits,
+  ...formattedCashWithdrawals,
 ].map((transaction) => ({
   ...transaction,
   date: getTransactionDate(transaction),
@@ -675,7 +740,10 @@ const currentBalance = allTransactions.length > 0
           <p className="text-xs text-gray-500 mt-1">متابعة النقدية، تحصيلات العملاء، المبيعات، الموردين، المصروفات، السلف، ومرتبات الموظفين</p>
         </div>
         <div className="flex items-center gap-2">
-        <button onClick={() => setCashDepositFormOpen(true)} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-emerald-700">
+        <button onClick={() => { setCashWithdrawalFormOpen((open) => !open); setCashDepositFormOpen(false); }} className="bg-rose-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-rose-700">
+          سحب
+        </button>
+        <button onClick={() => { setCashDepositFormOpen(true); setCashWithdrawalFormOpen(false); }} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-emerald-700">
           إيداع في الخزنة
         </button>
         <button onClick={() => { 
@@ -700,6 +768,42 @@ const currentBalance = allTransactions.length > 0
             <input type="text" value={cashDepositDescription} onChange={(event) => setCashDepositDescription(event.target.value)} placeholder="وصف الإيداع" className="border border-gray-200 bg-white p-3 rounded-xl text-xs outline-none" required />
             <button type="submit" disabled={cashDepositMutation.isPending} className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-300 text-white p-3 rounded-xl text-xs font-black">
               {cashDepositMutation.isPending ? 'جارٍ الحفظ...' : 'حفظ الإيداع'}
+            </button>
+          </form>
+        </div>
+      )}
+
+      {cashWithdrawalFormOpen && (
+        <div className="bg-rose-50 p-6 rounded-3xl shadow-xl border border-rose-100">
+          <div className="flex items-center justify-between border-b border-rose-100 pb-3">
+            <div>
+              <h2 className="text-base font-black text-gray-800">سحب نقدي من الخزنة</h2>
+              <p className="mt-1 text-xs text-gray-600">الرصيد المتاح: {currentBalance.toLocaleString()} ج.م</p>
+            </div>
+            <button type="button" onClick={() => setCashWithdrawalFormOpen(false)} className="text-gray-500 hover:text-gray-800 text-sm font-bold">إلغاء</button>
+          </div>
+          <form onSubmit={(event) => { event.preventDefault(); cashWithdrawalMutation.mutate(); }} className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
+            <input
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={cashWithdrawalAmount}
+              onChange={(event) => setCashWithdrawalAmount(event.target.value)}
+              placeholder="مبلغ السحب"
+              className="border border-gray-200 bg-white p-3 rounded-xl text-xs font-bold outline-none"
+              required
+              autoFocus
+            />
+            <input
+              type="text"
+              value={cashWithdrawalReason}
+              onChange={(event) => setCashWithdrawalReason(event.target.value)}
+              placeholder="سبب السحب"
+              className="border border-gray-200 bg-white p-3 rounded-xl text-xs outline-none"
+              required
+            />
+            <button type="submit" disabled={cashWithdrawalMutation.isPending} className="bg-rose-600 hover:bg-rose-700 disabled:bg-gray-300 text-white p-3 rounded-xl text-xs font-black">
+              {cashWithdrawalMutation.isPending ? 'جارٍ الحفظ...' : 'تأكيد السحب'}
             </button>
           </form>
         </div>
@@ -790,6 +894,7 @@ const currentBalance = allTransactions.length > 0
             <option value="bank_deposit">إيداع في بنك</option>
             <option value="bank_transfer">تحويل من بنك إلى الخزنة</option>
             <option value="cash_deposit">إيداع في الخزنة</option>
+            <option value="cash_withdrawal">سحب من الخزنة</option>
           </select>
         </div>
         <div>
@@ -924,6 +1029,10 @@ const currentBalance = allTransactions.length > 0
                     ) : tx.movementType === 'cash_deposit' ? (
                       <span className="bg-teal-100 text-teal-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
                         📥 إيداع في الخزنة (+)
+                      </span>
+                    ) : tx.movementType === 'cash_withdrawal' ? (
+                      <span className="bg-rose-100 text-rose-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
+                        📤 سحب من الخزنة (-)
                       </span>
                     ) : (
                       <span className="bg-red-100 text-red-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">

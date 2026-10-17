@@ -48,6 +48,7 @@ export default function ProductsPage() {
   const isAdmin = checkIfAdmin();
 
   const [selectedMaterialLog, setSelectedMaterialLog] = useState(null);
+  const [selectedAdjustmentMaterial, setSelectedAdjustmentMaterial] = useState(null);
 
   const [confirmModal, setConfirmModal] = useState({
     isOpen: false,
@@ -191,6 +192,7 @@ export default function ProductsPage() {
         old_stock: oldStock,
         new_stock: newStock,
         reason: adjustmentReason.trim(),
+        source_type: 'manual_adjustment',
         actor_name: currentUserName(),
         date: new Date().toISOString(),
       });
@@ -287,9 +289,24 @@ export default function ProductsPage() {
   };
 
   const filteredAdjustments = adjustments.filter((adjustment) => {
+    const isProductionAdjustment = [
+      'production_order',
+      'production_order_cancelled',
+      'production_order_delete',
+    ].includes(adjustment.source_type) || /(?:استهلاك في أمر تصنيع|إلغاء أمر تصنيع)/i.test(String(adjustment.reason || ''));
+    const isManualAdjustment = adjustment.source_type === 'manual_adjustment' || (!adjustment.source_type && !isProductionAdjustment);
     const dateValue = String(adjustment.date || adjustment.created || '').slice(0, 10);
-    return (!adjustmentStartDate || dateValue >= adjustmentStartDate) && (!adjustmentEndDate || dateValue <= adjustmentEndDate);
+    return isManualAdjustment && (!adjustmentStartDate || dateValue >= adjustmentStartDate) && (!adjustmentEndDate || dateValue <= adjustmentEndDate);
   });
+
+  const selectedMaterialAdjustments = selectedAdjustmentMaterial
+    ? filteredAdjustments
+      .filter((adjustment) => (
+        String(adjustment.material_id || '') === String(selectedAdjustmentMaterial.id || '') ||
+        (!adjustment.material_id && String(adjustment.material_name || '').trim() === String(selectedAdjustmentMaterial.name || '').trim())
+      ))
+      .sort((first, second) => new Date(second.date || second.created || 0) - new Date(first.date || first.created || 0))
+    : [];
 
   const materialLogRows = selectedMaterialLog ? (() => {
     const materialId = String(selectedMaterialLog.id || '');
@@ -502,6 +519,61 @@ export default function ProductsPage() {
         </div>
       )}
 
+      {selectedAdjustmentMaterial && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={() => setSelectedAdjustmentMaterial(null)}>
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="manual-adjustments-title"
+            className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-3xl border border-gray-100 bg-white p-6 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-4 flex items-center justify-between border-b border-gray-200 pb-3">
+              <div>
+                <h3 id="manual-adjustments-title" className="text-lg font-black text-gray-800">سجل تسويات: {selectedAdjustmentMaterial.name}</h3>
+                <p className="mt-1 text-xs text-gray-500">التسويات اليدوية بالزيادة والنقص فقط.</p>
+              </div>
+              <button type="button" onClick={() => setSelectedAdjustmentMaterial(null)} className="text-xl font-black text-gray-400 hover:text-gray-700" aria-label="إغلاق سجل التسويات">✕</button>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-155 text-right text-xs">
+                <thead className="bg-gray-100 text-gray-600">
+                  <tr>
+                    <th className="p-3">التاريخ</th>
+                    <th className="p-3">نوع التسوية</th>
+                    <th className="p-3">الكمية</th>
+                    <th className="p-3">قبل</th>
+                    <th className="p-3">بعد</th>
+                    <th className="p-3">السبب</th>
+                    <th className="p-3">بواسطة</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {selectedMaterialAdjustments.length ? selectedMaterialAdjustments.map((adjustment) => {
+                    const quantity = Number(adjustment.quantity || 0);
+                    return (
+                      <tr key={adjustment.id} className="hover:bg-gray-50">
+                        <td className="p-3 whitespace-nowrap">{String(adjustment.date || adjustment.created || '').slice(0, 10)}</td>
+                        <td className={`p-3 font-black ${quantity >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>{quantity >= 0 ? 'زيادة يدوية' : 'نقص يدوي'}</td>
+                        <td className={`p-3 font-bold ${quantity >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>{quantity >= 0 ? '+' : '-'}{formatNumber(Math.abs(quantity))} طن</td>
+                        <td className="p-3">{formatNumber(adjustment.old_stock)}</td>
+                        <td className="p-3 font-bold">{formatNumber(adjustment.new_stock)}</td>
+                        <td className="p-3 text-gray-600">{adjustment.reason || 'بدون سبب'}</td>
+                        <td className="p-3 font-bold text-gray-700">{adjustment.actor_name || 'غير معروف'}</td>
+                      </tr>
+                    );
+                  }) : (
+                    <tr>
+                      <td colSpan="7" className="p-8 text-center text-gray-400">لا توجد تسويات يدوية لهذه الخامة في الفترة المحددة.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      )}
+
       <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-3 border-b pb-4">
         <h1 className="text-2xl font-black text-gray-800">📦 إدارة خامات الدواجن</h1>
         <div className="flex flex-wrap gap-2 items-center">
@@ -665,10 +737,10 @@ export default function ProductsPage() {
                   <span className="text-base font-black text-gray-900">{product.name}</span>
                   <button
                     type="button"
-                    onClick={() => setSelectedMaterialLog(product)}
+                    onClick={() => setSelectedAdjustmentMaterial(product)}
                     className="px-3 py-1 rounded-xl text-xs font-bold transition flex items-center gap-1 bg-blue-600 text-white hover:bg-blue-700 shadow-sm"
                   >
-                    👁️ سجل
+                    👁️ سجل التسوية
                   </button>
                 </div>
 

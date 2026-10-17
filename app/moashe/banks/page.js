@@ -4,6 +4,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
 import { useReactToPrint } from 'react-to-print';
 
+const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+
 export default function BanksPage() {
   const queryClient = useQueryClient();
   const [searchTerm, setSearchTerm] = useState('');
@@ -34,6 +36,10 @@ export default function BanksPage() {
   const [bankDepositBankId, setBankDepositBankId] = useState('');
   const [bankDepositAmount, setBankDepositAmount] = useState('');
   const [bankDepositDescription, setBankDepositDescription] = useState('');
+  const [bankWithdrawalModal, setBankWithdrawalModal] = useState(false);
+  const [bankWithdrawalBankId, setBankWithdrawalBankId] = useState('');
+  const [bankWithdrawalAmount, setBankWithdrawalAmount] = useState('');
+  const [bankWithdrawalReason, setBankWithdrawalReason] = useState('');
 
   // حالات نافذة عرض سجل حركات البنك
   const [historyModal, setHistoryModal] = useState({ isOpen: false, bank: null });
@@ -397,6 +403,65 @@ export default function BanksPage() {
       showFeedback('✅ تم الإيداع وتحديث رصيد البنك وتسجيل الحركة.', 'success');
     },
     onError: (error) => showFeedback('❌ فشل تسجيل الإيداع: ' + error.message, 'error'),
+  });
+
+  const bankWithdrawalMutation = useMutation({
+    mutationFn: async () => {
+      const bank = banks.find((item) => item.id === bankWithdrawalBankId);
+      const amount = Number(bankWithdrawalAmount);
+      const reason = bankWithdrawalReason.trim();
+
+      if (!bank) throw new Error('اختر البنك المراد السحب منه.');
+      if (!Number.isFinite(amount) || amount <= 0) throw new Error('اكتب مبلغ سحب صحيح.');
+      if (!reason) throw new Error('اكتب سبب السحب.');
+
+      const previousBalance = getBankLedgerBalance(bank);
+
+      const actorName = currentUserName();
+      const date = new Date().toISOString();
+      const transaction = await pb.collection('treasury_transactions').create({
+        type: 'purchase',
+        movement_type: 'bank_adjustment',
+        source_type: 'bank',
+        bank_id: bank.id,
+        amount: -amount,
+        title: `سحب من البنك: ${bank.name}`,
+        notes: reason,
+        date,
+        actor_name: actorName,
+      });
+
+      try {
+        await pb.collection('banks').update(bank.id, {
+          balance: roundMoney(previousBalance - amount),
+          actor_name: actorName,
+        });
+      } catch (error) {
+        await pb.collection('treasury_transactions').delete(transaction.id).catch(() => {});
+        throw error;
+      }
+
+      return transaction;
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['banks'] }),
+        queryClient.invalidateQueries({ queryKey: ['treasury_transactions_banks'] }),
+      ]);
+      setBankWithdrawalModal(false);
+      setBankWithdrawalBankId('');
+      setBankWithdrawalAmount('');
+      setBankWithdrawalReason('');
+      showFeedback('✅ تم تسجيل السحب وتحديث رصيد البنك.', 'success');
+    },
+    onError: (error) => {
+      const validationDetails = Object.values(error?.response?.data?.data || {})
+        .map((fieldError) => fieldError.message)
+        .filter(Boolean)
+        .join('، ');
+      const errorMessage = validationDetails || error?.response?.data?.message || error.message;
+      showFeedback('❌ فشل تسجيل السحب: ' + errorMessage, 'error');
+    },
   });
 
   // حذف بنك (للمسؤولين فقط)
@@ -837,7 +902,7 @@ export default function BanksPage() {
           </select>
         </div>
 
-        <div className="h-6 w-[1px] bg-gray-300 mx-1 hidden xl:block"></div>
+        <div className="h-6 w-px bg-gray-300 mx-1 hidden xl:block"></div>
 
         {/* مربعات الإجماليات مصغرة في نفس الشريط العلوي */}
         <div className="flex items-center gap-2 flex-wrap mr-auto">
@@ -1010,6 +1075,43 @@ export default function BanksPage() {
         </div>
       )}
 
+      {bankWithdrawalModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md space-y-4 rounded-3xl bg-white p-6 shadow-2xl">
+            <div className="flex items-center justify-between border-b pb-3">
+              <div>
+                <h3 className="text-base font-black text-gray-800">سحب من البنك</h3>
+                <p className="mt-1 text-xs text-gray-500">يسجل السحب في حركة البنك ويخصمه من الرصيد.</p>
+              </div>
+              <button type="button" onClick={() => setBankWithdrawalModal(false)} className="text-lg font-bold text-gray-400 hover:text-gray-700" aria-label="إغلاق نافذة السحب">✕</button>
+            </div>
+            <form onSubmit={(event) => { event.preventDefault(); bankWithdrawalMutation.mutate(); }} className="space-y-3">
+              <div>
+                <label className="text-xs font-bold text-gray-700">البنك</label>
+                <select value={bankWithdrawalBankId} onChange={(event) => setBankWithdrawalBankId(event.target.value)} className="mt-1 w-full rounded-xl border p-3 text-xs outline-none focus:border-rose-500" required>
+                  <option value="">اختر البنك</option>
+                  {banks.map((bank) => <option key={bank.id} value={bank.id}>{bank.name} · {getBankLedgerBalance(bank).toLocaleString()} ج.م</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-bold text-gray-700">المبلغ</label>
+                <input type="number" min="0.01" step="0.01" value={bankWithdrawalAmount} onChange={(event) => setBankWithdrawalAmount(event.target.value)} placeholder="مبلغ السحب" className="mt-1 w-full rounded-xl border p-3 text-xs font-bold outline-none focus:border-rose-500" required autoFocus />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-gray-700">سبب السحب</label>
+                <input type="text" value={bankWithdrawalReason} onChange={(event) => setBankWithdrawalReason(event.target.value)} placeholder="اكتب سبب السحب" className="mt-1 w-full rounded-xl border p-3 text-xs outline-none focus:border-rose-500" required />
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button type="button" onClick={() => setBankWithdrawalModal(false)} className="flex-1 rounded-xl bg-gray-100 py-3 text-xs font-bold text-gray-700">إلغاء</button>
+                <button type="submit" disabled={bankWithdrawalMutation.isPending || banks.length === 0} className="flex-1 rounded-xl bg-rose-600 py-3 text-xs font-bold text-white hover:bg-rose-700 disabled:bg-gray-300">
+                  {bankWithdrawalMutation.isPending ? 'جارٍ الحفظ...' : 'تأكيد السحب'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* الهيدر */}
       <div className="border-b pb-4 flex justify-between items-center">
         <div>
@@ -1017,6 +1119,7 @@ export default function BanksPage() {
           <p className="text-sm text-gray-500">متابعة الحسابات البنكية، الأرصدة، وسجل الحركات المرتبطة بها</p>
         </div>
         <div className="flex gap-2">
+          <button onClick={() => setBankWithdrawalModal(true)} className="rounded-xl bg-rose-600 px-4 py-2 text-xs font-bold text-white hover:bg-rose-700">سحب</button>
           <button onClick={() => setBankDepositModal(true)} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold">إيداع</button>
           <button onClick={() => setTransferModal(true)} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-bold">↔️ تحويل</button>
           <button onClick={() => { queryClient.invalidateQueries({ queryKey: ['banks'] }); queryClient.invalidateQueries({ queryKey: ['treasury'] }); }} className="bg-gray-100 text-gray-700 px-4 py-2 rounded-xl text-xs font-bold">🔄 تحديث</button>
