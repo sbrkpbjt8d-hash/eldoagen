@@ -4,7 +4,7 @@ const getPocketBaseUrl = () => {
   if (typeof window !== 'undefined') {
     // بياخد الـ IP بتاع جهازك تلقائياً سواء فتحت من اللابتوب أو من الموبايل
     const hostname = window.location.hostname;
-    return `http://${hostname}:8090`;
+    return `http://187.124.18.27:8090`;
   }
   return 'http://127.0.0.1:8090';
 };
