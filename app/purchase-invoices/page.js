@@ -84,14 +84,19 @@ export default function PurchaseInvoicesPage() {
       const supplier = suppliers.find(item => item.id === form.supplierId);
       if (!supplier) throw new Error('اختر المورد أولاً');
       const oldInvoice = editingInvoice;
+      const stockAfterReversal = new Map(
+        materials.map(material => [material.id, Number(material.stock ?? 0)])
+      );
 
       // 1. في حالة التعديل: عكس التأثير القديم على المخزون ورصيد المورد
       if (oldInvoice) {
         for (const item of oldInvoice.items || []) {
           const material = materials.find(record => record.id === item.materialId);
           if (material) {
+            const reversedStock = (stockAfterReversal.get(material.id) ?? 0) - Number(item.qty || 0);
+            stockAfterReversal.set(material.id, reversedStock);
             await pb.collection('khamat_moashe').update(material.id, {
-              stock: Math.max(0, Number(material.stock || 0) - Number(item.qty || 0))
+              stock: reversedStock
             });
           }
         }
@@ -127,11 +132,14 @@ export default function PurchaseInvoicesPage() {
       for (const item of form.items) {
         const material = materials.find(record => record.id === item.materialId);
         if (material) {
-          const oldStock = Number(material.stock || 0);
+          const oldStock = stockAfterReversal.get(material.id) ?? Number(material.stock ?? 0);
           const qty = Number(item.qty || 0);
           const price = Number(item.price || 0);
           const newStock = oldStock + qty;
-          const averagePrice = newStock ? ((oldStock * Number(material.price || 0)) + qty * price) / newStock : price;
+          const averagePrice = oldStock > 0
+            ? ((oldStock * Number(material.price || 0)) + qty * price) / newStock
+            : price;
+          stockAfterReversal.set(material.id, newStock);
           await pb.collection('khamat_moashe').update(material.id, {
             stock: newStock,
             price: averagePrice
@@ -173,7 +181,7 @@ export default function PurchaseInvoicesPage() {
         const material = materials.find(record => record.id === item.materialId);
         if (material) {
           await pb.collection('khamat_moashe').update(material.id, {
-            stock: Math.max(0, Number(material.stock || 0) - Number(item.qty || 0))
+            stock: Number(material.stock ?? 0) - Number(item.qty || 0)
           });
         }
       }

@@ -6,7 +6,6 @@ import { addQuantities, formatQuantity, roundQuantity } from '../../lib/quantity
 import toast, { Toaster } from 'react-hot-toast';
 
 export default function ProductionOrdersPage() {
-  const STOCK_EPSILON = 1e-9;
   const queryClient = useQueryClient();
   const [selectedProduct, setSelectedProduct] = useState('');
   const [productionQty, setProductionQty] = useState('');
@@ -101,7 +100,7 @@ export default function ProductionOrdersPage() {
         const matInfo = materials.find(m => m.id === matId);
         const qtyPerUnit = Number(item.quantity_needed || item.quantity || 0);
         const totalNeeded = qtyPerUnit * normalizedQty;
-        const currentStock = Number(matInfo?.stock || matInfo?.quantity || 0);
+        const currentStock = Number(matInfo?.stock ?? matInfo?.quantity ?? 0);
         const newStock = currentStock - totalNeeded;
 
         await pb.collection('khamat_moashe').update(matId, {
@@ -200,7 +199,7 @@ export default function ProductionOrdersPage() {
         if (matInfo) {
           const qtyPerUnit = Number(item.quantity_needed || item.quantity || 0);
           const totalToRestore = qtyPerUnit * qtyProduced;
-          const currentStock = Number(matInfo.stock || matInfo.quantity || 0);
+          const currentStock = Number(matInfo.stock ?? matInfo.quantity ?? 0);
           const newStock = currentStock + totalToRestore;
 
           await pb.collection('khamat_moashe').update(matId, {
@@ -316,20 +315,24 @@ export default function ProductionOrdersPage() {
     for (const item of currentRecipe) {
       const matId = item.raw_material_id || item.material_id;
       const matInfo = materials.find(m => m.id === matId);
-      const qtyPerUnit = Number(item.quantity_needed || item.quantity || 0);
-      const totalNeeded = qtyPerUnit * qtyToProduce;
-      const availableStock = matInfo ? Number(matInfo.stock || matInfo.quantity || 0) : 0;
-
-      if (!matInfo || availableStock + STOCK_EPSILON < totalNeeded) {
-        toast.error(`الخامة "${matInfo?.name || 'غير معروفة'}" غير متوفرة بالكمية الكافية! (المتوفر: ${availableStock}, المطلوب: ${totalNeeded})`);
+      if (!matInfo) {
+        toast.error(`الخامة "${item.material_name || 'غير معروفة'}" غير مسجلة في مخزن الخامات.`);
         return;
       }
     }
 
+    const hasShortage = currentRecipe.some((item) => {
+      const matId = item.raw_material_id || item.material_id;
+      const matInfo = materials.find(m => m.id === matId);
+      const qtyPerUnit = Number(item.quantity_needed || item.quantity || 0);
+      const availableStock = Number(matInfo?.stock ?? matInfo?.quantity ?? 0);
+      return availableStock < qtyPerUnit * qtyToProduce;
+    });
+
     setConfirmModal({
       isOpen: true,
       title: 'تأكيد إصدار أمر التصنيع',
-      message: `هل أنت متأكد من إنتاج (${qtyToProduce}) وحدة من المنتج "${selectedProduct}"؟ سيتم خصم الخامات وتحديث المخزن فوراً.`,
+      message: `هل أنت متأكد من إنتاج (${qtyToProduce}) وحدة من المنتج "${selectedProduct}"؟ سيتم خصم الخامات وتحديث المخزن فوراً.${hasShortage ? ' قد يصبح رصيد بعض الخامات بالسالب، وستظل ربحية المنتج غير محتسبة حتى تسجيل فاتورة الشراء وتسوية العجز.' : ''}`,
       onConfirm: () => executeProductionMutation.mutate({ qtyToProduce, currentRecipe })
     });
   };
@@ -452,17 +455,20 @@ export default function ProductionOrdersPage() {
                     const matInfo = materials.find(m => m.id === matId);
                     const qtyPerUnit = Number(item.quantity_needed || item.quantity || 0);
                     const totalNeeded = qtyPerUnit * (Number(productionQty) || 0);
-                    const available = matInfo ? Number(matInfo.stock || matInfo.quantity || 0) : 0;
-                    const isEnough = available + STOCK_EPSILON >= totalNeeded;
+                    const available = Number(matInfo?.stock ?? matInfo?.quantity ?? 0);
+                    const shortage = Math.max(0, totalNeeded - available);
 
                     return (
                       <div key={idx} className="flex justify-between items-center text-xs bg-white p-2 rounded border">
                         <span className="font-bold text-gray-800">{matInfo?.name || 'خامة'}</span>
                         <div className="flex items-center gap-2">
-                          <span className={`font-bold ${isEnough ? 'text-emerald-600' : 'text-red-600'}`}>
+                          <span className={`font-bold ${shortage === 0 ? 'text-emerald-600' : 'text-amber-700'}`}>
                             المطلوب: {totalNeeded}
                           </span>
                           <span className="text-gray-400 text-[10px]">(المخزن: {available})</span>
+                          {shortage > 0 && (
+                            <span className="font-bold text-amber-700 text-[10px]">(عجز: {formatQuantity(shortage)})</span>
+                          )}
                         </div>
                       </div>
                     );

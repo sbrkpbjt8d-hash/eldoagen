@@ -111,10 +111,10 @@ export default function FactoryAnalyticsPage() {
   const monthlyPerformance = buildMonthlyFactoryPerformance({ recipes, materials, invoices, expenses, salaryPayouts, now });
   const topProfitProduct = monthlyPerformance.current.rankedProducts[0];
   const expenseToGrossProfitRatio = monthlyPerformance.current.grossContribution > 0
-    ? monthlyPerformance.current.allOverhead / monthlyPerformance.current.grossContribution * 100
+    ? monthlyPerformance.current.costedOverhead / monthlyPerformance.current.grossContribution * 100
     : null;
   const previousExpenseToGrossProfitRatio = monthlyPerformance.previous.grossContribution > 0
-    ? monthlyPerformance.previous.allOverhead / monthlyPerformance.previous.grossContribution * 100
+    ? monthlyPerformance.previous.costedOverhead / monthlyPerformance.previous.grossContribution * 100
     : null;
   const expenseRatioDifference = monthlyPerformance.current.expenseRatio === null || monthlyPerformance.previous.expenseRatio === null
     ? null
@@ -164,24 +164,30 @@ export default function FactoryAnalyticsPage() {
             </SectionHeading>
             <div className="grid grid-cols-1 divide-y divide-slate-200 border-y border-slate-200 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-7 sm:divide-x sm:divide-y-0 sm:divide-x-reverse">
               <Metric label="إيرادات المبيعات" value={formatMoney(monthlyPerformance.current.sales)} detail={`السابق: ${formatMoney(monthlyPerformance.previous.sales)}`} tone="blue" />
-              <Metric label="إجمالي تكلفة خامات المبيعات" value={formatMoney(monthlyPerformance.current.salesMaterialCost)} detail={`تكلفة الوصفات الحالية · السابق: ${formatMoney(monthlyPerformance.previous.salesMaterialCost)}`} tone="amber" />
-              <Metric label="إجمالي الربح" value={formatMoney(monthlyPerformance.current.grossContribution)} detail={`قبل المصاريف والرواتب · السابق: ${formatMoney(monthlyPerformance.previous.grossContribution)}`} tone="teal" />
+              <Metric label="تكلفة خامات الأصناف مكتملة التكلفة" value={formatMoney(monthlyPerformance.current.salesMaterialCost)} detail={`بتكلفة الوصفات الحالية · السابق: ${formatMoney(monthlyPerformance.previous.salesMaterialCost)}`} tone="amber" />
+              <Metric label="ربح الأصناف مكتملة التكلفة" value={formatMoney(monthlyPerformance.current.grossContribution)} detail={`قبل المصاريف والرواتب · السابق: ${formatMoney(monthlyPerformance.previous.grossContribution)}`} tone="teal" />
               <Metric label="المصاريف والرواتب" value={formatMoney(monthlyPerformance.current.allOverhead)} detail={`السابق: ${formatMoney(monthlyPerformance.previous.allOverhead)}`} tone="amber" />
              
-              <Metric label="صافي مساهمة تقديرية" value={formatMoney(monthlyPerformance.current.estimatedNetProfit)} detail="بعد تكلفة الوصفات ومصاريف الشهر" tone={monthlyPerformance.current.estimatedNetProfit < 0 ? 'rose' : 'teal'} />
+              <Metric label="صافي مساهمة الأصناف مكتملة التكلفة" value={formatMoney(monthlyPerformance.current.estimatedNetProfit)} detail="بعد تكلفة الوصفات ومصاريف الشهر" tone={monthlyPerformance.current.estimatedNetProfit < 0 ? 'rose' : 'teal'} />
               <Metric label="مصروفات / مبيعات" value={monthlyPerformance.current.expenseRatio === null ? 'غير متاح' : formatPercent(monthlyPerformance.current.expenseRatio)} detail={monthlyPerformance.previous.expenseRatio === null ? 'لا توجد مبيعات بالشهر السابق للمقارنة' : `السابق: ${formatPercent(monthlyPerformance.previous.expenseRatio)}`} tone={expenseRatioDifference !== null && expenseRatioDifference > 0 ? 'rose' : 'slate'} />
-              <Metric label="المصاريف / إجمالي الربح" value={expenseToGrossProfitRatio === null ? 'غير متاح' : formatPercent(expenseToGrossProfitRatio)} detail={previousExpenseToGrossProfitRatio === null ? 'حد التعادل 100% · ربح الشهر السابق غير موجب' : `حد التعادل 100% · السابق: ${formatPercent(previousExpenseToGrossProfitRatio)}`} tone={expenseToGrossProfitRatio !== null && expenseToGrossProfitRatio > 100 ? 'rose' : 'teal'} />
+              <Metric label="المصاريف / ربح الأصناف مكتملة التكلفة" value={expenseToGrossProfitRatio === null ? 'غير متاح' : formatPercent(expenseToGrossProfitRatio)} detail={previousExpenseToGrossProfitRatio === null ? 'حد التعادل 100% · ربح الشهر السابق غير موجب' : `حد التعادل 100% · السابق: ${formatPercent(previousExpenseToGrossProfitRatio)}`} tone={expenseToGrossProfitRatio !== null && expenseToGrossProfitRatio > 100 ? 'rose' : 'teal'} />
             </div>
 
             {expenseToGrossProfitRatio !== null && expenseToGrossProfitRatio > 100 ? (
               <div role="alert" className="mt-4 border-r-4 border-rose-600 bg-rose-50 p-4 text-sm font-bold leading-6 text-rose-900">
-                تنبيه: المصاريف والرواتب تستهلك {formatPercent(expenseToGrossProfitRatio)} من إجمالي الربح، متجاوزة حد التعادل 100%؛ صافي المساهمة التقديرية للشهر سالب.
+                تنبيه: المصاريف والرواتب المخصصة للأصناف مكتملة التكلفة تستهلك {formatPercent(expenseToGrossProfitRatio)} من ربحها، متجاوزة حد التعادل 100%؛ صافي المساهمة التقديرية لها سالب.
               </div>
             ) : monthlyPerformance.current.grossContribution <= 0 ? (
               <div role="alert" className="mt-4 border-r-4 border-rose-600 bg-rose-50 p-4 text-sm font-bold leading-6 text-rose-900">
-                تنبيه: إجمالي الربح غير موجب هذا الشهر، لذلك لا يمكن حساب نسبة المصاريف إليه بصورة ذات معنى.
+                تنبيه: ربح الأصناف مكتملة التكلفة غير موجب هذا الشهر، لذلك لا يمكن حساب نسبة المصاريف إليها بصورة ذات معنى.
               </div>
             ) : null}
+
+            {monthlyPerformance.current.uncostedProductCount > 0 && (
+              <div role="status" className="mt-4 border-r-4 border-amber-500 bg-amber-50 p-4 text-sm font-bold leading-6 text-amber-900">
+                لم تُحتسب ربحية {monthlyPerformance.current.uncostedProductCount} صنفًا لعدم اكتمال تكلفة خاماته (سعر غير مسجل أو رصيد خامة سالب). ستظهر بعد تسجيل فاتورة الشراء وتسوية العجز.
+              </div>
+            )}
 
             {topProfitProduct && monthlyPerformance.current.estimatedNetProfit > 0 && (
               <div className="mt-4 border-r-4 border-teal-700 bg-teal-50 px-4 py-3 text-sm leading-6 text-teal-950">
@@ -191,7 +197,7 @@ export default function FactoryAnalyticsPage() {
             )}
 
             <div className="mt-5 overflow-x-auto border-y border-slate-200">
-              {monthlyPerformance.current.rankedProducts.length === 0 ? <EmptyState>لا توجد مبيعات هذا الشهر لأصناف يمكن احتساب تكلفتها من وصفة وأسعار خامات مسجلة.</EmptyState> : (
+              {monthlyPerformance.current.rankedProducts.length === 0 ? <EmptyState>لا توجد مبيعات هذا الشهر لأصناف مكتملة التكلفة من وصفة وأسعار خامات مسجلة.</EmptyState> : (
                 <table className="w-full min-w-280 text-right text-sm">
                   <thead className="bg-slate-100 text-xs text-slate-600">
                     <tr><th className="p-3">الترتيب / المنتج</th>
@@ -227,7 +233,7 @@ export default function FactoryAnalyticsPage() {
               )}
             </div>
             <p className="mt-3 text-xs leading-5 text-slate-500">
-              نسب الربح محسوبة من تكلفة الخامات: قبل المصاريف (صافي الإيراد ناقص التكلفة) وبعد توزيع المصاريف والرواتب. تكلفة الوصفة محسوبة بالأسعار الحالية لا بتاريخ الفاتورة، والمصاريف موزعة بنسبة صافي الإيراد؛ الأصناف التي ينقصها سعر خامة مستبعدة، ونسبة تغطية تكلفة الأصناف هذا الشهر {formatPercent(monthlyPerformance.current.productCostCoverage)}.
+              الأرباح المعروضة تخص الأصناف مكتملة التكلفة فقط. تكلفة الوصفة محسوبة بالأسعار الحالية لا بتاريخ الفاتورة، والمصاريف موزعة بنسبة صافي الإيراد؛ الأصناف التي ينقصها سعر خامة أو لديها رصيد خامة سالب مستبعدة حتى تسجيل الفاتورة وتسوية العجز. نسبة تغطية تكلفة الأصناف هذا الشهر {formatPercent(monthlyPerformance.current.productCostCoverage)}.
             </p>
           </section>
 

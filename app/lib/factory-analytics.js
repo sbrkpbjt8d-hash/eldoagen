@@ -13,6 +13,15 @@ const toNumber = (value) => {
   return Number.isFinite(number) ? number : 0;
 };
 
+const hasKnownMaterialCost = (material, rawPrice) => (
+  Boolean(material)
+  && rawPrice !== undefined
+  && rawPrice !== null
+  && Number.isFinite(Number(rawPrice))
+  && Number(rawPrice) > 0
+  && toNumber(material.stock ?? material.quantity) >= 0
+);
+
 const getAgeInDays = (value, now) => {
   const timestamp = new Date(value || '').getTime();
   return Number.isFinite(timestamp) ? Math.max(0, Math.floor((now - timestamp) / DAY_MS)) : null;
@@ -98,7 +107,7 @@ export function buildProductAnalytics({ recipes, materials, invoices, now = new 
           materialName: material?.name || recipe.material_name || 'خامة غير مرتبطة',
           quantityPerTon: toNumber(recipe.quantity_needed ?? recipe.qtyNeeded ?? recipe.quantity),
           unitPrice: toNumber(rawPrice),
-          hasPrice: Boolean(material) && rawPrice !== undefined && rawPrice !== null && Number.isFinite(Number(rawPrice)),
+          hasPrice: hasKnownMaterialCost(material, rawPrice),
         };
       });
       const unitCost = ingredients.reduce((sum, ingredient) => sum + ingredient.quantityPerTon * ingredient.unitPrice, otherCost);
@@ -379,7 +388,7 @@ export function buildMonthlyFactoryPerformance({ recipes, materials, invoices, e
           : null;
         const materialPrice = matchingMaterial?.price ?? matchingMaterial?.cost ?? matchingMaterial?.purchase_price;
         const hasCostData = isMaterial
-          ? Boolean(matchingMaterial) && materialPrice !== undefined && materialPrice !== null && Number.isFinite(Number(materialPrice))
+          ? hasKnownMaterialCost(matchingMaterial, materialPrice)
           : Boolean(product?.hasCostData);
         const unitCost = isMaterial ? toNumber(materialPrice) : toNumber(product?.unitCost);
         const row = productRows.get(name) || {
@@ -413,9 +422,10 @@ export function buildMonthlyFactoryPerformance({ recipes, materials, invoices, e
     const itemRevenue = [...productRows.values()].reduce((sum, product) => sum + product.revenue, 0);
     const grossContribution = knownProducts.reduce((sum, product) => sum + product.revenue - product.estimatedMaterialCost, 0);
     const allocatedOverhead = expenseAmount + salaryAmount;
-    const estimatedNetProfit = grossContribution - allocatedOverhead;
+    const costedOverhead = itemRevenue > 0 ? allocatedOverhead * knownRevenue / itemRevenue : 0;
+    const estimatedNetProfit = grossContribution - costedOverhead;
     const rankedProducts = knownProducts.map((product) => {
-      const share = knownRevenue > 0 ? product.revenue / knownRevenue : 0;
+      const share = itemRevenue > 0 ? product.revenue / itemRevenue : 0;
       const allocatedExpenses = allocatedOverhead * share;
       const grossContribution = product.revenue - product.estimatedMaterialCost;
       const netContribution = product.revenue - product.estimatedMaterialCost - allocatedExpenses;
@@ -441,6 +451,7 @@ export function buildMonthlyFactoryPerformance({ recipes, materials, invoices, e
       expenseAmount,
       salaryAmount,
       allOverhead: allocatedOverhead,
+      costedOverhead,
       expenseRatio: sales > 0 ? (allocatedOverhead / sales) * 100 : null,
       estimatedNetProfit,
       productCostCoverage: itemRevenue > 0 ? (knownRevenue / itemRevenue) * 100 : 0,
