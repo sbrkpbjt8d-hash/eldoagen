@@ -57,12 +57,11 @@ export default function TreasuryPage() {
   };
 
   // 1. جلب بيانات الخزنة (للرصيد الافتتاحي فقط)
-  const { data: treasuryRecords = [] } = useQuery({
+  const treasuryRecordsQuery = useQuery({
     queryKey: ['treasury'],
-    queryFn: async () => {
-      return await pb.collection('treasury').getFullList({ sort: '-updated,-created' }).catch(() => []);
-    },
+    queryFn: () => pb.collection('treasury').getFullList({ sort: '-updated,-created' }),
   });
+  const treasuryRecords = treasuryRecordsQuery.data || [];
   const sortedTreasuryRecords = [...treasuryRecords].sort((a, b) => new Date(b.updated || b.created || 0) - new Date(a.updated || a.created || 0));
   const treasury = sortedTreasuryRecords.find((record) => Object.prototype.hasOwnProperty.call(record, 'opening_balance')) || sortedTreasuryRecords[0] || null;
   const hasTreasuryOpeningRecord = treasuryRecords.some((record) => Object.prototype.hasOwnProperty.call(record, 'opening_balance'));
@@ -75,15 +74,14 @@ export default function TreasuryPage() {
   });
 
   // 2. جلب المصروفات
-  const { data: expenses = [] } = useQuery({
+  const expensesQuery = useQuery({
     queryKey: ['expenses'],
-    queryFn: async () => {
-      return await pb.collection('expenses').getFullList({
+    queryFn: () => pb.collection('expenses').getFullList({
         sort: '-created',
         expand: 'category_id',
-      }).catch(() => []);
-    },
+      }),
   });
+  const expenses = expensesQuery.data || [];
 
   // 3. جلب جدول العملاء (clientsmoashe) بالكامل
   const { data: clientsList = [] } = useQuery({
@@ -94,45 +92,57 @@ export default function TreasuryPage() {
   });
 
   // 4. جلب حركات العملاء النقدية الفعلية
-  const { data: clientTransactions = [] } = useQuery({
+  const clientTransactionsQuery = useQuery({
     queryKey: ['client_transactions_treasury'],
-    queryFn: async () => {
-      return await pb.collection('client_transactions').getFullList({
+    queryFn: () => pb.collection('client_transactions').getFullList({
         filter: '(destination = "treasury" || destination = "خزنة" || destination = "كاش" || destination = "") && type != "opening_balance" && type != "opening"',
         expand: 'client_id',
-      }).catch(() => []);
-    },
+      }),
   });
+  const clientTransactions = clientTransactionsQuery.data || [];
 
   // 5. جلب حركات الموردين النقدية
-  const { data: supplierTransactions = [] } = useQuery({
+  const supplierTransactionsQuery = useQuery({
     queryKey: ['supplier_transactions_treasury'],
-    queryFn: async () => {
-      return await pb.collection('supplier_transactions').getFullList({
+    queryFn: () => pb.collection('supplier_transactions').getFullList({
         filter: '(destination = "treasury" || destination = "خزنة" || destination = "كاش" || destination = "") && type != "opening_balance" && type != "opening"',
         expand: 'supplier_id',
-      }).catch(() => []);
-    },
+      }),
   });
+  const supplierTransactions = supplierTransactionsQuery.data || [];
 
   // 6. جلب فواتير البيع
-  const { data: salesInvoices = [] } = useQuery({
+  const salesInvoicesQuery = useQuery({
     queryKey: ['sales_invoices_treasury'],
-    queryFn: async () => {
-      return await pb.collection('sales_invoices').getFullList().catch(() => []);
-    },
+    queryFn: () => pb.collection('sales_invoices').getFullList(),
   });
+  const salesInvoices = salesInvoicesQuery.data || [];
 
-  const { data: treasuryTransactions = [] } = useQuery({
+  const treasuryTransactionsQuery = useQuery({
     queryKey: ['treasury_transactions_treasury'],
-    queryFn: async () => {
-      return await pb.collection('treasury_transactions').getFullList().catch(() => []);
-    },
+    queryFn: () => pb.collection('treasury_transactions').getFullList(),
   });
+  const treasuryTransactions = treasuryTransactionsQuery.data || [];
+
+  const treasuryDataQueries = [
+    treasuryRecordsQuery,
+    expensesQuery,
+    clientTransactionsQuery,
+    supplierTransactionsQuery,
+    salesInvoicesQuery,
+    treasuryTransactionsQuery,
+  ];
+  const isTreasuryDataPending = treasuryDataQueries.some((query) => query.isPending);
+  const hasTreasuryDataError = treasuryDataQueries.some((query) => query.isError);
+  const ensureTreasuryDataReady = () => {
+    if (isTreasuryDataPending) throw new Error('انتظر حتى يكتمل تحميل بيانات الخزنة قبل تنفيذ العملية.');
+    if (hasTreasuryDataError) throw new Error('تعذر تحميل بعض بيانات الحركات؛ لم يتم تنفيذ العملية لتجنب رصيد غير صحيح.');
+  };
 
   // Mutation لحفظ الرصيد الافتتاحي
   const saveOpeningBalanceMutation = useMutation({
     mutationFn: async () => {
+      ensureTreasuryDataReady();
       if (!isAdmin) {
         throw new Error('عذراً، غير مسموح لك بتعديل الرصيد الافتتاحي. هذه الصلاحية للأدمن فقط.');
       }
@@ -162,6 +172,7 @@ export default function TreasuryPage() {
   // Mutation لحذف أي حركة معلقة للأدمن فقط
   const deleteTransactionMutation = useMutation({
     mutationFn: async ({ id, collectionName, signedAmount }) => {
+      ensureTreasuryDataReady();
       if (!isAdmin) {
         throw new Error('عذراً، هذه الصلاحية للأدمن فقط.');
       }
@@ -232,6 +243,7 @@ export default function TreasuryPage() {
 
   const depositToBankMutation = useMutation({
     mutationFn: async () => {
+      ensureTreasuryDataReady();
       const amount = Number(depositAmount);
       const bank = banks.find(item => item.id === depositBankId);
 
@@ -281,6 +293,7 @@ export default function TreasuryPage() {
 
   const cashDepositMutation = useMutation({
     mutationFn: async () => {
+      ensureTreasuryDataReady();
       const amount = Number(cashDepositAmount);
       if (!Number.isFinite(amount) || amount <= 0) throw new Error('اكتب مبلغ إيداع صحيح.');
       if (!cashDepositDescription.trim()) throw new Error('اكتب وصف الإيداع.');
@@ -323,6 +336,7 @@ export default function TreasuryPage() {
 
   const cashWithdrawalMutation = useMutation({
     mutationFn: async () => {
+      ensureTreasuryDataReady();
       const amount = Number(cashWithdrawalAmount);
       const reason = cashWithdrawalReason.trim();
       if (!Number.isFinite(amount) || amount <= 0) throw new Error('اكتب مبلغ سحب صحيح.');
@@ -378,10 +392,6 @@ export default function TreasuryPage() {
         return false;
       }
 
-      const expDate = String(exp.date || exp.created || '').slice(0, 10);
-      if (startDate && expDate < startDate) return false;
-      if (endDate && expDate > endDate) return false;
-
       return true;
     })
     .map(exp => ({
@@ -404,10 +414,6 @@ export default function TreasuryPage() {
       const isOpening = String(tx.type || '').toLowerCase().includes('open') || String(tx.notes || '').toLowerCase().includes('افتتاحي');
       const isSettlement = String(tx.notes || '').startsWith('تسوية (');
       if (isOpening || isSettlement) return false;
-
-      const txDate = String(tx.date || tx.created || '').slice(0, 10);
-      if (startDate && txDate < startDate) return false;
-      if (endDate && txDate > endDate) return false;
 
       return true;
     })
@@ -443,10 +449,6 @@ export default function TreasuryPage() {
       const isOpening = String(tx.type || '').toLowerCase().includes('open') || String(tx.notes || '').toLowerCase().includes('افتتاحي');
       if (isOpening) return false;
 
-      const txDate = String(tx.date || tx.created || '').slice(0, 10);
-      if (startDate && txDate < startDate) return false;
-      if (endDate && txDate > endDate) return false;
-
       return true;
     })
     .map(tx => {
@@ -476,10 +478,6 @@ export default function TreasuryPage() {
       
       if (!isCash) return false;
 
-      const invDate = String(inv.date || inv.created || '').slice(0, 10);
-      if (startDate && invDate < startDate) return false;
-      if (endDate && invDate > endDate) return false;
-
       return true;
     })
     .map(inv => {
@@ -501,12 +499,6 @@ export default function TreasuryPage() {
 
   const formattedSalesReturns = treasuryTransactions
     .filter(transaction => String(transaction.movement_type || '').toLowerCase() === 'sales_return')
-    .filter(transaction => {
-      const returnDate = String(transaction.date || transaction.created || '').slice(0, 10);
-      if (startDate && returnDate < startDate) return false;
-      if (endDate && returnDate > endDate) return false;
-      return true;
-    })
     .map(transaction => ({
       id: transaction.id,
       collection: 'treasury_transactions',
@@ -523,12 +515,6 @@ export default function TreasuryPage() {
   const formattedOtherAdvanceTransactions = treasuryTransactions
     .filter(transaction => ['other_advance', 'other_advance_return'].includes(String(transaction.movement_type || '').toLowerCase()))
     .filter(transaction => String(transaction.source_type || 'treasury') === 'treasury')
-    .filter(transaction => {
-      const transactionDate = String(transaction.date || transaction.created || '').slice(0, 10);
-      if (startDate && transactionDate < startDate) return false;
-      if (endDate && transactionDate > endDate) return false;
-      return true;
-    })
     .map(transaction => {
       const isReturn = String(transaction.movement_type || '').toLowerCase() === 'other_advance_return';
       return {
@@ -547,12 +533,6 @@ export default function TreasuryPage() {
 
   const formattedBankDeposits = treasuryTransactions
     .filter(transaction => String(transaction.movement_type || '').toLowerCase() === 'bank_deposit' && String(transaction.source_type || '') === 'treasury')
-    .filter(transaction => {
-      const transactionDate = String(transaction.date || transaction.created || '').slice(0, 10);
-      if (startDate && transactionDate < startDate) return false;
-      if (endDate && transactionDate > endDate) return false;
-      return true;
-    })
     .map(transaction => ({
       id: transaction.id,
       collection: 'treasury_transactions',
@@ -568,12 +548,6 @@ export default function TreasuryPage() {
 
   const formattedBankTransfers = treasuryTransactions
     .filter(transaction => String(transaction.movement_type || '').toLowerCase() === 'bank_transfer' && String(transaction.title || '').includes('إلى الخزنة'))
-    .filter(transaction => {
-      const transactionDate = String(transaction.date || transaction.created || '').slice(0, 10);
-      if (startDate && transactionDate < startDate) return false;
-      if (endDate && transactionDate > endDate) return false;
-      return true;
-    })
     .map(transaction => ({
       id: transaction.id,
       collection: 'treasury_transactions',
@@ -589,12 +563,6 @@ export default function TreasuryPage() {
 
   const formattedCashDeposits = treasuryTransactions
     .filter(transaction => String(transaction.movement_type || '').toLowerCase() === 'cash_deposit' && String(transaction.source_type || '') === 'treasury')
-    .filter(transaction => {
-      const transactionDate = String(transaction.date || transaction.created || '').slice(0, 10);
-      if (startDate && transactionDate < startDate) return false;
-      if (endDate && transactionDate > endDate) return false;
-      return true;
-    })
     .map(transaction => ({
       id: transaction.id,
       collection: 'treasury_transactions',
@@ -610,12 +578,6 @@ export default function TreasuryPage() {
 
   const formattedCashWithdrawals = treasuryTransactions
     .filter(transaction => String(transaction.movement_type || '').toLowerCase() === 'cash_withdrawal' && String(transaction.source_type || '') === 'treasury')
-    .filter(transaction => {
-      const transactionDate = String(transaction.date || transaction.created || '').slice(0, 10);
-      if (startDate && transactionDate < startDate) return false;
-      if (endDate && transactionDate > endDate) return false;
-      return true;
-    })
     .map(transaction => ({
       id: transaction.id,
       collection: 'treasury_transactions',
@@ -634,10 +596,13 @@ export default function TreasuryPage() {
   };
 
   const getTransactionTimestamp = (transaction) => {
-    const createdTime = Date.parse(transaction.created || '');
     const movementTime = Date.parse(getTransactionDate(transaction) || '');
-    return Number.isNaN(createdTime) ? (Number.isNaN(movementTime) ? 0 : movementTime) : createdTime;
+    if (!Number.isNaN(movementTime)) return movementTime;
+    const createdTime = Date.parse(transaction.created || '');
+    return Number.isNaN(createdTime) ? 0 : createdTime;
   };
+
+  const getTransactionDay = (transaction) => String(getTransactionDate(transaction) || '').slice(0, 10);
 
 
 
@@ -660,6 +625,8 @@ const sortedAscTransactions = [
 })).sort((a, b) => {
   const timestampDifference = getTransactionTimestamp(a) - getTransactionTimestamp(b);
   if (timestampDifference !== 0) return timestampDifference;
+  const createdDifference = Date.parse(a.created || '') - Date.parse(b.created || '');
+  if (Number.isFinite(createdDifference) && createdDifference !== 0) return createdDifference;
   return String(a.id || '').localeCompare(String(b.id || ''));
 });
 
@@ -668,7 +635,7 @@ const transactionsWithTreasuryBalance = sortedAscTransactions.reduce((transactio
   const previousBalance = transactions.length > 0
     ? transactions[transactions.length - 1].treasuryBalance
     : effectiveOpeningBalance;
-  const treasuryBalance = previousBalance + tx.signedAmount;
+  const treasuryBalance = roundMoney(previousBalance + tx.signedAmount);
   return [
     ...transactions,
     {
@@ -682,6 +649,9 @@ const transactionsWithTreasuryBalance = sortedAscTransactions.reduce((transactio
 const allTransactions = [...transactionsWithTreasuryBalance].reverse();
 
   const filteredTreasuryTransactions = allTransactions.filter(transaction => {
+    const transactionDay = getTransactionDay(transaction);
+    if (startDate && transactionDay < startDate) return false;
+    if (endDate && transactionDay > endDate) return false;
     if (movementTypeFilter !== 'all' && transaction.movementType !== movementTypeFilter) return false;
     if (movementDirectionFilter === 'deposit' && transaction.signedAmount <= 0) return false;
     if (movementDirectionFilter === 'withdrawal' && transaction.signedAmount >= 0) return false;
@@ -689,9 +659,7 @@ const allTransactions = [...transactionsWithTreasuryBalance].reverse();
     return true;
   });
 
-  // الرصيد الحقيقي يجب أن يُحسب من الحركات الفعلية؛ وإذا كانت بيانات الخزنة فارغة أو قديمة
-  // نستخدم الحساب التراكمي من المعاملات بشكل أساسي، مع الاحتفاظ بقيمة treasury.balance فقط
-  // كخطة احتياطية عندما لا توجد أي حركة على الإطلاق.
+  // الرصيد والإجماليات تعتمد على كامل سجل الحركات، بصرف النظر عن فلاتر العرض.
   const totalDepositsFromTransactions = allTransactions
     .filter((transaction) => transaction.signedAmount > 0)
     .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
@@ -699,22 +667,11 @@ const allTransactions = [...transactionsWithTreasuryBalance].reverse();
     .filter((transaction) => transaction.signedAmount < 0)
     .reduce((sum, transaction) => sum + Number(Math.abs(transaction.amount || 0)), 0);
   const calculatedBalanceFromTransactions = effectiveOpeningBalance + totalDepositsFromTransactions - totalWithdrawalsFromTransactions;
-  const storedTreasuryBalance = Number(treasury?.balance ?? effectiveOpeningBalance ?? 0);
- // لو مفيش حركات خالص، الرصيد الحالي يساوي الرصيد الافتتاحي الصافي مباشرة مش آخر رقم قديم مخزن
-const currentBalance = allTransactions.length > 0
-  ? calculatedBalanceFromTransactions
-  : Number(effectiveOpeningBalance || 0);
+  const currentBalance = roundMoney(calculatedBalanceFromTransactions);
 
   const periodTransactions = allTransactions.filter((transaction) => {
-    const transactionDate = new Date(transaction.date);
-    if (Number.isNaN(transactionDate.getTime())) return false;
-
-    const transactionDay = [
-      transactionDate.getFullYear(),
-      String(transactionDate.getMonth() + 1).padStart(2, '0'),
-      String(transactionDate.getDate()).padStart(2, '0'),
-    ].join('-');
-
+    const transactionDay = getTransactionDay(transaction);
+    if (!transactionDay) return false;
     return (!startDate || transactionDay >= startDate) && (!endDate || transactionDay <= endDate);
   });
   const periodDeposits = periodTransactions
@@ -757,6 +714,17 @@ const currentBalance = allTransactions.length > 0
         }} className="bg-gray-100 text-gray-700 px-4 py-2 rounded-xl text-xs font-bold">🔄 تحديث</button>
         </div>
       </div>
+
+      {isTreasuryDataPending && (
+        <p className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm font-bold text-blue-800">
+          جارٍ تحميل الحركات لحساب رصيد الخزنة...
+        </p>
+      )}
+      {hasTreasuryDataError && (
+        <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-800">
+          تعذر تحميل بعض بيانات الحركات. قد يكون الرصيد والسجل غير مكتملين، لذلك أوقفت عمليات تعديل رصيد الخزنة.
+        </div>
+      )}
 
       {cashDepositFormOpen && (
         <div className="bg-emerald-50 p-6 rounded-3xl shadow-xl border border-emerald-100">
@@ -813,17 +781,23 @@ const currentBalance = allTransactions.length > 0
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
         <div className={`p-6 rounded-3xl shadow-xl text-white ${currentBalance < 0 ? 'bg-red-600' : 'bg-blue-600'}`}>
           <h2 className="text-xs font-bold opacity-80 uppercase tracking-wider">إجمالي الرصيد الحالي بالخزنة</h2>
-          <p className="text-4xl font-black mt-2">{currentBalance.toLocaleString()} ج.م</p>
+          <p className="text-4xl font-black mt-2">
+            {isTreasuryDataPending || hasTreasuryDataError ? '—' : `${currentBalance.toLocaleString()} ج.م`}
+          </p>
         </div>
 
         <div className="bg-emerald-600 p-6 rounded-3xl shadow-xl text-white">
           <h2 className="text-xs font-bold opacity-80 uppercase tracking-wider">إجمالي الإيداعات</h2>
-          <p className="text-3xl font-black mt-2">{totalDepositsFromTransactions.toLocaleString()} ج.م</p>
+          <p className="text-3xl font-black mt-2">
+            {isTreasuryDataPending || hasTreasuryDataError ? '—' : `${totalDepositsFromTransactions.toLocaleString()} ج.م`}
+          </p>
         </div>
 
         <div className="bg-rose-600 p-6 rounded-3xl shadow-xl text-white">
           <h2 className="text-xs font-bold opacity-80 uppercase tracking-wider">إجمالي المسحوبات</h2>
-          <p className="text-3xl font-black mt-2">{totalWithdrawalsFromTransactions.toLocaleString()} ج.م</p>
+          <p className="text-3xl font-black mt-2">
+            {isTreasuryDataPending || hasTreasuryDataError ? '—' : `${totalWithdrawalsFromTransactions.toLocaleString()} ج.م`}
+          </p>
         </div>
 
         <div className="bg-white p-6 rounded-3xl shadow-xl border border-gray-100 flex flex-col justify-between">
