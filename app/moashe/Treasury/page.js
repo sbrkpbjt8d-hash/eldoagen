@@ -2,6 +2,7 @@
 import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
+import { archiveAndDeleteRecord } from '../../lib/deleted-records';
 import { useReactToPrint } from 'react-to-print';
 
 const EGYPT_TIME_ZONE = 'Africa/Cairo';
@@ -215,7 +216,7 @@ export default function TreasuryPage() {
           balance: roundMoney(currentBalance - Number(signedAmount)),
         });
       }
-      return await pb.collection(collectionName).delete(id);
+      return await archiveAndDeleteRecord(collectionName, id);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['expenses'] });

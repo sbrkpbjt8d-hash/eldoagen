@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
+import { archiveAndDeleteRecord } from '../../lib/deleted-records';
 import { addQuantities, formatQuantity, roundQuantity } from '../../lib/quantity';
 import toast, { Toaster } from 'react-hot-toast';
 
@@ -401,7 +402,7 @@ export default function ProductionStockPage() {
         movement_at: new Date().toISOString(),
         balance_after: 0,
       });
-      const deleted = await pb.collection('products_stock').delete(product.id);
+      const deleted = await archiveAndDeleteRecord('products_stock', product.id, product.product_name);
       queryClient.setQueryData(['products_stock'], (records = []) => records.filter((record) => record.id !== product.id));
       return deleted;
     },
@@ -484,7 +485,7 @@ export default function ProductionStockPage() {
         stock: nextStock,
         total_cost: product.unit_cost * nextStock,
       });
-      await pb.collection('product_stock_transactions').delete(item.sourceId);
+      await archiveAndDeleteRecord('product_stock_transactions', item.sourceId, item.title || 'حركة مخزون');
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products_stock'] });
@@ -508,9 +509,13 @@ export default function ProductionStockPage() {
         )
       ));
 
-      await Promise.all(historyItems.map((transaction) => (
-        pb.collection('product_stock_transactions').delete(transaction.id)
-      )));
+      for (const transaction of historyItems) {
+        await archiveAndDeleteRecord(
+          'product_stock_transactions',
+          transaction.id,
+          transaction.title || 'حركة مخزون',
+        );
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['product_stock_transactions'] });

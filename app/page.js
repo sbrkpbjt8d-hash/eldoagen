@@ -15,7 +15,7 @@ export default function Home() {
           <a className="transition-colors hover:text-[#b84335]" href="#about">عن المصنع</a>
           <a className="transition-colors hover:text-[#b84335]" href="#contact">التواصل</a>
         </nav>
-        <Link href="/moashe" className="inline-flex min-h-10 shrink-0 items-center gap-2 rounded-sm border border-[#142c453d] px-3 text-[11px] font-bold text-[#29445e] transition-colors hover:border-[#b84335] hover:text-[#b84335] sm:px-4 sm:text-[13px]">
+        <Link href="/login" className="inline-flex min-h-10 shrink-0 items-center gap-2 rounded-sm border border-[#142c453d] px-3 text-[11px] font-bold text-[#29445e] transition-colors hover:border-[#b84335] hover:text-[#b84335] sm:px-4 sm:text-[13px]">
           دخول النظام <span className="text-base text-[#b84335]" aria-hidden="true">←</span>
         </Link>
       </header>

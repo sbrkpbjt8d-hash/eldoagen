@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { pb } from '../lib/pocketbase';
+import { isFactoryAdmin } from '../lib/deleted-records';
 
 function AuthGuard({ children }) {
   const pathname = usePathname();
@@ -17,8 +18,8 @@ function AuthGuard({ children }) {
       return undefined;
     }
 
-    const adminOnly = ['/reports', '/poultry/reports'];
-    if (adminOnly.includes(pathname) && pb.authStore.model?.collectionName !== '_superusers') {
+    const adminOnly = ['/reports', '/poultry/reports', '/moashe/deleted'];
+    if (adminOnly.includes(pathname) && !isFactoryAdmin()) {
       router.replace('/login');
       return undefined;
     }

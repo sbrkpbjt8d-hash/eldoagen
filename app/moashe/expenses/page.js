@@ -2,6 +2,7 @@
 import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
+import { archiveAndDeleteRecord } from '../../lib/deleted-records';
 
 const EGYPT_TIME_ZONE = 'Africa/Cairo';
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
@@ -121,11 +122,6 @@ export default function ExpensesPage() {
     queryFn: async () => pb.collection('advances').getFullList().catch(() => []),
   });
 
-  const { data: salariesPayouts = [] } = useQuery({
-    queryKey: ['salaries_payouts_expenses_balance'],
-    queryFn: async () => pb.collection('salaries_payouts').getFullList().catch(() => []),
-  });
-
   const { data: treasuryTransactions = [] } = useQuery({
     queryKey: ['treasury_transactions_expenses_balance'],
     queryFn: async () => pb.collection('treasury_transactions').getFullList().catch(() => []),
@@ -153,7 +149,7 @@ export default function ExpensesPage() {
   // Mutation حذف نوع مصروف فرعي
   const deleteCategoryMutation = useMutation({
     mutationFn: async (categoryId) => {
-      return await pb.collection('expense_categories').delete(categoryId);
+      return await archiveAndDeleteRecord('expense_categories', categoryId);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['expense_categories'] });
@@ -233,7 +229,7 @@ export default function ExpensesPage() {
       const bankId = typeof expenseObj.bank_id === 'string' ? expenseObj.bank_id : expenseObj.bank_id?.id;
 
       // 1. حذف المصروف من جدول expenses أولاً
-      await pb.collection('expenses').delete(expenseObj.id);
+      await archiveAndDeleteRecord('expenses', expenseObj.id, expenseObj.notes || 'مصروف');
 
       // 2. إرجاع المبلغ للمصدر الصحيح (بنك أو خزنة)
       if (isBankPayment && bankId) {
@@ -338,10 +334,6 @@ export default function ExpensesPage() {
   });
 
   const cashAdvances = employeeAdvanceRecords.reduce((sum, advance) => sum - Number(advance.amount || 0), 0);
-  const cashSalaries = salariesPayouts.reduce((sum, salary) => sum - Number(salary.amount || salary.total_amount || salary.net_salary || 0), 0);
-  const treasurySalaryTransactions = treasuryRecords
-    .filter(record => String(record.type || '').toLowerCase().includes('مرتبات'))
-    .reduce((sum, record) => sum - Number(record.amount || 0), 0);
   const treasuryMovementTotal = treasuryTransactions.reduce((sum, transaction) => {
     const movementType = String(transaction.movement_type || '').toLowerCase();
     const sourceType = String(transaction.source_type || 'treasury');
@@ -384,7 +376,6 @@ export default function ExpensesPage() {
       const isOtherAdvance = String(advance.advance_type || '').toLowerCase() === 'other';
       return hasEmployee && !isOtherAdvance;
     }).reduce((sum, advance) => sum + Number(advance.amount || 0), 0)
-    + salariesPayouts.reduce((sum, salary) => sum + Number(salary.amount || salary.total_amount || salary.net_salary || 0), 0)
     + treasuryTransactions.reduce((sum, transaction) => {
       const movementType = String(transaction.movement_type || '').toLowerCase();
       const sourceType = String(transaction.source_type || 'treasury');

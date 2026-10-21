@@ -4,6 +4,7 @@ import { useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useReactToPrint } from 'react-to-print';
 import { pb } from '../../lib/pocketbase';
+import { archiveAndDeleteRecord } from '../../lib/deleted-records';
 
 const emptyAuthorization = {
   expense_type: '',
@@ -109,7 +110,11 @@ export default function SpendAuthorizationPage() {
     setDeletingId(authorization.id);
     setFeedback(null);
     try {
-      await pb.collection('spend_authorizations').delete(authorization.id);
+      await archiveAndDeleteRecord(
+        'spend_authorizations',
+        authorization.id,
+        authorization.recipient_name || authorization.employee_name || 'إذن صرف',
+      );
       if (selectedAuthorization?.id === authorization.id) setSelectedAuthorization(null);
       setPendingDeleteAuthorization(null);
       setFeedback({ type: 'success', message: 'تم حذف إذن الصرف بنجاح.' });

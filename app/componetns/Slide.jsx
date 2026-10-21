@@ -3,8 +3,9 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { pb } from '../lib/pocketbase';
+import { isFactoryAdmin } from '../lib/deleted-records';
 
-const otherPageRoutes = ['/re', '/moashe/analytics', '/moashe/salaires', '/moashe/manadeb', '/moashe/spend-authorizations'];
+const otherPageRoutes = ['/re', '/moashe/analytics', '/moashe/manadeb', '/moashe/spend-authorizations', '/moashe/deleted'];
 const REPORT_ACCESS_PASSWORD = '01234';
 const protectedPageLabels = {
   '/re': 'التقارير',
@@ -182,9 +183,11 @@ export default function Sidebar() {
                       onClick={(event) => requestProtectedPage(event, '/moashe/analytics')}
                       className={navLinkClass('/moashe/analytics')}
                     >تحليلات المصنع</Link>
-                    <Link href="/moashe/salaires" className={navLinkClass('/moashe/salaires')}>المرتبات</Link>
                     <Link href="/moashe/manadeb" className={navLinkClass('/moashe/manadeb')}>المناديب</Link>
                     <Link href="/moashe/spend-authorizations" className={navLinkClass('/moashe/spend-authorizations')}>إذن الصرف</Link>
+                    {isFactoryAdmin() && (
+                      <Link href="/moashe/deleted" className={navLinkClass('/moashe/deleted')}>المحذوفات</Link>
+                    )}
                   </div>
                 )}
               </div>

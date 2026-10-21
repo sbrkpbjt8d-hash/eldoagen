@@ -3,6 +3,7 @@ import "./globals.css";
 import Sidebar from "./componetns/Slide"; // عدلنا اسم المتغير لـ Sidebar وحافظنا على المسار بتاعك
 
 import Providers from "./componetns/providers";
+import ChatWidget from "./componetns/ChatWidget";
 const geistSans = Geist({
   variable: "--font-geist-sans",
   subsets: ["latin"],
@@ -30,6 +31,7 @@ export default function RootLayout({ children }) {
         <main className="flex-1 p-6 overflow-y-auto">
           {children}
         </main>
+        <ChatWidget />
         </Providers>
        
       </body>

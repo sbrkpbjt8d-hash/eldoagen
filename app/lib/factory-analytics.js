@@ -226,7 +226,7 @@ export function buildCreditAnalytics({ clients, invoices, transactions, now = ne
   return { clients: clientRows, totalReceivables, creditSales, dso, averageCollectionGap };
 }
 
-export function buildCashForecast({ treasury, invoices, clientTransactions, supplierTransactions, expenses, salaryPayouts, now = new Date(), historyDays = 90 }) {
+export function buildCashForecast({ treasury, invoices, clientTransactions, supplierTransactions, expenses, now = new Date(), historyDays = 90 }) {
   const nowTime = now.getTime();
   const periodStart = nowTime - historyDays * DAY_MS;
   const isInPeriod = (record) => {
@@ -246,10 +246,8 @@ export function buildCashForecast({ treasury, invoices, clientTransactions, supp
   const treasuryExpenses = expenses.filter((expense) => isInPeriod(expense)
     && !expense.bank_id && String(expense.payment_source || 'treasury').toLowerCase() !== 'bank')
     .reduce((sum, expense) => sum + toNumber(expense.amount), 0);
-  const salaryPayments = salaryPayouts.filter(isInPeriod)
-    .reduce((sum, salary) => sum + toNumber(salary.amount ?? salary.total_amount ?? salary.net_salary), 0);
   const dailyInflow = (cashSales + collections) / historyDays;
-  const dailyOutflow = (supplierPayments + treasuryExpenses + salaryPayments) / historyDays;
+  const dailyOutflow = (supplierPayments + treasuryExpenses) / historyDays;
   const currentBalance = toNumber(treasury?.balance ?? treasury?.opening_balance);
   const projectedInflows = dailyInflow * 30;
   const projectedOutflows = dailyOutflow * 30;
@@ -356,7 +354,7 @@ export function buildRecipeVariance({ recipes, materials, productionOrders, adju
   }, new Map());
 }
 
-export function buildMonthlyFactoryPerformance({ recipes, materials, invoices, expenses, salaryPayouts, now = new Date() }) {
+export function buildMonthlyFactoryPerformance({ recipes, materials, invoices, expenses, now = new Date() }) {
   const products = buildProductAnalytics({ recipes, materials, invoices, now, periodDays: 10_000 });
   const productByName = new Map(products.map((product) => [normalizeAnalyticsName(product.name), product]));
   const materialById = new Map(materials.map((material) => [material.id, material]));
@@ -366,7 +364,6 @@ export function buildMonthlyFactoryPerformance({ recipes, materials, invoices, e
   const summarize = (window) => {
     const periodInvoices = invoices.filter((invoice) => isInWindow(invoice, window) && !isReturnedInvoice(invoice));
     const periodExpenses = expenses.filter((expense) => isInWindow(expense, window));
-    const periodSalaries = salaryPayouts.filter((salary) => isInWindow(salary, window));
     const sales = periodInvoices.reduce((sum, invoice) => sum + toNumber(invoice.total_amount ?? invoice.amount), 0);
     const productRows = new Map();
 
@@ -414,14 +411,12 @@ export function buildMonthlyFactoryPerformance({ recipes, materials, invoices, e
       expenseCategories.set(category, existing);
     });
     const expenseAmount = periodExpenses.reduce((sum, expense) => sum + toNumber(expense.amount), 0);
-    const salaryAmount = periodSalaries.reduce((sum, salary) => sum + toNumber(salary.amount ?? salary.total_amount ?? salary.net_salary), 0);
-    if (salaryAmount > 0) expenseCategories.set('رواتب', { name: 'رواتب', amount: salaryAmount });
     const knownProducts = [...productRows.values()].filter((product) => product.hasCostData);
     const knownRevenue = knownProducts.reduce((sum, product) => sum + product.revenue, 0);
     const salesMaterialCost = knownProducts.reduce((sum, product) => sum + product.estimatedMaterialCost, 0);
     const itemRevenue = [...productRows.values()].reduce((sum, product) => sum + product.revenue, 0);
     const grossContribution = knownProducts.reduce((sum, product) => sum + product.revenue - product.estimatedMaterialCost, 0);
-    const allocatedOverhead = expenseAmount + salaryAmount;
+    const allocatedOverhead = expenseAmount;
     const costedOverhead = itemRevenue > 0 ? allocatedOverhead * knownRevenue / itemRevenue : 0;
     const estimatedNetProfit = grossContribution - costedOverhead;
     const rankedProducts = knownProducts.map((product) => {
@@ -449,7 +444,6 @@ export function buildMonthlyFactoryPerformance({ recipes, materials, invoices, e
       salesMaterialCost,
       grossContribution,
       expenseAmount,
-      salaryAmount,
       allOverhead: allocatedOverhead,
       costedOverhead,
       expenseRatio: sales > 0 ? (allocatedOverhead / sales) * 100 : null,

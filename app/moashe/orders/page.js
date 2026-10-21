@@ -2,6 +2,7 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
+import { archiveAndDeleteRecord } from '../../lib/deleted-records';
 import { addQuantities, formatQuantity, roundQuantity } from '../../lib/quantity';
 import toast, { Toaster } from 'react-hot-toast';
 
@@ -40,10 +41,13 @@ export default function ProductionOrdersPage() {
   });
 
   // جلب البيانات باستخدام TanStack Query بشكل متوازي
-  const { data: materials = [] } = useQuery({
+  const {
+    data: materials = [],
+    isError: materialsLoadFailed,
+  } = useQuery({
     queryKey: ['khamat_moashe'],
     queryFn: async () => {
-      return await pb.collection('khamat_moashe').getFullList().catch(() => []);
+      return await pb.collection('khamat_moashe').getFullList();
     },
     refetchOnMount: true,
     refetchOnWindowFocus: true,
@@ -244,7 +248,7 @@ export default function ProductionOrdersPage() {
         }
       }
 
-      await pb.collection('production_orders').delete(order.id);
+      await archiveAndDeleteRecord('production_orders', order.id, productName);
       await pb.collection('product_stock_transactions').create({
         product_name: productName,
         quantity: -qtyProduced,
@@ -288,7 +292,12 @@ export default function ProductionOrdersPage() {
 
   const currentRecipe = allRecipes.filter(r => normalizeProductName(r.product_name || r.name || r.product) === normalizeProductName(selectedProduct));
 
-  const calculatedTotalCost = currentRecipe.reduce((sum, item) => {
+  const hasMissingRecipeMaterials = currentRecipe.some((item) => {
+    const matId = item.raw_material_id || item.material_id;
+    return !materials.some((material) => material.id === matId);
+  });
+
+  const calculatedTotalCost = hasMissingRecipeMaterials ? null : currentRecipe.reduce((sum, item) => {
     const matId = item.raw_material_id || item.material_id;
     const matInfo = materials.find(m => m.id === matId);
     const matPrice = matInfo ? Number(matInfo.price || 0) : 0;
@@ -316,7 +325,7 @@ export default function ProductionOrdersPage() {
       const matId = item.raw_material_id || item.material_id;
       const matInfo = materials.find(m => m.id === matId);
       if (!matInfo) {
-        toast.error(`الخامة "${item.material_name || 'غير معروفة'}" غير مسجلة في مخزن الخامات.`);
+        toast.error(`الخامة ذات المعرّف "${matId || 'غير موجود'}" غير مسجلة في مخزن الخامات. راجع تركيبة المنتج.`);
         return;
       }
     }
@@ -368,6 +377,11 @@ export default function ProductionOrdersPage() {
   return (
     <div className="p-4 md:p-8 max-w-7xl mx-auto space-y-8 relative" dir="rtl">
       <Toaster position="top-center" reverseOrder={false} />
+      {materialsLoadFailed && (
+        <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-800">
+          تعذر تحميل سجل الخامات من PocketBase؛ لن يمكن التحقق من مكونات أوامر التصنيع. تحقق من اتصال قاعدة البيانات.
+        </div>
+      )}
 
       {confirmModal.isOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fadeIn">
@@ -445,7 +459,9 @@ export default function ProductionOrdersPage() {
               <div className="bg-gray-50 p-3 rounded-xl border border-gray-200 space-y-3">
                 <div className="flex justify-between items-center text-xs border-b pb-2">
                   <span className="font-bold text-gray-700">إجمالي التكلفة المتوقعة:</span>
-                  <span className="font-black text-emerald-600 text-sm">{calculatedTotalCost.toLocaleString()} ج.م</span>
+                  <span className="font-black text-emerald-600 text-sm">
+                    {calculatedTotalCost === null ? 'غير متاح: توجد خامة غير مسجلة' : `${calculatedTotalCost.toLocaleString()} ج.م`}
+                  </span>
                 </div>
 
                 <span className="text-xs font-bold text-gray-700 block">📦 تفاصيل الخامات التي سيتم خصمها:</span>
@@ -460,7 +476,9 @@ export default function ProductionOrdersPage() {
 
                     return (
                       <div key={idx} className="flex justify-between items-center text-xs bg-white p-2 rounded border">
-                        <span className="font-bold text-gray-800">{matInfo?.name || 'خامة'}</span>
+                        <span className={`font-bold ${matInfo ? 'text-gray-800' : 'text-red-700'}`}>
+                          {matInfo?.name || `خامة غير مسجلة (معرّف: ${matId || 'غير موجود'})`}
+                        </span>
                         <div className="flex items-center gap-2">
                           <span className={`font-bold ${shortage === 0 ? 'text-emerald-600' : 'text-amber-700'}`}>
                             المطلوب: {totalNeeded}

@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
+import { archiveAndDeleteRecord } from '../../lib/deleted-records';
 
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 
@@ -137,7 +138,7 @@ export default function OtherAccountsPage() {
         advance_id: advance.id,
       });
       if (nextRemaining === 0) {
-        await pb.collection('advances').delete(advance.id);
+        await archiveAndDeleteRecord('advances', advance.id, advance.recipient_name || 'عهدة');
       }
     },
     onSuccess: () => {

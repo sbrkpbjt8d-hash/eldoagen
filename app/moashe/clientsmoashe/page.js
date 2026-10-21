@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
+import { archiveAndDeleteRecord } from '../../lib/deleted-records';
 
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 const EGYPT_TIME_ZONE = 'Africa/Cairo';
@@ -421,7 +422,7 @@ const combinedStatement = [...statementWithBalance].reverse();
         });
       }
 
-      await pb.collection('client_transactions').delete(transactionId);
+      await archiveAndDeleteRecord('client_transactions', transactionId, 'تحصيل عميل');
 
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] }),
@@ -475,7 +476,7 @@ const combinedStatement = [...statementWithBalance].reverse();
   // حذف عميل
   const deleteClientMutation = useMutation({
     mutationFn: async (id) => {
-      return await pb.collection('clientsmoashe').delete(id);
+      return await archiveAndDeleteRecord('clientsmoashe', id);
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });

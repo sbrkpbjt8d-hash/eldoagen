@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../lib/pocketbase';
+import { archiveAndDeleteRecord } from '../lib/deleted-records';
 
 const emptyForm = { supplierId: '', items: [], discount: '', paymentType: 'credit' };
 const money = value => `${Number(value || 0).toLocaleString('ar-EG', { maximumFractionDigits: 1 })} ج.م`;
@@ -194,7 +195,7 @@ export default function PurchaseInvoicesPage() {
           });
         }
       }
-      await pb.collection('purchase_invoices').delete(invoice.id);
+      await archiveAndDeleteRecord('purchase_invoices', invoice.id, invoice.invoice_number || invoice.id);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['purchase_invoices'] });

@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
 import { addQuantities, roundQuantity } from '../../lib/quantity';
+import { archiveAndDeleteRecord } from '../../lib/deleted-records';
 import { useReactToPrint } from 'react-to-print';
 const currentUserName = localStorage.getItem('userName') || 'مسؤول النظام';
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
@@ -492,7 +493,11 @@ const deleteInvoiceMutation = useMutation({
         await pb.collection('clientsmoashe').update(matchedCustomerId, updateData);
       }
 
-      const deletedRes = await pb.collection('sales_invoices').delete(invoice.id);
+      const deletedRes = await archiveAndDeleteRecord(
+        'sales_invoices',
+        invoice.id,
+        invoice.invoice_number || invoice.customer_name || invoice.id,
+      );
 
       const invDiscount = invoice.discount !== undefined ? invoice.discount : (invoice.discount_amount || 0);
 
@@ -1433,7 +1438,6 @@ const deleteInvoiceMutation = useMutation({
     </div>
   );
 }
-
 
 
 

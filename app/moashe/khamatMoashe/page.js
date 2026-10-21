@@ -2,6 +2,7 @@
 import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
+import { archiveAndDeleteRecord } from '../../lib/deleted-records';
 import toast, { Toaster } from 'react-hot-toast';
 import { useReactToPrint } from 'react-to-print';
 
@@ -144,7 +145,7 @@ export default function ProductsPage() {
 
   const deleteProductMutation = useMutation({
     mutationFn: async (id) => {
-      return await pb.collection('khamat_moashe').delete(id);
+      return await archiveAndDeleteRecord('khamat_moashe', id);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['khamat_moashe'] });
@@ -162,7 +163,7 @@ export default function ProductsPage() {
       if (!isAdmin) {
         throw new Error('عفواً، حذف التسويات متاح للأدمن فقط!');
       }
-      return await pb.collection('material_adjustments').delete(adjustmentId);
+      return await archiveAndDeleteRecord('material_adjustments', adjustmentId, 'تسوية خامة');
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['material_adjustments'] });

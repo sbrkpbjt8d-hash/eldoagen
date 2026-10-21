@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
+import { archiveAndDeleteRecord } from '../../lib/deleted-records';
 
 export default function SuppliersPage() {
   const queryClient = useQueryClient();
@@ -123,7 +124,7 @@ export default function SuppliersPage() {
 
 
   const deleteMutation = useMutation({
-    mutationFn: (id) => pb.collection('suppliers').delete(id),
+    mutationFn: (id) => archiveAndDeleteRecord('suppliers', id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['suppliers'] });
       setDeleteId(null);
@@ -278,7 +279,7 @@ export default function SuppliersPage() {
     }
 
     // 2. حذف معاملة السداد نهائياً من الجدول
-    await pb.collection('supplier_transactions').delete(transactionId);
+    await archiveAndDeleteRecord('supplier_transactions', transactionId, 'سداد مورد');
 
     // 3. عمل Invalidate للـ Queries عشان الـ State تتحدث والـ UI يحسب الأرصدة الجديدة تلقائياً
     await Promise.all([

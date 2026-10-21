@@ -2,6 +2,7 @@
 import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
+import { archiveAndDeleteRecord } from '../../lib/deleted-records';
 import { useReactToPrint } from 'react-to-print';
 
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
@@ -468,7 +469,7 @@ export default function BanksPage() {
   const deleteBankMutation = useMutation({
     mutationFn: async (id) => {
       if (!isAdmin) throw new Error('عذراً، الحذف مقتصر على المسؤولين فقط.');
-      return await pb.collection('banks').delete(id);
+      return await archiveAndDeleteRecord('banks', id);
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['banks'] });
@@ -530,7 +531,7 @@ export default function BanksPage() {
         }
       }
 
-      await pb.collection(collectionName).delete(transaction.id);
+      await archiveAndDeleteRecord(collectionName, transaction.id, transaction.title || 'حركة بنك');
 
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['banks'] }),

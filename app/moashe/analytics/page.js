@@ -15,7 +15,6 @@ const collectionNames = [
   'clientsmoashe',
   'client_transactions',
   'expenses',
-  'salaries_payouts',
   'supplier_transactions',
   'treasury',
 ];
@@ -83,7 +82,6 @@ export default function FactoryAnalyticsPage() {
   const clients = data.clientsmoashe || [];
   const clientTransactions = data.client_transactions || [];
   const expenses = data.expenses || [];
-  const salaryPayouts = data.salaries_payouts || [];
   const supplierTransactions = data.supplier_transactions || [];
   const treasuryRecords = data.treasury || [];
   const treasury = [...treasuryRecords].sort((first, second) => (
@@ -98,7 +96,6 @@ export default function FactoryAnalyticsPage() {
     clientTransactions,
     supplierTransactions,
     expenses,
-    salaryPayouts,
     now,
   });
   const agingTotals = creditAnalytics.clients.reduce((totals, client) => ({
@@ -108,7 +105,7 @@ export default function FactoryAnalyticsPage() {
     over90: totals.over90 + client.aging.over90,
   }), { current: 0, days31to60: 0, days61to90: 0, over90: 0 });
   const topRiskClient = creditAnalytics.clients[0];
-  const monthlyPerformance = buildMonthlyFactoryPerformance({ recipes, materials, invoices, expenses, salaryPayouts, now });
+  const monthlyPerformance = buildMonthlyFactoryPerformance({ recipes, materials, invoices, expenses, now });
   const topProfitProduct = monthlyPerformance.current.rankedProducts[0];
   const expenseToGrossProfitRatio = monthlyPerformance.current.grossContribution > 0
     ? monthlyPerformance.current.costedOverhead / monthlyPerformance.current.grossContribution * 100
@@ -165,8 +162,8 @@ export default function FactoryAnalyticsPage() {
             <div className="grid grid-cols-1 divide-y divide-slate-200 border-y border-slate-200 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-7 sm:divide-x sm:divide-y-0 sm:divide-x-reverse">
               <Metric label="إيرادات المبيعات" value={formatMoney(monthlyPerformance.current.sales)} detail={`السابق: ${formatMoney(monthlyPerformance.previous.sales)}`} tone="blue" />
               <Metric label="تكلفة خامات الأصناف مكتملة التكلفة" value={formatMoney(monthlyPerformance.current.salesMaterialCost)} detail={`بتكلفة الوصفات الحالية · السابق: ${formatMoney(monthlyPerformance.previous.salesMaterialCost)}`} tone="amber" />
-              <Metric label="ربح الأصناف مكتملة التكلفة" value={formatMoney(monthlyPerformance.current.grossContribution)} detail={`قبل المصاريف والرواتب · السابق: ${formatMoney(monthlyPerformance.previous.grossContribution)}`} tone="teal" />
-              <Metric label="المصاريف والرواتب" value={formatMoney(monthlyPerformance.current.allOverhead)} detail={`السابق: ${formatMoney(monthlyPerformance.previous.allOverhead)}`} tone="amber" />
+              <Metric label="ربح الأصناف مكتملة التكلفة" value={formatMoney(monthlyPerformance.current.grossContribution)} detail={`قبل المصاريف · السابق: ${formatMoney(monthlyPerformance.previous.grossContribution)}`} tone="teal" />
+              <Metric label="المصاريف المسجلة" value={formatMoney(monthlyPerformance.current.allOverhead)} detail={`السابق: ${formatMoney(monthlyPerformance.previous.allOverhead)}`} tone="amber" />
              
               <Metric label="صافي مساهمة الأصناف مكتملة التكلفة" value={formatMoney(monthlyPerformance.current.estimatedNetProfit)} detail="بعد تكلفة الوصفات ومصاريف الشهر" tone={monthlyPerformance.current.estimatedNetProfit < 0 ? 'rose' : 'teal'} />
               <Metric label="مصروفات / مبيعات" value={monthlyPerformance.current.expenseRatio === null ? 'غير متاح' : formatPercent(monthlyPerformance.current.expenseRatio)} detail={monthlyPerformance.previous.expenseRatio === null ? 'لا توجد مبيعات بالشهر السابق للمقارنة' : `السابق: ${formatPercent(monthlyPerformance.previous.expenseRatio)}`} tone={expenseRatioDifference !== null && expenseRatioDifference > 0 ? 'rose' : 'slate'} />
@@ -175,7 +172,7 @@ export default function FactoryAnalyticsPage() {
 
             {expenseToGrossProfitRatio !== null && expenseToGrossProfitRatio > 100 ? (
               <div role="alert" className="mt-4 border-r-4 border-rose-600 bg-rose-50 p-4 text-sm font-bold leading-6 text-rose-900">
-                تنبيه: المصاريف والرواتب المخصصة للأصناف مكتملة التكلفة تستهلك {formatPercent(expenseToGrossProfitRatio)} من ربحها، متجاوزة حد التعادل 100%؛ صافي المساهمة التقديرية لها سالب.
+                تنبيه: المصاريف المخصصة للأصناف مكتملة التكلفة تستهلك {formatPercent(expenseToGrossProfitRatio)} من ربحها، متجاوزة حد التعادل 100%؛ صافي المساهمة التقديرية لها سالب.
               </div>
             ) : monthlyPerformance.current.grossContribution <= 0 ? (
               <div role="alert" className="mt-4 border-r-4 border-rose-600 bg-rose-50 p-4 text-sm font-bold leading-6 text-rose-900">
@@ -243,7 +240,7 @@ export default function FactoryAnalyticsPage() {
             </SectionHeading>
             {expenseRatioDifference !== null && expenseRatioDifference > 0 && monthlyPerformance.current.expenseRatio > 0 && (
               <div role="status" className="mb-4 border-r-4 border-rose-600 bg-rose-50 p-4 text-sm font-bold leading-6 text-rose-900">
-                تنبيه: نسبة المصاريف والرواتب إلى المبيعات ارتفعت من {formatPercent(monthlyPerformance.previous.expenseRatio)} إلى {formatPercent(monthlyPerformance.current.expenseRatio)} ({formatDecimal(expenseRatioDifference, 1)} نقطة مئوية).
+                تنبيه: نسبة المصاريف إلى المبيعات ارتفعت من {formatPercent(monthlyPerformance.previous.expenseRatio)} إلى {formatPercent(monthlyPerformance.current.expenseRatio)} ({formatDecimal(expenseRatioDifference, 1)} نقطة مئوية).
                 {monthlyPerformance.current.topExpense ? ` أكبر بند مسجل هذا الشهر: ${monthlyPerformance.current.topExpense.name} بقيمة ${formatMoney(monthlyPerformance.current.topExpense.amount)}.` : ' لا يوجد بند مصروفات مفصل مسجل.'}
               </div>
             )}
@@ -257,14 +254,13 @@ export default function FactoryAnalyticsPage() {
                   <dl className="space-y-2 text-sm">
                     <div className="flex justify-between gap-3"><dt className="text-slate-600">إيرادات المبيعات</dt><dd className="font-bold tabular-nums">{formatMoney(month.sales)}</dd></div>
                     <div className="flex justify-between gap-3"><dt className="text-slate-600">مصروفات مسجلة</dt><dd className="font-bold tabular-nums">{formatMoney(month.expenseAmount)}</dd></div>
-                    <div className="flex justify-between gap-3"><dt className="text-slate-600">رواتب مصروفة</dt><dd className="font-bold tabular-nums">{formatMoney(month.salaryAmount)}</dd></div>
                     <div className="flex justify-between gap-3 border-t border-slate-200 pt-2"><dt className="font-bold text-slate-800">نسبة الإجمالي للمبيعات</dt><dd className="font-black text-amber-800 tabular-nums">{month.expenseRatio === null ? 'غير متاح' : formatPercent(month.expenseRatio)}</dd></div>
                   </dl>
                   {month.topExpense && <p className="mt-3 text-xs text-slate-500">البند الأكبر: <strong className="text-slate-800">{month.topExpense.name}</strong> · {formatMoney(month.topExpense.amount)}</p>}
                 </div>
               ))}
             </div>
-            <p className="mt-3 text-xs leading-5 text-slate-500">المقارنة تقيس المصروفات والرواتب المسجلة خلال الشهر، لا التزامات مستقبلية. التنبيه مبني على الشهر السابق الفعلي وليس نسبة معيارية ثابتة؛ المصروفات المصنفة غير متاحة عند غياب تصنيف للمصروف.</p>
+            <p className="mt-3 text-xs leading-5 text-slate-500">المقارنة تقيس المصروفات المسجلة خلال الشهر، لا التزامات مستقبلية. التنبيه مبني على الشهر السابق الفعلي وليس نسبة معيارية ثابتة؛ المصروفات المصنفة غير متاحة عند غياب تصنيف للمصروف.</p>
           </section>
 
           <section id="credit" className="scroll-mt-6 border-t border-slate-300 pt-7">

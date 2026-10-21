@@ -2,6 +2,7 @@
 import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
+import { archiveAndDeleteRecord } from '../../lib/deleted-records';
 import toast, { Toaster } from 'react-hot-toast';
 import { useReactToPrint } from 'react-to-print';
 
@@ -12,6 +13,10 @@ function formatQuantity(value) {
     useGrouping: false,
     maximumFractionDigits: 15,
   });
+}
+
+function getEditingMaterialKey(material) {
+  return material.editorKey || material.id;
 }
 
 export default function ProductsPage() {
@@ -158,7 +163,12 @@ export default function ProductsPage() {
 
       const cleanProductName = normalizeProductName(nextProductName);
       if (!cleanProductName) throw new Error('اسم المنتج مطلوب');
-      const cleanedMaterials = nextMaterials;
+      const cleanedMaterials = nextMaterials.filter((item) =>
+        !item.isMissingMaterial && materials.some((material) => material.id === item.id)
+      );
+      if (cleanedMaterials.length !== nextMaterials.length) {
+        throw new Error('يرجى استبدال أو إزالة الخامات غير المسجلة قبل الحفظ');
+      }
 
       const firstRow = prodRecipes[0];
       const sellingPriceValue = Number(firstRow.selling_price ?? firstRow.sellingPrice ?? firstRow.price ?? 0);
@@ -198,7 +208,7 @@ export default function ProductsPage() {
     mutationFn: async (prodName) => {
       const prodRecipes = allRecipes.filter(r => (r.product_name || r.name) === prodName);
       for (const record of prodRecipes) {
-        await pb.collection('products_recipes').delete(record.id);
+        await archiveAndDeleteRecord('products_recipes', record.id, prodName);
       }
     },
     onSuccess: () => {
@@ -552,13 +562,20 @@ export default function ProductsPage() {
                               const draft = Object.values(
                                 prodRecipes.reduce((acc, row) => {
                                   const matId = row.raw_material_id || row.material_id;
-                                  if (!matId) return acc;
+                                  const editorKey = matId || `missing-${row.id}`;
                                   const qty = Number(row.quantity_needed || row.qtyNeeded || row.quantity || 0);
                                   const materialInfo = materials.find((m) => m.id === matId);
-                                  if (!acc[matId]) {
-                                    acc[matId] = { id: matId, name: materialInfo?.name || 'خامة', price: Number(materialInfo?.price || 0), qtyNeeded: 0 };
+                                  if (!acc[editorKey]) {
+                                    acc[editorKey] = {
+                                      id: materialInfo ? matId : null,
+                                      editorKey,
+                                      isMissingMaterial: !materialInfo,
+                                      name: materialInfo?.name || 'خامة غير مسجلة',
+                                      price: Number(materialInfo?.price || 0),
+                                      qtyNeeded: 0,
+                                    };
                                   }
-                                  acc[matId].qtyNeeded += qty;
+                                  acc[editorKey].qtyNeeded += qty;
                                   return acc;
                                 }, {})
                               );
@@ -688,8 +705,43 @@ export default function ProductsPage() {
                               </thead>
                               <tbody className="divide-y bg-white">
                                 {editingMaterials.map((item) => (
-                                  <tr key={item.id}>
-                                    <td className="p-2 font-bold text-gray-800">{item.name}</td>
+                                  <tr key={getEditingMaterialKey(item)}>
+                                    <td className="p-2 font-bold text-gray-800">
+                                      {item.isMissingMaterial ? (
+                                        <div className="space-y-1">
+                                          <span className="text-amber-700">{item.name}</span>
+                                          <select
+                                            value=""
+                                            onChange={(e) => {
+                                              const material = materials.find((candidate) => candidate.id === e.target.value);
+                                              if (!material) return;
+                                              const itemKey = getEditingMaterialKey(item);
+                                              setEditingMaterials((prev) => prev.map((current) => (
+                                                getEditingMaterialKey(current) === itemKey
+                                                  ? {
+                                                    ...current,
+                                                    id: material.id,
+                                                    isMissingMaterial: false,
+                                                    name: material.name,
+                                                    price: Number(material.price || 0),
+                                                  }
+                                                  : current
+                                              )));
+                                            }}
+                                            className="w-full border border-amber-200 rounded p-1 text-xs font-normal text-black bg-white"
+                                          >
+                                            <option value="" disabled>اختر خامة بديلة</option>
+                                            {materials
+                                              .filter((material) => !editingMaterials.some(
+                                                (selected) => selected.id === material.id
+                                              ))
+                                              .map((material) => (
+                                                <option key={material.id} value={material.id}>{material.name}</option>
+                                              ))}
+                                          </select>
+                                        </div>
+                                      ) : item.name}
+                                    </td>
                                     <td className="p-2">
                                       <input
                                         type="number"
@@ -698,18 +750,39 @@ export default function ProductsPage() {
                                         value={item.qtyNeeded}
                                         onChange={(e) => {
                                           const value = Number(e.target.value);
-                                          setEditingMaterials((prev) => prev.map((m) => (m.id === item.id ? { ...m, qtyNeeded: Number(value || 0) } : m)));
+                                          const itemKey = getEditingMaterialKey(item);
+                                          setEditingMaterials((prev) => prev.map((material) => (
+                                            getEditingMaterialKey(material) === itemKey
+                                              ? { ...material, qtyNeeded: Number(value || 0) }
+                                              : material
+                                          )));
                                         }}
                                         className="w-20 border border-violet-200 p-1 rounded text-center text-black font-bold text-xs outline-none"
                                       />
                                     </td>
                                     <td className="p-2 print:hidden">
-                                      <button type="button" onClick={() => setEditingMaterials((prev) => prev.filter((m) => m.id !== item.id))} className="text-red-500 font-bold">✕</button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const itemKey = getEditingMaterialKey(item);
+                                          setEditingMaterials((prev) => prev.filter(
+                                            (material) => getEditingMaterialKey(material) !== itemKey
+                                          ));
+                                        }}
+                                        className="text-red-500 font-bold"
+                                      >
+                                        ✕
+                                      </button>
                                     </td>
                                   </tr>
                                 ))}
                               </tbody>
                             </table>
+                            {editingMaterials.some((item) => item.isMissingMaterial) && (
+                              <p className="bg-amber-50 p-2 text-[11px] text-amber-800">
+                                توجد خامات غير مسجلة. اختر خامة بديلة أو أزل الصف قبل الحفظ.
+                              </p>
+                            )}
                           </div>
                         )}
 
@@ -769,7 +842,7 @@ export default function ProductsPage() {
                                   const matInfo = materials.find((material) => material.id === matId);
                                   return {
                                     id: matId,
-                                    name: matInfo?.name || 'خامة',
+                                    name: matInfo?.name || 'خامة غير مسجلة',
                                     price: Number(matInfo?.price || 0),
                                     qtyNeeded: Number(recipe.quantity_needed || recipe.qtyNeeded || recipe.quantity || 0),
                                   };
@@ -809,7 +882,7 @@ export default function ProductsPage() {
                               {prodRecipes.map((item, idx) => {
                                 const matId = item.raw_material_id || item.material_id;
                                 const matInfo = materials.find(m => m.id === matId);
-                                const matName = matInfo?.name || 'خامة';
+                                const matName = matInfo?.name || 'خامة غير مسجلة';
                                 const matPrice = Number(matInfo?.price || 0);
                                 const qty = Number(item.quantity_needed || item.qtyNeeded || item.quantity || 0);
                                 const itemTotalCost = matPrice * qty;
