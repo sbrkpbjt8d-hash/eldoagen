@@ -888,8 +888,8 @@ const combinedStatement = [...statementWithBalance].reverse();
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex items-center justify-between">
           <div>
-            <p className="text-xs font-bold text-gray-400">إجمالي العملاء</p>
-            <h3 className="text-xl font-black text-blue-600 mt-1">{clients.length} عميل</h3>
+            <p className="text-xs font-bold text-gray-400">عدد العملاء</p>
+            <h3 className="text-xl font-black text-blue-600 mt-1">{loading ? 'جاري التحميل...' : `${clients.length} عميل`}</h3>
           </div>
           <div className="p-3 bg-blue-50 text-blue-600 rounded-xl font-bold">👤</div>
         </div>

@@ -946,6 +946,13 @@ const deleteInvoiceMutation = useMutation({
         );
       })()}
 
+      <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm">
+        <p className="text-xs font-bold text-gray-400">عدد فواتير البيع</p>
+        <h2 className="mt-1 text-xl font-black text-blue-600">
+          {loadingInvoices ? 'جاري التحميل...' : `${salesInvoices.length} فاتورة`}
+        </h2>
+      </div>
+
       {/* قسم إنشاء أو تعديل الفاتورة */}
       <div className="bg-white p-6 rounded-3xl shadow-xl border border-gray-100 space-y-6">
         <div className="flex justify-between items-center border-b pb-4">
@@ -1438,7 +1445,6 @@ const deleteInvoiceMutation = useMutation({
     </div>
   );
 }
-
 
 
 
