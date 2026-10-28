@@ -38,6 +38,10 @@
 		font-size: 11px !important;
 	}
 
+	body:has(.treasury-history-expanded) .treasury-history-print-area section {
+		break-inside: avoid;
+	}
+
 	body:has(.treasury-history-expanded) .treasury-history-print-area th,
 	body:has(.treasury-history-expanded) .treasury-history-print-area td {
 		padding: 7px 6px !important;

@@ -6,6 +6,7 @@ import { archiveAndDeleteRecord } from '../../lib/deleted-records';
 import { useReactToPrint } from 'react-to-print';
 
 const EGYPT_TIME_ZONE = 'Africa/Cairo';
+const TRANSACTION_PAGE_SIZE = 20;
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 
 export default function TreasuryPage() {
@@ -30,6 +31,7 @@ export default function TreasuryPage() {
   const [movementTypeFilter, setMovementTypeFilter] = useState('all');
   const [movementDirectionFilter, setMovementDirectionFilter] = useState('all');
   const [descriptionFilter, setDescriptionFilter] = useState('');
+  const [visibleTransactionCount, setVisibleTransactionCount] = useState(TRANSACTION_PAGE_SIZE);
   const [isHistoryExpanded, setIsHistoryExpanded] = useState(false);
   const historyPrintRef = useRef(null);
   const printHistory = useReactToPrint({
@@ -681,8 +683,109 @@ const allTransactions = [...transactionsWithTreasuryBalance].reverse();
     .filter((transaction) => transaction.signedAmount < 0)
     .reduce((total, transaction) => total + Math.abs(transaction.signedAmount), 0);
 
+  const visibleTransactions = filteredTreasuryTransactions.slice(0, visibleTransactionCount);
+  const movementTypeLabels = {
+    client_payment: ['📥 تحصيل نقدي (+)', 'bg-emerald-100 text-emerald-800'],
+    sales_invoice: ['🛒 مبيعات كاش (+)', 'bg-blue-100 text-blue-800'],
+    sales_return: ['↩️ مرتجع مبيعات (-)', 'bg-red-100 text-red-800'],
+    supplier_payment: ['📤 سداد لمورد (-)', 'bg-amber-100 text-amber-800'],
+    employee_advance: ['💸 سلفة موظف (-)', 'bg-purple-100 text-purple-800'],
+    salary_payout: ['💰 صرف مرتبات (-)', 'bg-indigo-100 text-indigo-800'],
+    other_advance_return: ['↩️ رد عهدة (+)', 'bg-emerald-100 text-emerald-800'],
+    other_advance: ['💼 صرف عهدة (-)', 'bg-orange-100 text-orange-800'],
+    bank_deposit: ['🏦 إيداع في بنك (-)', 'bg-cyan-100 text-cyan-800'],
+    bank_transfer: ['↔️ تحويل من بنك (+)', 'bg-emerald-100 text-emerald-800'],
+    cash_deposit: ['📥 إيداع في الخزنة (+)', 'bg-teal-100 text-teal-800'],
+    cash_withdrawal: ['📤 سحب من الخزنة (-)', 'bg-rose-100 text-rose-800'],
+  };
+  const renderTransactionTable = (transactions) => {
+    return (
+      <section
+        aria-label="سجل الحركات النقدية"
+        className="w-full overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm"
+      >
+        <header className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 bg-gray-50 p-4 text-gray-900">
+          <h3 className="font-black">📋 سجل الحركات النقدية</h3>
+          <span className="text-xs font-bold">عرض {transactions.length} من {filteredTreasuryTransactions.length} حركة</span>
+        </header>
+        <div className="w-full overflow-x-auto">
+          <table className="w-full min-w-[1000px] table-auto text-right text-xs">
+            <thead className="bg-gray-100 text-gray-600">
+              <tr>
+                <th className="whitespace-nowrap p-3">التاريخ</th>
+                <th className="whitespace-nowrap p-3">الحركة</th>
+                <th className="whitespace-nowrap p-3">نوع الحركة</th>
+                <th className="whitespace-nowrap p-3">البيان / الوصف</th>
+                <th className="whitespace-nowrap p-3">المبلغ</th>
+                <th className="whitespace-nowrap bg-emerald-50 p-3 text-emerald-900">قيمة الخزنة (بعد الحركة)</th>
+                <th className="whitespace-nowrap p-3">ملاحظات</th>
+                <th className="whitespace-nowrap p-3">بواسطة</th>
+                {isAdmin && <th className="whitespace-nowrap p-3 text-center print:hidden">إجراءات</th>}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {transactions.map((tx) => {
+                const isDeposit = tx.signedAmount > 0;
+                const [label, labelClasses] = movementTypeLabels[tx.movementType] || ['💸 مصروف نقدية (-)', 'bg-red-100 text-red-800'];
+                return (
+                  <tr key={tx.id} className="hover:bg-gray-50">
+                    <td className="whitespace-nowrap p-3 text-gray-600">
+                      {new Date(tx.displayDate || tx.date).toLocaleString('ar-EG', { timeZone: EGYPT_TIME_ZONE })}
+                    </td>
+                    <td className="p-3">
+                      <span className={`whitespace-nowrap rounded-xl px-2.5 py-1 text-[10px] font-bold ${isDeposit ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'}`}>
+                        {isDeposit ? 'إيداع' : 'سحب'}
+                      </span>
+                    </td>
+                    <td className="whitespace-nowrap p-3">
+                      <span className={`rounded-xl px-2.5 py-1 text-[10px] font-bold ${labelClasses}`}>{label}</span>
+                    </td>
+                    <td className="p-3 font-bold text-gray-900">{tx.title}</td>
+                    <td className={`whitespace-nowrap p-3 font-black ${isDeposit ? 'text-emerald-600' : 'text-red-600'}`}>
+                      {isDeposit ? '+' : '-'} {tx.amount.toLocaleString()} ج.م
+                    </td>
+                    <td className="whitespace-nowrap bg-emerald-50/40 p-3 font-black text-emerald-800">
+                      {tx.treasuryBalance.toLocaleString()} ج.م
+                    </td>
+                    <td className="p-3 text-gray-500">{tx.notes || '—'}</td>
+                    <td className="whitespace-nowrap p-3 font-bold text-gray-700">{tx.actor}</td>
+                    {isAdmin && (
+                      <td className="whitespace-nowrap p-3 text-center print:hidden">
+                        <button
+                          onClick={async () => {
+                            const confirmed = await requestConfirmation('هل أنت متأكد من حذف هذه الحركة نهائياً وتحديث رصيد الخزنة؟');
+                            if (confirmed) deleteTransactionMutation.mutate({
+                              id: tx.id,
+                              collectionName: tx.collection,
+                              signedAmount: tx.signedAmount,
+                            });
+                          }}
+                          className="rounded-xl bg-red-50 px-2.5 py-1.5 text-[10px] font-bold text-red-600 transition hover:bg-red-600 hover:text-white"
+                          title="حذف الحركة"
+                        >
+                          🗑️ حذف
+                        </button>
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
+              {transactions.length === 0 && (
+                <tr>
+                  <td colSpan={isAdmin ? 9 : 8} className="p-8 text-center font-bold text-gray-400">
+                    لا توجد حركات في الفترة المحددة.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    );
+  };
+
   return (
-    <div className="p-4 md:p-8 max-w-6xl mx-auto space-y-8 relative" dir="rtl">
+    <div className="p-4 md:p-8 max-w-7xl mx-auto space-y-8 relative" dir="rtl">
       
       {toast.show && (
         <div className={`fixed top-5 left-5 z-50 px-5 py-3 rounded-2xl shadow-2xl text-white font-bold text-sm ${
@@ -853,7 +956,10 @@ const allTransactions = [...transactionsWithTreasuryBalance].reverse();
           <label className="text-xs font-bold text-gray-700">نوع الحركة</label>
           <select
             value={movementTypeFilter}
-            onChange={(event) => setMovementTypeFilter(event.target.value)}
+            onChange={(event) => {
+              setMovementTypeFilter(event.target.value);
+              setVisibleTransactionCount(TRANSACTION_PAGE_SIZE);
+            }}
             className="w-full border border-gray-200 bg-gray-50 p-2.5 rounded-xl text-xs font-bold outline-none mt-1"
           >
             <option value="all">كل الحركات</option>
@@ -876,7 +982,10 @@ const allTransactions = [...transactionsWithTreasuryBalance].reverse();
           <label className="text-xs font-bold text-gray-700">اتجاه الحركة</label>
           <select
             value={movementDirectionFilter}
-            onChange={(event) => setMovementDirectionFilter(event.target.value)}
+            onChange={(event) => {
+              setMovementDirectionFilter(event.target.value);
+              setVisibleTransactionCount(TRANSACTION_PAGE_SIZE);
+            }}
             className="w-full border border-gray-200 bg-gray-50 p-2.5 rounded-xl text-xs font-bold outline-none mt-1"
           >
             <option value="all">كل الحركات</option>
@@ -889,7 +998,10 @@ const allTransactions = [...transactionsWithTreasuryBalance].reverse();
           <input
             type="search"
             value={descriptionFilter}
-            onChange={(event) => setDescriptionFilter(event.target.value)}
+            onChange={(event) => {
+              setDescriptionFilter(event.target.value);
+              setVisibleTransactionCount(TRANSACTION_PAGE_SIZE);
+            }}
             placeholder="اكتب جزءًا من البيان..."
             className="w-full border border-gray-200 bg-gray-50 p-2.5 rounded-xl text-xs font-bold outline-none mt-1"
           />
@@ -899,7 +1011,10 @@ const allTransactions = [...transactionsWithTreasuryBalance].reverse();
           <input
             type="date"
             value={startDate}
-            onChange={(e) => setStartDate(e.target.value)}
+            onChange={(e) => {
+              setStartDate(e.target.value);
+              setVisibleTransactionCount(TRANSACTION_PAGE_SIZE);
+            }}
             className="w-full border border-gray-200 bg-gray-50 p-2.5 rounded-xl text-xs font-bold outline-none mt-1"
           />
         </div>
@@ -908,7 +1023,10 @@ const allTransactions = [...transactionsWithTreasuryBalance].reverse();
           <input
             type="date"
             value={endDate}
-            onChange={(e) => setEndDate(e.target.value)}
+            onChange={(e) => {
+              setEndDate(e.target.value);
+              setVisibleTransactionCount(TRANSACTION_PAGE_SIZE);
+            }}
             className="w-full border border-gray-200 bg-gray-50 p-2.5 rounded-xl text-xs font-bold outline-none mt-1"
           />
         </div>
@@ -936,121 +1054,22 @@ const allTransactions = [...transactionsWithTreasuryBalance].reverse();
             </button>
           </div>
         </div>
-        <div className="border border-gray-200 rounded-2xl overflow-hidden overflow-x-auto">
-          <table className="w-full text-right text-xs">
-            <thead className="bg-gray-100 text-gray-600">
-              <tr>
-                <th className="p-3">التاريخ</th>
-                <th className="p-3">الحركة</th>
-                <th className="p-3">نوع الحركة</th>
-                <th className="p-3">البيان / الوصف</th>
-                <th className="p-3">المبلغ</th>
-                <th className="p-3 bg-emerald-50 text-emerald-900">قيمة الخزنة (بعد الحركة)</th>
-                <th className="p-3">ملاحظات</th>
-                <th className="p-3">بواسطة</th>
-                {isAdmin && <th className="p-3 text-center print:hidden">إجراءات</th>}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {filteredTreasuryTransactions.map((tx) => (
-                <tr key={tx.id} className="hover:bg-gray-50 transition">
-                  <td className="p-3 text-gray-600">{new Date(tx.displayDate || tx.date).toLocaleString('ar-EG', { timeZone: EGYPT_TIME_ZONE })}</td>
-                  <td className="p-3">
-                    <span className={`px-2.5 py-1 rounded-xl text-[10px] font-bold ${tx.signedAmount > 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'}`}>
-                      {tx.signedAmount > 0 ? 'إيداع' : 'سحب'}
-                    </span>
-                  </td>
-                  <td className="p-3">
-                    {tx.movementType === 'client_payment' ? (
-                      <span className="bg-emerald-100 text-emerald-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
-                        📥 تحصيل نقدي (+)
-                      </span>
-                    ) : tx.movementType === 'sales_invoice' ? (
-                      <span className="bg-blue-100 text-blue-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
-                        🛒 مبيعات كاش (+)
-                      </span>
-                    ) : tx.movementType === 'sales_return' ? (
-                      <span className="bg-red-100 text-red-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
-                        ↩️ مرتجع مبيعات (-)
-                      </span>
-                    ) : tx.movementType === 'supplier_payment' ? (
-                      <span className="bg-amber-100 text-amber-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
-                        📤 سداد لمورد (-)
-                      </span>
-                    ) : tx.movementType === 'employee_advance' ? (
-                      <span className="bg-purple-100 text-purple-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
-                        💸 سلفة موظف (-)
-                      </span>
-                    ) : tx.movementType === 'salary_payout' ? (
-                      <span className="bg-indigo-100 text-indigo-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
-                        💰 صرف مرتبات (-)
-                      </span>
-                    ) : tx.movementType === 'other_advance_return' ? (
-                      <span className="bg-emerald-100 text-emerald-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
-                        ↩️ رد عهدة (+)
-                      </span>
-                    ) : tx.movementType === 'other_advance' ? (
-                      <span className="bg-orange-100 text-orange-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
-                        💼 صرف عهدة (-)
-                      </span>
-                    ) : tx.movementType === 'bank_deposit' ? (
-                      <span className="bg-cyan-100 text-cyan-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
-                        🏦 إيداع في بنك (-)
-                      </span>
-                    ) : tx.movementType === 'bank_transfer' ? (
-                      <span className="bg-emerald-100 text-emerald-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
-                        ↔️ تحويل من بنك (+)
-                      </span>
-                    ) : tx.movementType === 'cash_deposit' ? (
-                      <span className="bg-teal-100 text-teal-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
-                        📥 إيداع في الخزنة (+)
-                      </span>
-                    ) : tx.movementType === 'cash_withdrawal' ? (
-                      <span className="bg-rose-100 text-rose-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
-                        📤 سحب من الخزنة (-)
-                      </span>
-                    ) : (
-                      <span className="bg-red-100 text-red-800 px-2.5 py-1 rounded-xl text-[10px] font-bold">
-                        💸 مصروف نقدية (-)
-                      </span>
-                    )}
-                  </td>
-                  <td className="p-3 font-bold text-gray-900">{tx.title}</td>
-                  <td className={`p-3 font-black ${tx.signedAmount > 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                    {tx.signedAmount > 0 ? `+ ${tx.amount.toLocaleString()}` : `- ${tx.amount.toLocaleString()}`} ج.م
-                  </td>
-                  <td className="p-3 font-black text-emerald-800 bg-emerald-50/40">
-                    {tx.treasuryBalance.toLocaleString()} ج.م
-                  </td>
-                  <td className="p-3 text-gray-500">{tx.notes}</td>
-                  <td className="p-3 font-bold text-gray-700">{tx.actor}</td>
-                  {isAdmin && (
-                    <td className="p-3 text-center print:hidden">
-                      <button
-                        onClick={async () => {
-                          const confirmed = await requestConfirmation('هل أنت متأكد من حذف هذه الحركة نهائياً وتحديث رصيد الخزنة؟');
-                          if (confirmed) deleteTransactionMutation.mutate({
-                            id: tx.id,
-                            collectionName: tx.collection,
-                            signedAmount: tx.signedAmount,
-                          });
-                        }}
-                        className="bg-red-50 text-red-600 hover:bg-red-600 hover:text-white px-2.5 py-1.5 rounded-xl text-[10px] font-bold transition"
-                        title="حذف الحركة"
-                      >
-                        🗑️ حذف
-                      </button>
-                    </td>
-                  )}
-                </tr>
-              ))}
-              {filteredTreasuryTransactions.length === 0 && (
-                <tr>
-                  <td colSpan={isAdmin ? 9 : 8} className="p-8 text-center text-gray-400 font-bold">لا توجد حركات نقدية مسجلة للخزنة في الفترة المحددة.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+        <div className="w-full space-y-6">
+          {renderTransactionTable(visibleTransactions)}
+          {visibleTransactions.length < filteredTreasuryTransactions.length && (
+            <div className="flex justify-center print:hidden">
+              <button
+                type="button"
+                onClick={() => setVisibleTransactionCount((count) => Math.min(
+                  count + TRANSACTION_PAGE_SIZE,
+                  filteredTreasuryTransactions.length,
+                ))}
+                className="rounded-xl bg-gray-900 px-6 py-3 text-xs font-bold text-white transition hover:bg-gray-800"
+              >
+                عرض المزيد
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
