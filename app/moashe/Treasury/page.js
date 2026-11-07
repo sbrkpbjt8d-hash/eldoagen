@@ -604,6 +604,11 @@ export default function TreasuryPage() {
     return Number.isNaN(createdTime) ? 0 : createdTime;
   };
 
+  const getTransactionCreatedTimestamp = (transaction) => {
+    const createdTime = Date.parse(transaction.created || '');
+    return Number.isNaN(createdTime) ? getTransactionTimestamp(transaction) : createdTime;
+  };
+
   const getTransactionDay = (transaction) => String(getTransactionDate(transaction) || '').slice(0, 10);
 
 
@@ -647,8 +652,12 @@ const transactionsWithTreasuryBalance = sortedAscTransactions.reduce((transactio
   ];
 }, []);
 
-// 3. عكس الترتيب لعرض الأحدث في الأعلى مع الاحتفاظ بالأرصدة الصحيحة لكل حركة
-const allTransactions = [...transactionsWithTreasuryBalance].reverse();
+// Keep each calculated balance while showing the most recently created movement first.
+const allTransactions = [...transactionsWithTreasuryBalance].sort((a, b) => {
+  const createdDifference = getTransactionCreatedTimestamp(b) - getTransactionCreatedTimestamp(a);
+  if (createdDifference !== 0) return createdDifference;
+  return getTransactionTimestamp(b) - getTransactionTimestamp(a);
+});
 
   const filteredTreasuryTransactions = allTransactions.filter(transaction => {
     const transactionDay = getTransactionDay(transaction);
