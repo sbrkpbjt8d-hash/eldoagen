@@ -7,6 +7,29 @@ import { archiveAndDeleteRecord } from '../../lib/deleted-records';
 import { useReactToPrint } from 'react-to-print';
 const currentUserName = localStorage.getItem('userName') || 'مسؤول النظام';
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+const EGYPT_TIME_ZONE = 'Africa/Cairo';
+const formatCairoDateTime = (value, includeTime = true) => {
+  if (!value) return '-';
+
+  const createdDate = new Date(value);
+  if (Number.isNaN(createdDate.getTime())) return '-';
+
+  const options = { timeZone: EGYPT_TIME_ZONE };
+  return includeTime
+    ? createdDate.toLocaleString('ar-EG', options)
+    : createdDate.toLocaleDateString('ar-EG', options);
+};
+const getCairoDateKey = (value) => {
+  const createdDate = new Date(value);
+  return Number.isNaN(createdDate.getTime())
+    ? ''
+    : new Intl.DateTimeFormat('en-CA', {
+      timeZone: EGYPT_TIME_ZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(createdDate);
+};
 
 export default function SalesInvoicesPage() {
   const queryClient = useQueryClient();
@@ -704,7 +727,7 @@ const deleteInvoiceMutation = useMutation({
     if (!matchesName) return false;
 
     if (startDate || endDate) {
-      const invDate = new Date(inv.created).toISOString().split('T')[0];
+      const invDate = getCairoDateKey(inv.created);
       if (startDate && invDate < startDate) return false;
       if (endDate && invDate > endDate) return false;
     }
@@ -720,7 +743,7 @@ const deleteInvoiceMutation = useMutation({
     if (!matchesLog) return false;
 
     if (logStartDate || logEndDate) {
-      const logDate = new Date(log.created).toISOString().split('T')[0];
+      const logDate = getCairoDateKey(log.created);
       if (logStartDate && logDate < logStartDate) return false;
       if (logEndDate && logDate > logEndDate) return false;
     }
@@ -845,7 +868,7 @@ const deleteInvoiceMutation = useMutation({
               </div>
               <div className="flex justify-between bg-gray-50 p-3 rounded-2xl">
                 <span className="text-gray-500">تاريخ الإصدار:</span>
-                <span className="font-bold text-gray-800">{new Date(viewInvoiceModal.invoice.created).toLocaleString('ar-EG')}</span>
+                <span className="font-bold text-gray-800">{formatCairoDateTime(viewInvoiceModal.invoice.created)}</span>
               </div>
             </div>
 
@@ -1323,7 +1346,7 @@ const deleteInvoiceMutation = useMutation({
                           {isReturned ? 'مرتجع' : isPartiallyReturned ? 'مرتجع جزئي' : inv.payment_type === 'credit' ? 'آجل' : 'كاش'}
                         </span>
                       </td>
-                      <td className="p-3 text-gray-500">{new Date(inv.created).toLocaleDateString('ar-EG')}</td>
+                      <td className="p-3 text-gray-500">{formatCairoDateTime(inv.created, false)}</td>
                       <td className="p-3 text-center space-x-2 space-x-reverse print:hidden">
                         <button
                           onClick={() => setViewInvoiceModal({ show: true, invoice: inv })}
@@ -1424,7 +1447,7 @@ const deleteInvoiceMutation = useMutation({
                       <td className="p-3 font-bold text-gray-800">{log.invoice_number}</td>
                       <td className="p-3 text-gray-600">{log.actor_name}</td>
                       <td className="p-3 text-gray-700 max-w-xs truncate">{detailsData.message || log.details}</td>
-                      <td className="p-3 text-gray-500">{new Date(log.created).toLocaleString('ar-EG')}</td>
+                      <td className="p-3 text-gray-500">{formatCairoDateTime(log.created)}</td>
                       <td className="p-3 text-center">
                         <button
                           onClick={() => setViewLogModal({ show: true, log })}
@@ -1445,7 +1468,6 @@ const deleteInvoiceMutation = useMutation({
     </div>
   );
 }
-
 
 
 
