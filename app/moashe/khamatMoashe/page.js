@@ -2,7 +2,12 @@
 import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
-import { archiveAndDeleteRecord } from '../../lib/deleted-records';
+import {
+  requestRecordDeletion,
+  requestRecordUpdate,
+  requestSettlement,
+} from '../../lib/approval-requests';
+import { isPurchaseInvoiceApproved } from '../../lib/purchase-approval';
 import toast, { Toaster } from 'react-hot-toast';
 import { useReactToPrint } from 'react-to-print';
 
@@ -21,14 +26,6 @@ function currentUserName() {
   return 'مسؤول النظام';
 }
 
-function checkIfAdmin() {
-  if (typeof window !== 'undefined') {
-    const user = pb.authStore.model;
-    return user?.role === 'admin' || user?.email === 'mohamedfrf@icloud.com';
-  }
-  return false;
-}
-
 export default function ProductsPage() {
   const queryClient = useQueryClient();
   const [name, setName] = useState('');
@@ -45,8 +42,6 @@ export default function ProductsPage() {
     contentRef: materialsPrintRef,
     documentTitle: 'قائمة الخامات',
   });
-
-  const isAdmin = checkIfAdmin();
 
   const [selectedMaterialLog, setSelectedMaterialLog] = useState(null);
   const [selectedAdjustmentMaterial, setSelectedAdjustmentMaterial] = useState(null);
@@ -114,7 +109,6 @@ export default function ProductsPage() {
 
   const updateProductMutation = useMutation({
     mutationFn: async ({ id, newName, stock, price }) => {
-      if (!isAdmin) throw new Error('عفواً، تعديل بيانات الخامة متاح للأدمن فقط!');
       const trimmedName = newName.trim();
       const nameExists = products.some(p => p.id !== id && p.name.trim().toLowerCase() === trimmedName.toLowerCase());
       if (nameExists) {
@@ -125,17 +119,16 @@ export default function ProductsPage() {
       if (!trimmedName) throw new Error('اسم الخامة مطلوب.');
       if (!Number.isFinite(stockValue) || stockValue < 0) throw new Error('أدخل كمية متاحة صحيحة.');
       if (!Number.isFinite(priceValue) || priceValue < 0) throw new Error('أدخل سعراً صحيحاً.');
-      return await pb.collection('khamat_moashe').update(id, {
+      return requestRecordUpdate('khamat_moashe', id, {
         name: trimmedName,
         stock: stockValue,
         price: priceValue,
         actor_name: currentUserName(),
-      });
+      }, trimmedName);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['khamat_moashe'] });
-      queryClient.invalidateQueries({ queryKey: ['material_adjustments'] });
-      toast.success('تم تعديل اسم الخامة والكمية والسعر بنجاح!');
+      queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
+      toast.success('تم إرسال طلب تعديل الخامة للمدير.');
       setEditModal({ isOpen: false, product: null, newName: '', stock: '', price: '' });
     },
     onError: (error) => {
@@ -144,12 +137,10 @@ export default function ProductsPage() {
   });
 
   const deleteProductMutation = useMutation({
-    mutationFn: async (id) => {
-      return await archiveAndDeleteRecord('khamat_moashe', id);
-    },
+    mutationFn: (id) => requestRecordDeletion('khamat_moashe', id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['khamat_moashe'] });
-      toast.success('تم حذف الصنف بنجاح!');
+      queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
+      toast.success('تم إرسال طلب حذف الصنف للمدير.');
       setConfirmModal({ isOpen: false, title: '', message: '', onConfirm: null });
     },
     onError: (error) => {
@@ -159,15 +150,10 @@ export default function ProductsPage() {
   });
 
   const deleteAdjustmentMutation = useMutation({
-    mutationFn: async (adjustmentId) => {
-      if (!isAdmin) {
-        throw new Error('عفواً، حذف التسويات متاح للأدمن فقط!');
-      }
-      return await archiveAndDeleteRecord('material_adjustments', adjustmentId, 'تسوية خامة');
-    },
+    mutationFn: (adjustmentId) => requestRecordDeletion('material_adjustments', adjustmentId, 'تسوية خامة'),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['material_adjustments'] });
-      toast.success('تم حذف التسوية بنجاح!');
+      queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
+      toast.success('تم إرسال طلب حذف التسوية للمدير.');
       setConfirmModal({ isOpen: false, title: '', message: '', onConfirm: null });
     },
     onError: (error) => {
@@ -185,26 +171,31 @@ export default function ProductsPage() {
       const oldStock = Number(material.stock || 0);
       const newStock = oldStock + quantity;
       if (newStock < 0) throw new Error('لا يمكن أن تكون كمية المخزون أقل من صفر');
-      await pb.collection('khamat_moashe').update(material.id, { stock: newStock });
-      return pb.collection('material_adjustments').create({
-        material_id: material.id,
-        material_name: material.name,
-        quantity,
-        old_stock: oldStock,
-        new_stock: newStock,
-        reason: adjustmentReason.trim(),
-        source_type: 'manual_adjustment',
-        actor_name: currentUserName(),
-        date: new Date().toISOString(),
+      return requestSettlement({
+        collectionName: 'khamat_moashe',
+        recordId: material.id,
+        recordLabel: material.name,
+        changes: { stock: newStock },
+        transactionCollection: 'material_adjustments',
+        transactionData: {
+          material_id: material.id,
+          material_name: material.name,
+          quantity,
+          old_stock: oldStock,
+          new_stock: newStock,
+          reason: adjustmentReason.trim(),
+          source_type: 'manual_adjustment',
+          actor_name: currentUserName(),
+          date: new Date().toISOString(),
+        },
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['khamat_moashe'] });
-      queryClient.invalidateQueries({ queryKey: ['material_adjustments'] });
+      queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
       setAdjustmentMaterialId('');
       setAdjustmentQuantity('');
       setAdjustmentReason('');
-      toast.success('تم تنفيذ التسوية وتسجيلها بنجاح!');
+      toast.success('تم إرسال طلب تسوية المخزون للمدير، ولم تتغير الكمية بعد.');
     },
     onError: error => toast.error(error.message || 'فشل تنفيذ التسوية'),
   });
@@ -241,10 +232,6 @@ export default function ProductsPage() {
   }
 
   function handleDeleteAdjustmentClick(adjustment) {
-    if (!isAdmin) {
-      toast.error('عفواً، حذف التسويات متاح للأدمن فقط!');
-      return;
-    }
     setConfirmModal({
       isOpen: true,
       title: 'تأكيد حذف التسوية',
@@ -330,7 +317,7 @@ export default function ProductsPage() {
         actor: adjustment.actor_name || 'غير معروف',
       }));
 
-    const purchaseRows = purchaseInvoices.flatMap(invoice => (invoice.items || [])
+    const purchaseRows = purchaseInvoices.filter(isPurchaseInvoiceApproved).flatMap(invoice => (invoice.items || [])
       .filter(item => matchesMaterial(item.materialId || item.material_id, item.name))
       .map((item, index) => ({
         id: `purchase-${invoice.id}-${item.materialId || item.material_id || index}`,
@@ -584,11 +571,6 @@ export default function ProductsPage() {
           <span className="bg-emerald-100 text-emerald-800 text-sm font-semibold px-4 py-1.5 rounded-full shadow-sm">
             إجمالي قيمة الخامات: {totalInventoryValue.toLocaleString('ar-EG', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ج.م
           </span>
-          {isAdmin && (
-            <span className="bg-purple-100 text-purple-800 text-xs font-bold px-3 py-1.5 rounded-full">
-              👑 صلاحيات الأدمن مفعلة
-            </span>
-          )}
         </div>
       </div>
 
@@ -678,14 +660,12 @@ export default function ProductsPage() {
                       >
                         📜 سجل
                       </button>
-                      {isAdmin && (
-                        <button
-                          onClick={() => setEditModal({ isOpen: true, product: p, newName: p.name, stock: p.stock ?? 0, price: p.price ?? 0 })}
-                          className="text-blue-600 hover:text-blue-800 text-xs font-bold bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-xl border border-blue-100 transition"
-                        >
-                          ✏️ تعديل
-                        </button>
-                      )}
+                      <button
+                        onClick={() => setEditModal({ isOpen: true, product: p, newName: p.name, stock: p.stock ?? 0, price: p.price ?? 0 })}
+                        className="text-blue-600 hover:text-blue-800 text-xs font-bold bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-xl border border-blue-100 transition"
+                      >
+                        ✏️ تعديل
+                      </button>
                       <button
                         onClick={() => handleDeleteClick(p)}
                         className="text-red-500 hover:text-red-700 text-xs font-bold bg-red-50 hover:bg-red-100 px-3 py-1.5 rounded-xl border border-red-100 transition"

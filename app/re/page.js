@@ -2,6 +2,7 @@
 import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../lib/pocketbase';
+import { isPurchaseInvoiceApproved } from '../lib/purchase-approval';
 import { useReactToPrint } from 'react-to-print';
 
 const money = value => {
@@ -92,6 +93,7 @@ export default function ReportsPage() {
   const { data: salesAgents = [] } = useQuery({ queryKey: ['report_sales_agents'], queryFn: () => fetchRecords('sales_agents') });
   const { data: salesInvoices = [] } = useQuery({ queryKey: ['report_sales'], queryFn: () => fetchRecords('sales_invoices') });
   const { data: purchaseInvoices = [] } = useQuery({ queryKey: ['report_purchases'], queryFn: () => fetchRecords('purchase_invoices') });
+  const approvedPurchaseInvoices = purchaseInvoices.filter(isPurchaseInvoiceApproved);
   const { data: expenses = [] } = useQuery({ queryKey: ['report_expenses'], queryFn: () => fetchRecords('expenses', { expand: 'category_id' }) });
   const { data: clientTransactions = [] } = useQuery({
     queryKey: ['report_client_transactions'],
@@ -153,8 +155,9 @@ export default function ReportsPage() {
         const transactionType = String(transaction.type || '').toLowerCase();
         const transactionNotes = String(transaction.notes || '').toLowerCase();
         const isOpening = transactionType.includes('open') || transactionNotes.includes('افتتاحي');
+        const isSettlement = transactionNotes.startsWith('تسوية (');
         const isCashMovement = ['treasury', 'خزنة', 'كاش', ''].includes(String(transaction.destination || '').trim());
-        return !isOpening && isCashMovement;
+        return !isOpening && !isSettlement && isCashMovement;
       })
       .map((transaction) => ({
         amount: -Number(transaction.amount || 0),
@@ -250,12 +253,15 @@ export default function ReportsPage() {
     const transactions = supplierLedgerTransactions
       .filter((transaction) => String(transaction.supplier_id || '') === String(supplier.id))
       .map((transaction) => ({
-        amount: transaction.type === 'payment'
+        amount: transaction.type === 'payment' || (
+          String(transaction.notes || '').startsWith('تسوية (') &&
+          /خصم|تخفيض|مرتجع|cancel/i.test(String(transaction.notes || ''))
+        )
           ? -Number(transaction.amount || 0)
           : Number(transaction.amount || 0),
         date: transaction.date || transaction.created,
       }));
-    const invoices = purchaseInvoices
+    const invoices = approvedPurchaseInvoices
       .filter((invoice) => String(invoice.supplier_id || '') === String(supplier.id))
       .map((invoice) => ({
         amount: Number(invoice.total_amount || 0),
@@ -294,10 +300,12 @@ export default function ReportsPage() {
   };
 
   const periodSales = salesInvoices.filter(inPeriod);
-  const periodPurchases = purchaseInvoices.filter(inPeriod);
+  const periodPurchases = approvedPurchaseInvoices.filter(inPeriod);
   const periodExpenses = expenses.filter(inPeriod);
   const periodClientTransactions = clientTransactions.filter(inPeriod).filter(item => item.type === 'payment');
-  const periodSupplierTransactions = supplierTransactions.filter(inPeriod).filter(item => item.type === 'payment');
+  const periodSupplierTransactions = supplierTransactions
+    .filter(inPeriod)
+    .filter(item => item.type === 'payment' && !String(item.notes || '').startsWith('تسوية ('));
   
   const salesTotal = periodSales.reduce((sum, item) => sum + Number(item.total_amount || 0), 0);
   const purchasesTotal = periodPurchases.reduce((sum, item) => sum + Number(item.total_amount || 0), 0);
@@ -322,7 +330,7 @@ export default function ReportsPage() {
   const getMaterialPurchaseCost = (saleItem, saleDate) => {
     const materialId = String(saleItem.materialId || saleItem.material_id || '');
     const materialName = String(saleItem.name || saleItem.product_name || '').trim().toLowerCase();
-    const purchaseLines = purchaseInvoices
+    const purchaseLines = approvedPurchaseInvoices
       .filter((invoice) => new Date(invoice.created || invoice.date || 0) <= new Date(saleDate || Date.now()))
       .flatMap((invoice) => {
         const items = Array.isArray(invoice.items) ? invoice.items : [];

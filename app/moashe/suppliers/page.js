@@ -2,7 +2,14 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
-import { archiveAndDeleteRecord } from '../../lib/deleted-records';
+import { isPurchaseInvoiceApproved } from '../../lib/purchase-approval';
+import {
+  getPendingReviewActionKeys,
+  requestCompoundOperation,
+  requestRecordDeletion,
+  requestRecordUpdate,
+  requestSettlement,
+} from '../../lib/approval-requests';
 
 export default function SuppliersPage() {
   const queryClient = useQueryClient();
@@ -29,9 +36,6 @@ export default function SuppliersPage() {
   const [endDate, setEndDate] = useState('');
   const [deletePaymentId, setDeletePaymentId] = useState(null);
 
-  // فحص صلاحيات الأدمن
-  const isAdmin = pb.authStore.model?.collectionName === '_superusers' || pb.authStore.model?.role === 'admin';
-
   // دالة جلب اسم المستخدم الحالي لتلافي خطأ عدم التعريف
   const currentUserName = () => {
     return pb.authStore.model?.name || pb.authStore.model?.email || 'مسؤول النظام';
@@ -48,6 +52,14 @@ export default function SuppliersPage() {
     retry: 5,
     retryDelay: 500,
   });
+  const { data: pendingReviewActionKeys = [], isError: pendingReviewsError } = useQuery({
+    queryKey: ['pending_financial_review_action_keys'],
+    queryFn: getPendingReviewActionKeys,
+    refetchOnWindowFocus: true,
+  });
+  const isFinancialReviewPending = (collection, id) => (
+    pendingReviewActionKeys.includes(`${collection}/${id}`)
+  );
 
   const { data: treasuryRecords = [] } = useQuery({
     queryKey: ['treasury'],
@@ -95,7 +107,9 @@ export default function SuppliersPage() {
  const saveMutation = useMutation({
     mutationFn: async () => {
       const data = { ...form, name: form.name.trim(), balance: Number(form.balance || 0), actor_name: currentUserName() };
-      if (editingId) return pb.collection('suppliers').update(editingId, data);
+      if (editingId) {
+        return requestRecordUpdate('suppliers', editingId, data, form.name.trim());
+      }
       const supplier = await pb.collection('suppliers').create(data);
       if (data.balance !== 0) {
         await pb.collection('supplier_transactions').create({
@@ -109,10 +123,12 @@ export default function SuppliersPage() {
       return supplier;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['suppliers'] });
+      queryClient.invalidateQueries({
+        queryKey: editingId ? ['pending_manager_approvals'] : ['suppliers'],
+      });
       setForm({ name: '', phone: '', address: '', notes: '', balance: '' });
       setEditingId(null);
-      showFeedback(editingId ? 'تم تعديل المورد بنجاح.' : 'تم إضافة المورد بنجاح.');
+      showFeedback(editingId ? 'تم إرسال طلب تعديل المورد للمدير.' : 'تم إضافة المورد بنجاح.');
     },
     onError: (error) => showFeedback(`فشل حفظ المورد: ${error.message}`, 'error'),
   });
@@ -124,11 +140,11 @@ export default function SuppliersPage() {
 
 
   const deleteMutation = useMutation({
-    mutationFn: (id) => archiveAndDeleteRecord('suppliers', id),
+    mutationFn: (id) => requestRecordDeletion('suppliers', id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['suppliers'] });
+      queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
       setDeleteId(null);
-      showFeedback('تم حذف المورد بنجاح.');
+      showFeedback('تم إرسال طلب حذف المورد للمدير.');
     },
     onError: (error) => showFeedback(`فشل حذف المورد: ${error.message}`, 'error'),
   });
@@ -141,6 +157,80 @@ export default function SuppliersPage() {
       if (paymentDestination === 'banks' && !paymentBankId) {
         throw new Error('اختر البنك الذي سيتم السداد منه');
       }
+      if (paymentDestination === 'banks') {
+        const bank = banks.find((item) => item.id === paymentBankId);
+        if (!bank) throw new Error('البنك المختار غير موجود');
+        await requestCompoundOperation([
+          {
+            type: 'balance_delta',
+            collection: 'suppliers',
+            id: supplier.id,
+            delta: -amount,
+          },
+          {
+            type: 'create',
+            collection: 'supplier_transactions',
+            data: {
+              supplier_id: supplier.id,
+              type: 'payment',
+              amount,
+              destination: paymentDestination,
+              bank_id: paymentBankId,
+              actor_name: currentUserName(),
+              notes: paymentNotes.trim() || 'سداد للمورد',
+              date: new Date().toISOString(),
+            },
+          },
+          {
+            type: 'balance_delta',
+            collection: 'banks',
+            id: bank.id,
+            delta: -amount,
+          },
+        ], `سداد للمورد ${supplier.name}`, { reviewType: 'bank' });
+        return { reviewRequested: true };
+      }
+      if (paymentDestination === 'treasury') {
+        const actions = [
+          {
+            type: 'balance_delta',
+            collection: 'suppliers',
+            id: supplier.id,
+            delta: -amount,
+          },
+          {
+            type: 'create',
+            collection: 'supplier_transactions',
+            data: {
+              supplier_id: supplier.id,
+              type: 'payment',
+              amount,
+              destination: paymentDestination,
+              bank_id: '',
+              actor_name: currentUserName(),
+              notes: paymentNotes.trim() || 'سداد للمورد',
+              date: new Date().toISOString(),
+            },
+          },
+        ];
+        if (treasury?.id) {
+          actions.push({
+            type: 'balance_delta',
+            collection: 'treasury',
+            id: treasury.id,
+            delta: -amount,
+          });
+        } else {
+          actions.push({
+            type: 'create',
+            collection: 'treasury',
+            data: { balance: -amount, opening_balance: 0 },
+          });
+        }
+        await requestCompoundOperation(actions, `سداد نقدي للمورد ${supplier.name}`, { reviewType: 'treasury' });
+        return { reviewRequested: true };
+      }
+
       await pb.collection('suppliers').update(supplier.id, {
         balance: currentDue - amount,
       });
@@ -155,33 +245,22 @@ export default function SuppliersPage() {
         date: new Date().toISOString(),
       });
 
-      if (paymentDestination === 'treasury') {
-        const currentBalance = Number(treasury?.balance || 0);
-        if (treasury) {
-          await pb.collection('treasury').update(treasury.id, { balance: currentBalance - amount });
-        } else {
-          await pb.collection('treasury').create({ balance: -amount, opening_balance: 0 });
-        }
-      } else {
-        const bank = banks.find((item) => item.id === paymentBankId);
-        if (!bank) throw new Error('البنك المختار غير موجود');
-        await pb.collection('banks').update(bank.id, {
-          balance: Number(bank.balance || 0) - amount,
-        });
-      }
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['suppliers'] });
       queryClient.invalidateQueries({ queryKey: ['supplier_transactions'] });
       queryClient.invalidateQueries({ queryKey: ['all_supplier_transactions'] });
       queryClient.invalidateQueries({ queryKey: ['treasury'] });
       queryClient.invalidateQueries({ queryKey: ['banks'] });
+      queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
       setPaymentModal({ open: false, supplier: null });
       setPaymentAmount('');
       setPaymentNotes('');
       setPaymentDestination('treasury');
       setPaymentBankId('');
-      showFeedback('تم تسجيل السداد وتحديث رصيد المورد.');
+      showFeedback(result?.reviewRequested
+        ? `تم تسجيل السداد ${paymentDestination === 'banks' ? 'البنكي' : 'النقدي'} وتحديث الأرصدة الآن؛ بانتظار اعتماد المراجع.`
+        : 'تم تسجيل السداد وتحديث رصيد المورد.');
     },
     onError: (error) => showFeedback(`فشل تسجيل السداد: ${error.message}`, 'error'),
   });
@@ -201,33 +280,29 @@ export default function SuppliersPage() {
         ? currentBalance - amount
         : currentBalance + amount;
 
-      const transaction = await pb.collection('supplier_transactions').create({
-        supplier_id: supplier.id,
-        type: settlementType === 'minus' ? 'payment' : 'opening_balance',
-        amount,
-        actor_name: currentUserName(),
-        notes: `تسوية (${settlementType === 'minus' ? 'خصم/تخفيض مستحق' : 'إضافة/زيادة مستحق'}): ${settlementNotes.trim() || 'تسوية حساب'}`,
-        date: new Date().toISOString(),
+      return requestSettlement({
+        collectionName: 'suppliers',
+        recordId: supplier.id,
+        recordLabel: supplier.name,
+        changes: { balance: newBalance },
+        transactionCollection: 'supplier_transactions',
+        transactionData: {
+          supplier_id: supplier.id,
+          type: settlementType === 'minus' ? 'payment' : 'opening_balance',
+          amount,
+          actor_name: currentUserName(),
+          notes: `تسوية (${settlementType === 'minus' ? 'خصم/تخفيض مستحق' : 'إضافة/زيادة مستحق'}): ${settlementNotes.trim() || 'تسوية حساب'}`,
+          date: new Date().toISOString(),
+        },
       });
-
-      try {
-        await pb.collection('suppliers').update(supplier.id, {
-          balance: newBalance,
-        });
-      } catch (error) {
-        await pb.collection('supplier_transactions').delete(transaction.id).catch(() => {});
-        throw error;
-      }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['suppliers'] });
-      queryClient.invalidateQueries({ queryKey: ['supplier_transactions'] });
-      queryClient.invalidateQueries({ queryKey: ['all_supplier_transactions'] });
+      queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
       setSettlementModal({ open: false, supplier: null });
       setSettlementAmount('');
       setSettlementNotes('');
       setSettlementType('minus');
-      showFeedback('تم إجراء تسوية حساب المورد بنجاح.');
+      showFeedback('تم إرسال طلب تسوية المورد للمدير، ولم يتغير الرصيد بعد.');
     },
     onError: (error) => showFeedback(`فشل إجراء التسوية: ${error.message}`, 'error'),
   });
@@ -238,10 +313,6 @@ export default function SuppliersPage() {
   
  const deletePaymentMutation = useMutation({
   mutationFn: async (transactionId) => {
-    if (!isAdmin) {
-      throw new Error('حذف السداد متاح للأدمن فقط.');
-    }
-
     const transaction = await pb.collection('supplier_transactions').getOne(transactionId);
     if (String(transaction.type || '').toLowerCase() !== 'payment') {
       throw new Error('هذه الحركة ليست سداداً للمورد.');
@@ -255,46 +326,57 @@ export default function SuppliersPage() {
       throw new Error('مبلغ السداد غير صحيح.');
     }
 
-    // 1. استرجاع المبلغ للخزينة أو البنك أولاً
+    const actions = [{
+      type: 'delete',
+      collection: 'supplier_transactions',
+      id: transactionId,
+      record_label: 'سداد مورد',
+    }];
+
     if (destination === 'treasury') {
       const treasuryRecords = await pb.collection('treasury').getFullList().catch(() => []);
       const treasuryRecord = treasuryRecords[0] || null;
       if (treasuryRecord) {
-        await pb.collection('treasury').update(treasuryRecord.id, {
-          balance: Number(treasuryRecord.balance || 0) + amount,
+        actions.push({
+          type: 'balance_delta',
+          collection: 'treasury',
+          id: treasuryRecord.id,
+          delta: amount,
         });
       } else {
-        await pb.collection('treasury').create({
-          balance: amount,
-          opening_balance: 0,
+        actions.push({
+          type: 'create',
+          collection: 'treasury',
+          data: { balance: amount, opening_balance: 0 },
         });
       }
     } else if (destination === 'banks' && bankId) {
       const bank = await pb.collection('banks').getOne(bankId).catch(() => null);
       if (bank) {
-        await pb.collection('banks').update(bank.id, {
-          balance: Number(bank.balance || 0) + amount,
+        actions.push({
+          type: 'balance_delta',
+          collection: 'banks',
+          id: bank.id,
+          delta: amount,
         });
       }
     }
 
-    // 2. حذف معاملة السداد نهائياً من الجدول
-    await archiveAndDeleteRecord('supplier_transactions', transactionId, 'سداد مورد');
-
-    // 3. عمل Invalidate للـ Queries عشان الـ State تتحدث والـ UI يحسب الأرصدة الجديدة تلقائياً
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['suppliers'] }),
-      queryClient.invalidateQueries({ queryKey: ['supplier_transactions'] }),
-      queryClient.invalidateQueries({ queryKey: ['all_supplier_transactions'] }),
-      queryClient.invalidateQueries({ queryKey: ['treasury'] }),
-      queryClient.invalidateQueries({ queryKey: ['banks'] }),
-    ]);
-
-    return transaction;
+    return requestCompoundOperation(
+      actions,
+      `حذف سداد مورد ${transaction.supplier_id}`,
+      { reviewType: destination === 'banks' ? 'bank' : 'treasury' },
+    );
   },
   onSuccess: () => {
+    queryClient.invalidateQueries({ queryKey: ['suppliers'] });
+    queryClient.invalidateQueries({ queryKey: ['treasury'] });
+    queryClient.invalidateQueries({ queryKey: ['banks'] });
+    queryClient.invalidateQueries({ queryKey: ['supplier_transactions'] });
+    queryClient.invalidateQueries({ queryKey: ['all_supplier_transactions'] });
+    queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
     setDeletePaymentId(null);
-    showFeedback('تم حذف السداد واسترجاع رصيد الخزينة/البنك وتحديث الأرصدة بنجاح.');
+    showFeedback('تم حذف السداد وعكس أثره على الأرصدة الآن؛ بانتظار اعتماد المراجع.');
   },
   onError: (error) => {
     setDeletePaymentId(null);
@@ -349,7 +431,7 @@ export default function SuppliersPage() {
       });
 
     const supplierPurchases = (allPurchaseInvoices || [])
-      .filter((invoice) => String(invoice.supplier_id || '') === normalizedSupplierId)
+      .filter((invoice) => String(invoice.supplier_id || '') === normalizedSupplierId && isPurchaseInvoiceApproved(invoice))
       .map((invoice) => ({
         ...invoice,
         date: invoice.created || invoice.date,
@@ -385,7 +467,7 @@ const getSupplierDerivedBalance = (supplierId) => {
     const isSettlement = String(t.notes || '').startsWith('تسوية (');
     const paymentSource = String(t.destination || '').trim();
     const bankName = banks.find((bank) => bank.id === t.bank_id)?.name || '';
-    const paymentSourceLabel = (t.type === 'payment')
+    const paymentSourceLabel = (t.type === 'payment' && !isSettlement)
       ? (paymentSource === 'banks' || Boolean(t.bank_id)
         ? `البنك${bankName ? `: ${bankName}` : ''}`
         : 'الخزنة')
@@ -401,6 +483,7 @@ const getSupplierDerivedBalance = (supplierId) => {
     return {
       ...t,
       source: 'transaction',
+      reviewPending: isFinancialReviewPending('supplier_transactions', t.id),
       displayType: isSettlement ? 'تسوية حساب' : t.type === 'payment' ? 'سداد' : t.type === 'opening_balance' ? 'رصيد افتتاحي' : 'إضافة على الحساب',
       paymentSourceLabel,
       effectAmount: effect,
@@ -408,7 +491,7 @@ const getSupplierDerivedBalance = (supplierId) => {
     };
   });
 
-  const purchasesList = purchaseInvoices.map(inv => ({
+  const purchasesList = purchaseInvoices.filter(isPurchaseInvoiceApproved).map(inv => ({
     ...inv,
     source: 'purchase',
     displayType: `فاتورة شراء (${inv.invoice_number || 'بدون رقم'})`,
@@ -471,7 +554,7 @@ const getSupplierDerivedBalance = (supplierId) => {
         const isSettlement = String(transaction.notes || '').startsWith('تسوية (');
         const paymentSource = String(transaction.destination || '').trim();
         const bankName = banks.find((bank) => bank.id === transaction.bank_id)?.name || '';
-        const paymentSourceLabel = (transaction.type === 'payment')
+        const paymentSourceLabel = (transaction.type === 'payment' && !isSettlement)
           ? (paymentSource === 'banks' || Boolean(transaction.bank_id)
             ? `البنك${bankName ? `: ${bankName}` : ''}`
             : 'الخزنة')
@@ -532,10 +615,6 @@ const getSupplierDerivedBalance = (supplierId) => {
   };
 
   const startEdit = (supplier) => {
-    if (!isAdmin) {
-      showFeedback('عذراً، تعديل بيانات الموردين متاح للأدمن فقط.', 'error');
-      return;
-    }
     setEditingId(supplier.id);
     setForm({
       name: supplier.name || '', phone: supplier.phone || '', address: supplier.address || '',
@@ -631,6 +710,11 @@ const getSupplierDerivedBalance = (supplierId) => {
               <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="border p-3 rounded-xl text-xs" />
               <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="border p-3 rounded-xl text-xs" />
             </div>
+            {pendingReviewsError && (
+              <p role="alert" className="rounded-xl bg-amber-50 p-3 text-xs font-bold text-amber-800">
+                تعذر تحميل حالات اعتماد العمليات؛ تحقق من اتصال النظام.
+              </p>
+            )}
             <div className="border rounded-2xl overflow-hidden">
               <table className="w-full text-right text-xs">
                 <thead className="bg-gray-100 text-gray-700">
@@ -649,8 +733,15 @@ const getSupplierDerivedBalance = (supplierId) => {
                   {statementRowsForDisplay.length ? statementRowsForDisplay.map((row) => (
                     <tr key={row.id} className={row.source === 'purchase' ? 'bg-blue-50/30' : 'hover:bg-gray-50'}>
                       <td className="p-3">{formatDisplayDate(row.date || row.created)}</td>
-                      <td className="p-3 font-bold">{row.displayType}</td>
-                      <td className="p-3 font-bold text-emerald-700">{row.type === 'payment' ? (row.paymentSourceLabel || 'غير محدد') : '-'}</td>
+                      <td className="p-3 font-bold">
+                        {row.displayType}
+                        {row.reviewPending && (
+                          <span className="mr-2 inline-flex rounded-md bg-amber-100 px-2 py-1 text-[10px] font-bold text-amber-800">
+                            بانتظار اعتماد المراجع
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-3 font-bold text-emerald-700">{row.type === 'payment' && !String(row.notes || '').startsWith('تسوية (') ? (row.paymentSourceLabel || 'غير محدد') : '-'}</td>
                       <td className="p-3 font-black">{Number(row.displayAmount || 0).toLocaleString()} ج.م</td>
                       <td className={`p-3 font-black ${Number(row.runningBalance || 0) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
                         {Number(row.runningBalance || 0).toLocaleString()} ج.م
@@ -658,7 +749,7 @@ const getSupplierDerivedBalance = (supplierId) => {
                       <td className="p-3 text-gray-500">{row.notes || '-'}</td>
                       <td className="p-3 font-bold text-gray-700">{row.actor_name || 'غير معروف'}</td>
                       <td className="p-3">
-                        {row.source !== 'purchase' && row.type === 'payment' && isAdmin && (
+                        {row.source !== 'purchase' && row.type === 'payment' && !String(row.notes || '').startsWith('تسوية (') && (
                           <button
                             onClick={() => setDeletePaymentId(row.id)}
                             className="bg-red-50 text-red-700 px-2 py-1.5 rounded-lg font-bold"
@@ -716,13 +807,7 @@ const getSupplierDerivedBalance = (supplierId) => {
                       <button onClick={() => { setPaymentAmount(''); setPaymentNotes(''); setPaymentDestination('treasury'); setPaymentBankId(''); setPaymentModal({ open: true, supplier }); }} className="bg-emerald-50 text-emerald-700 px-2.5 py-1.5 rounded-lg font-bold">سداد</button>
                       <button onClick={() => { setSettlementAmount(''); setSettlementNotes(''); setSettlementType('minus'); setSettlementModal({ open: true, supplier }); }} className="bg-amber-50 text-amber-700 px-2.5 py-1.5 rounded-lg font-bold">تسوية</button>
                       <button onClick={() => startEdit(supplier)} className="bg-purple-50 text-purple-700 px-2.5 py-1.5 rounded-lg font-bold">تعديل</button>
-                      <button onClick={() => {
-                        if (!isAdmin) {
-                          showFeedback('عذراً، حذف الموردين متاح للأدمن فقط.', 'error');
-                          return;
-                        }
-                        setDeleteId(supplier.id);
-                      }} className="bg-red-50 text-red-600 px-2.5 py-1.5 rounded-lg font-bold">حذف</button>
+                      <button onClick={() => setDeleteId(supplier.id)} className="bg-red-50 text-red-600 px-2.5 py-1.5 rounded-lg font-bold">حذف</button>
                     </td>
                   </tr>
                 );

@@ -2,7 +2,7 @@
 import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
-import { archiveAndDeleteRecord } from '../../lib/deleted-records';
+import { requestCompoundOperation } from '../../lib/approval-requests';
 import toast, { Toaster } from 'react-hot-toast';
 import { useReactToPrint } from 'react-to-print';
 
@@ -21,7 +21,7 @@ function getEditingMaterialKey(material) {
 
 export default function ProductsPage() {
   const queryClient = useQueryClient();
-  const isAdmin = pb.authStore.model?.collectionName === '_superusers';
+  const canRequestChanges = Boolean(pb.authStore.model);
 
   const [productName, setProductName] = useState('');
   const [sellingPrice, setSellingPrice] = useState('');
@@ -137,12 +137,17 @@ export default function ProductsPage() {
   const updatePriceMutation = useMutation({
     mutationFn: async ({ prodName, newPrice }) => {
       const prodRecipes = allRecipes.filter(r => (r.product_name || r.name) === prodName);
-      for (const record of prodRecipes) {
-        await pb.collection('products_recipes').update(record.id, {
+      if (!prodRecipes.length) throw new Error('لا توجد بيانات لهذا المنتج');
+      const actions = prodRecipes.map(record => ({
+        type: 'update',
+        collection: 'products_recipes',
+        id: record.id,
+        data: {
           selling_price: Number(newPrice),
           actor_name: pb.authStore.model?.name || pb.authStore.model?.email || 'مستخدم',
-        });
-      }
+        },
+      }));
+      await requestCompoundOperation(actions, `تعديل سعر بيع ${prodName}`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products_recipes'] });
@@ -174,20 +179,28 @@ export default function ProductsPage() {
       const sellingPriceValue = Number(firstRow.selling_price ?? firstRow.sellingPrice ?? firstRow.price ?? 0);
       const otherCostValue = Number(firstRow.other_cost ?? firstRow.otherCost ?? 0);
 
-      for (const record of prodRecipes) {
-        await pb.collection('products_recipes').delete(record.id);
-      }
+      const actions = prodRecipes.map(record => ({
+        type: 'delete',
+        collection: 'products_recipes',
+        id: record.id,
+        record_label: cleanProductName,
+      }));
 
       for (const item of cleanedMaterials) {
-        await pb.collection('products_recipes').create({
+        actions.push({
+          type: 'create',
+          collection: 'products_recipes',
+          data: {
           product_name: cleanProductName,
           selling_price: sellingPriceValue,
           other_cost: otherCostValue,
           actor_name: pb.authStore.model?.name || pb.authStore.model?.email || 'مستخدم',
           raw_material_id: item.id,
           quantity_needed: Number(item.qtyNeeded || 0)
+          },
         });
       }
+      await requestCompoundOperation(actions, `تعديل تركيبة ${cleanProductName}`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products_recipes'] });
@@ -207,9 +220,13 @@ export default function ProductsPage() {
   const deleteProductMutation = useMutation({
     mutationFn: async (prodName) => {
       const prodRecipes = allRecipes.filter(r => (r.product_name || r.name) === prodName);
-      for (const record of prodRecipes) {
-        await archiveAndDeleteRecord('products_recipes', record.id, prodName);
-      }
+      if (!prodRecipes.length) throw new Error('لا توجد بيانات لهذا المنتج');
+      await requestCompoundOperation(prodRecipes.map(record => ({
+        type: 'delete',
+        collection: 'products_recipes',
+        id: record.id,
+        record_label: prodName,
+      })), `حذف تركيبة ${prodName}`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products_recipes'] });
@@ -554,7 +571,7 @@ export default function ProductsPage() {
                         >
                           ✏️ تعديل سعر البيع
                         </button>
-                        {isAdmin && (
+                        {canRequestChanges && (
                           <button
                             onClick={() => {
                               setEditingMaterialsProd(prodName);
@@ -625,7 +642,7 @@ export default function ProductsPage() {
                       </div>
                     )}
 
-                    {isAdmin && editingMaterialsProd === prodName && (
+                    {canRequestChanges && editingMaterialsProd === prodName && (
                       <div className="bg-violet-50 border border-violet-200 rounded-xl p-3 space-y-3">
                         <div className="flex items-center justify-between gap-3">
                           <span className="text-xs font-black text-violet-800">تعديل اسم المنتج والخامات المستخدمة</span>

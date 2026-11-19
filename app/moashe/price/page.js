@@ -3,32 +3,32 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase'; // تأكد من مطابقة مسار ملف الـ pocketbase عندك
+import { requestRecordUpdate } from '../../lib/approval-requests';
 
 // البيانات الافتراضية كاملة (الأسماء، التعبئة، الأسعار، التصنيف)
 const initialFeedData = [
 
-  { id: 'p1', name: 'سوبر بادي ۲۳ %', weight: '25 / 50 كجم', price: 25300, category: 'poultry' },
-  { id: 'p2', name: 'سوبر نامي ۲۱,٥ %', weight: '25 / 50 كجم', price: 25200, category: 'poultry' },
-  { id: 'p3', name: 'سوبر ناهي ۱۹ %', weight: '25 / 50 كجم', price: 25050, category: 'poultry' },
-  { id: 'p4', name: 'سوبر بادي ۲۳ %', weight: '10 كجم', price: 25500, category: 'poultry' },
-  { id: 'p5', name: 'بادي نامي ۲۱,٥ %', weight: '25 كجم', price: 23800, category: 'poultry' },
-  { id: 'p6', name: 'بادي نامي ۲۱,٥ %', weight: '10 كجم', price: 24000, category: 'poultry' },
-  { id: 'p7', name: 'النور ( تربية منزلية ) ۲۱ %', weight: '25 كجم', price: 22300, category: 'poultry' },
-  { id: 'p8', name: 'النور ( تربية منزلية ) ۲۱ %', weight: '10 كجم', price: 22500, category: 'poultry' },
-  { id: 'p9', name: 'حمام ۱۷ %', weight: '10 كجم', price: 20800, category: 'poultry' },
-  { id: 'p10', name: 'بياض ۱4 %', weight: '10 كجم', price: 19500, category: 'poultry' },
-  { id: 'p11', name: 'بياض ۱4 %', weight: '25 كجم', price: 19300, category: 'poultry' },
+{ id: 'p1', name: 'سوبر بادي ۲۳ %', weight: '25 / 50 كجم', price: 24800, category: 'poultry' },
+  { id: 'p2', name: 'سوبر نامي ۲۱,٥ %', weight: '25 / 50 كجم', price: 24700, category: 'poultry' },
+  { id: 'p3', name: 'سوبر ناهي ۱۹ %', weight: '25 / 50 كجم', price: 24550, category: 'poultry' },
+  { id: 'p4', name: 'سوبر بادي ۲۳ %', weight: '10 كجم', price: 25000, category: 'poultry' },
+  { id: 'p5', name: 'بادي نامي ۲۱,٥ %', weight: '25 كجم', price: 23300, category: 'poultry' },
+  { id: 'p6', name: 'بادي نامي ۲۱,٥ %', weight: '10 كجم', price: 23500, category: 'poultry' },
+  { id: 'p7', name: 'النور ( تربية منزلية ) ۲۱ %', weight: '25 كجم', price: 21800, category: 'poultry' },
+  { id: 'p8', name: 'النور ( تربية منزلية ) ۲۱ %', weight: '10 كجم', price: 22000, category: 'poultry' },
+  { id: 'p9', name: 'حمام ۱۷ %', weight: '10 كجم', price: 20300, category: 'poultry' },
+  { id: 'p10', name: 'بياض ۱4 %', weight: '10 كجم', price: 19000, category: 'poultry' },
+  { id: 'p11', name: 'بياض ۱4 %', weight: '25 كجم', price: 18800, category: 'poultry' },
 
-
-  { id: 'l1', name: 'الزعيم تسمين ۱٦ %', weight: '( 50ك / 5ك )', price: 17350, category: 'livestock' },
-  { id: 'l2', name: 'الزعيم تسمين ۱۴ %', weight: '( 50ك / 5ك )', price: 17050, category: 'livestock' },
-  { id: 'l3', name: 'بط فاخر ۱۱ %', weight: '( ك 20 )', price: 10450, category: 'livestock' },
-  { id: 'l4', name: 'النور سوبر مصبع ۱۱ %', weight: '( 40ك / 5ك )', price: 9750, category: 'livestock' },
-  { id: 'l5', name: 'الزعيم سوبر ۱۱ %', weight: '( 50ك / 5ك )', price: 9250, category: 'livestock' },
-  { id: 'l6', name: 'النور محسن ۹ %', weight: '( 50ك / 5ك )', price: 8450, category: 'livestock' },
-  { id: 'l7', name: 'النور عادي ۷ %', weight: '( 50ك / 5ك )', price: 8350, category: 'livestock' },
-  { id: 'l8', name: 'الوطنية ٥ %', weight: '( 30ك / 5ك )', price: 7350, category: 'livestock' },
-
+  
+  { id: 'l1', name: 'الزعيم تسمين ۱٦ %', weight: '( 50ك / 5ك )', price: 17150, category: 'livestock' },
+  { id: 'l2', name: 'الزعيم تسمين ۱۴ %', weight: '( 50ك / 5ك )', price: 16850, category: 'livestock' },
+  { id: 'l3', name: 'بط فاخر ۱۱ %', weight: '( ك 20 )', price: 10250, category: 'livestock' },
+  { id: 'l4', name: 'النور سوبر مصبع ۱۱ %', weight: '( 40ك / 5ك )', price: 9550, category: 'livestock' },
+  { id: 'l5', name: 'الزعيم سوبر ۱۱ %', weight: '( 50ك / 5ك )', price: 9050, category: 'livestock' },
+  { id: 'l6', name: 'النور محسن ۹ %', weight: '( 50ك / 5ك )', price: 8250, category: 'livestock' },
+  { id: 'l7', name: 'النور عادي ۷ %', weight: '( 50ك / 5ك )', price: 8150, category: 'livestock' },
+  { id: 'l8', name: 'الوطنية ٥ %', weight: '( 30ك / 5ك )', price: 7150, category: 'livestock' },
 ];
 
 export default function EditableFeedPrices() {
@@ -70,11 +70,11 @@ export default function EditableFeedPrices() {
       if (id.startsWith('p') || id.startsWith('l')) {
         return { id, price: Number(price) || 0 };
       }
-      return await pb.collection('feed_prices').update(id, { price: Number(price) || 0 });
+      return requestRecordUpdate('feed_prices', id, { price: Number(price) || 0 });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['feed_prices'] });
-      showFeedback('تم حفظ السعر بنجاح.');
+      showFeedback('تم إرسال طلب تعديل السعر للمدير.');
     },
     onError: (error) => showFeedback(`فشل الحفظ: ${error.message}`, 'error'),
   });
@@ -95,7 +95,7 @@ export default function EditableFeedPrices() {
         else if (bulkMode === 'percent') newPrice = Math.round(item.price * (1 + val / 100));
         else if (bulkMode === 'set') newPrice = val;
 
-        return pb.collection('feed_prices').update(id, { price: newPrice });
+        return requestRecordUpdate('feed_prices', id, { price: newPrice }, item.name);
       });
 
       await Promise.all(promises.filter(Boolean));
@@ -104,7 +104,7 @@ export default function EditableFeedPrices() {
       queryClient.invalidateQueries({ queryKey: ['feed_prices'] });
       setSelectedIds([]);
       setBulkValue('');
-      showFeedback('تم تطبيق وحفظ التعديلات المجمعة بنجاح.');
+      showFeedback('تم إرسال طلبات تعديل الأسعار للمدير.');
     },
     onError: (error) => showFeedback(`فشل التعديل المجمع: ${error.message}`, 'error'),
   });

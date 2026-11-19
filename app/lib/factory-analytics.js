@@ -241,7 +241,9 @@ export function buildCashForecast({ treasury, invoices, clientTransactions, supp
     && transaction.type === 'payment' && isTreasuryDestination(transaction))
     .reduce((sum, transaction) => sum + toNumber(transaction.amount), 0);
   const supplierPayments = supplierTransactions.filter((transaction) => isInPeriod(transaction)
-    && !String(transaction.type || '').toLowerCase().includes('open') && isTreasuryDestination(transaction))
+    && !String(transaction.type || '').toLowerCase().includes('open')
+    && !String(transaction.notes || '').startsWith('تسوية (')
+    && isTreasuryDestination(transaction))
     .reduce((sum, transaction) => sum + toNumber(transaction.amount), 0);
   const treasuryExpenses = expenses.filter((expense) => isInPeriod(expense)
     && !expense.bank_id && String(expense.payment_source || 'treasury').toLowerCase() !== 'bank')

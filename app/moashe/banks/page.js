@@ -2,7 +2,10 @@
 import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
-import { archiveAndDeleteRecord } from '../../lib/deleted-records';
+import {
+  getPendingReviewActionKeys,
+  requestCompoundOperation,
+} from '../../lib/approval-requests';
 import { useReactToPrint } from 'react-to-print';
 
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
@@ -60,7 +63,7 @@ export default function BanksPage() {
 
   // التحقق مما إذا كان المستخدم الحالي مسؤولاً (Admin)
   const currentUser = pb.authStore.model;
-  const isAdmin = currentUser?.role === 'admin' || currentUser?.email === 'mohamedfrf@icloud.com';
+  const canRequestChanges = Boolean(currentUser);
 
   const currentUserName = () => {
     return currentUser?.name || currentUser?.email || 'مستخدم النظام';
@@ -95,6 +98,14 @@ export default function BanksPage() {
       return await pb.collection('banks').getFullList({ sort: '-created' }).catch(() => []);
     },
   });
+  const { data: pendingReviewActionKeys = [], isError: pendingReviewsError } = useQuery({
+    queryKey: ['pending_financial_review_action_keys'],
+    queryFn: getPendingReviewActionKeys,
+    refetchOnWindowFocus: true,
+  });
+  const isFinancialReviewPending = (collection, id) => (
+    pendingReviewActionKeys.includes(`${collection}/${id}`)
+  );
 
   // 2. جلب المصروفات
   const { data: expenses = [] } = useQuery({
@@ -148,18 +159,20 @@ export default function BanksPage() {
   const addBankMutation = useMutation({
     mutationFn: async (newBank) => {
       const amount = Number(newBank.opening_balance || 0);
-      return await pb.collection('banks').create({
-        ...newBank,
-        balance: amount,
-        actor_name: currentUserName(),
-      });
+      await requestCompoundOperation([{
+        type: 'create',
+        collection: 'banks',
+        data: { ...newBank, balance: amount, actor_name: currentUserName() },
+      }], `إضافة بنك ${newBank.name}`, { reviewType: 'bank' });
+      return newBank;
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['banks'] });
+      await queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
       setBankName('');
       setOpeningBalance('');
       setNotes('');
-      showFeedback('🏦 تم إضافة البنك والرصيد بنجاح!', 'success');
+      showFeedback('تم إنشاء البنك واحتساب رصيده الآن؛ بانتظار اعتماد المراجع.', 'success');
     },
     onError: (error) => {
       showFeedback('❌ حدث خطأ أثناء حفظ البنك: ' + error.message, 'error');
@@ -169,31 +182,28 @@ export default function BanksPage() {
   // تعديل بنك (للمسؤولين فقط)
   const updateBankMutation = useMutation({
     mutationFn: async ({ id, name, opening_balance, balance, notes }) => {
-      if (!isAdmin) throw new Error('عذراً، التعديل مقتصر على المسؤولين فقط.');
       const bank = banks.find((item) => item.id === id);
       if (!bank) throw new Error('البنك المحدد غير موجود.');
       const nextOpeningBalance = Number(opening_balance || 0);
       const nextBalance = Number(balance || 0);
       const adjustment = nextBalance - (getBankLedgerBalance(bank) + nextOpeningBalance - Number(bank.opening_balance || 0));
-      const previousValues = {
-        name: bank.name,
-        opening_balance: Number(bank.opening_balance || 0),
-        balance: Number(bank.balance || 0),
-        notes: bank.notes || '',
-        actor_name: bank.actor_name || currentUserName(),
-      };
-
-      const updatedBank = await pb.collection('banks').update(id, {
-        name,
-        opening_balance: nextOpeningBalance,
-        balance: nextBalance,
-        notes,
-        actor_name: currentUserName(),
-      });
-
+      const actions = [{
+        type: 'update',
+        collection: 'banks',
+        id,
+        data: {
+          name,
+          opening_balance: nextOpeningBalance,
+          balance: nextBalance,
+          notes,
+          actor_name: currentUserName(),
+        },
+      }];
       if (adjustment !== 0) {
-        try {
-          await pb.collection('treasury_transactions').create({
+        actions.push({
+          type: 'create',
+          collection: 'treasury_transactions',
+          data: {
             type: 'purchase',
             movement_type: 'bank_adjustment',
             source_type: 'bank',
@@ -203,22 +213,20 @@ export default function BanksPage() {
             notes: 'تعديل الرصيد من بيانات البنك',
             date: new Date().toISOString(),
             actor_name: currentUserName(),
-          });
-        } catch (error) {
-          await pb.collection('banks').update(id, previousValues).catch(() => {});
-          throw error;
-        }
+          },
+        });
       }
-
-      return updatedBank;
+      await requestCompoundOperation(actions, `تعديل بيانات بنك ${name}`, { reviewType: 'bank' });
+      return bank;
     },
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['banks'] }),
         queryClient.invalidateQueries({ queryKey: ['treasury_transactions_banks'] }),
+        queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] }),
       ]);
       setEditModal({ isOpen: false, bank: null });
-      showFeedback('✨ تم تحديث بيانات البنك بنجاح!', 'success');
+      showFeedback('تم تطبيق تعديل البنك الآن؛ بانتظار اعتماد المراجع.', 'success');
     },
     onError: (error) => {
       showFeedback('❌ فشل تحديث البنك: ' + error.message, 'error');
@@ -227,23 +235,27 @@ export default function BanksPage() {
 
   const reconcileBankMutation = useMutation({
     mutationFn: async () => {
-      if (!isAdmin) throw new Error('عذراً، التسوية مقتصرة على المسؤولين فقط.');
       const bank = reconciliationModal.bank;
+      if (!bank) throw new Error('اختر البنك المراد تسويته.');
       const actualBalance = Number(reconciledBalance);
       const currentBalance = getBankLedgerBalance(bank);
       const difference = actualBalance - currentBalance;
 
-      if (!bank) throw new Error('اختر البنك المراد تسويته.');
       if (!Number.isFinite(actualBalance) || actualBalance < 0) throw new Error('اكتب الرصيد الفعلي بشكل صحيح.');
       if (difference === 0) throw new Error('الرصيد الفعلي يساوي الرصيد الحالي، لا توجد تسوية.');
 
-      const previousBalance = Number(bank.balance || 0);
-      await pb.collection('banks').update(bank.id, {
-        balance: actualBalance,
-        actor_name: currentUserName(),
-      });
-      try {
-        return await pb.collection('treasury_transactions').create({
+      await requestCompoundOperation([
+        {
+          type: 'balance_delta',
+          collection: 'banks',
+          id: bank.id,
+          delta: difference,
+          data: { actor_name: currentUserName() },
+        },
+        {
+          type: 'create',
+          collection: 'treasury_transactions',
+          data: {
           type: 'purchase',
           movement_type: 'bank_adjustment',
           source_type: 'bank',
@@ -253,19 +265,19 @@ export default function BanksPage() {
           notes: reconciliationNotes.trim() || 'تسوية رصيد البنك',
           date: new Date().toISOString(),
           actor_name: currentUserName(),
-        });
-      } catch (error) {
-        await pb.collection('banks').update(bank.id, { balance: previousBalance }).catch(() => {});
-        throw error;
-      }
+          },
+        },
+      ], `تسوية رصيد بنك ${bank.name}`, { reviewType: 'bank' });
+      return bank;
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['banks'] });
       await queryClient.invalidateQueries({ queryKey: ['treasury_transactions_banks'] });
+      await queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
       setReconciliationModal({ isOpen: false, bank: null });
       setReconciledBalance('');
       setReconciliationNotes('');
-      showFeedback('✅ تمت تسوية رصيد البنك وتسجيلها في السجل.', 'success');
+      showFeedback('تم تطبيق التسوية على الرصيد الآن؛ بانتظار اعتماد المراجع.', 'success');
     },
     onError: (error) => showFeedback('❌ فشل تنفيذ التسوية: ' + error.message, 'error'),
   });
@@ -284,32 +296,39 @@ export default function BanksPage() {
       }
       if (!Number.isFinite(amount) || amount <= 0) throw new Error('اكتب مبلغ تحويل صحيح.');
       const sourceBalance = getBankLedgerBalance(sourceBank);
-      const sourceStoredBalance = Number(sourceBank.balance || 0);
-      const destinationBalance = destinationBank ? getBankLedgerBalance(destinationBank) : 0;
-      const destinationStoredBalance = Number(destinationBank?.balance || 0);
       if (amount > sourceBalance) throw new Error('مبلغ التحويل أكبر من رصيد البنك المصدر.');
       if (transferDestination === 'treasury' && !treasury?.id) throw new Error('لم يتم إعداد سجل الخزنة بعد.');
 
       const actorName = currentUserName();
       const date = new Date().toISOString();
-      await pb.collection('banks').update(sourceBank.id, {
-        balance: sourceBalance - amount,
-        actor_name: actorName,
-      });
-
+      const actions = [{
+        type: 'balance_delta',
+        collection: 'banks',
+        id: sourceBank.id,
+        delta: -amount,
+        data: { actor_name: actorName },
+      }];
       if (destinationBank) {
-        await pb.collection('banks').update(destinationBank.id, {
-          balance: destinationBalance + amount,
-          actor_name: actorName,
+        actions.push({
+          type: 'balance_delta',
+          collection: 'banks',
+          id: destinationBank.id,
+          delta: amount,
+          data: { actor_name: actorName },
         });
       } else {
-        await pb.collection('treasury').update(treasury.id, {
-          balance: Number(treasury.balance ?? treasury.opening_balance ?? 0) + amount,
+        actions.push({
+          type: 'balance_delta',
+          collection: 'treasury',
+          id: treasury.id,
+          delta: amount,
         });
       }
 
-      try {
-        return await pb.collection('treasury_transactions').create({
+      actions.push({
+        type: 'create',
+        collection: 'treasury_transactions',
+        data: {
           type: 'purchase',
           movement_type: 'bank_transfer',
           source_type: 'bank',
@@ -323,36 +342,22 @@ export default function BanksPage() {
           notes: transferNotes.trim() || 'تحويل بين الحسابات',
           date,
           actor_name: actorName,
-        });
-      } catch (error) {
-        await pb.collection('banks').update(sourceBank.id, {
-          balance: sourceStoredBalance,
-          actor_name: actorName,
-        });
-        if (destinationBank) {
-          await pb.collection('banks').update(destinationBank.id, {
-            balance: destinationStoredBalance,
-            actor_name: actorName,
-          });
-        } else {
-          await pb.collection('treasury').update(treasury.id, {
-            balance: Number(treasury.balance ?? treasury.opening_balance ?? 0),
-          });
-        }
-        throw error;
-      }
+        },
+      });
+      return requestCompoundOperation(actions, 'تحويل بين الحسابات البنكية', { reviewType: 'bank' });
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['banks'] });
       await queryClient.invalidateQueries({ queryKey: ['treasury'] });
       await queryClient.invalidateQueries({ queryKey: ['treasury_transactions_banks'] });
+      await queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
       setTransferModal(false);
       setTransferSourceBankId('');
       setTransferDestination('treasury');
       setTransferDestinationBankId('');
       setTransferAmount('');
       setTransferNotes('');
-      showFeedback('✅ تم التحويل وتحديث الأرصدة وتسجيل الحركة.', 'success');
+      showFeedback('تم تنفيذ التحويل على الأرصدة الآن؛ بانتظار اعتماد المراجع.', 'success');
     },
     onError: (error) => showFeedback('❌ فشل تنفيذ التحويل: ' + error.message, 'error'),
   });
@@ -367,15 +372,18 @@ export default function BanksPage() {
       if (!bankDepositDescription.trim()) throw new Error('اكتب وصف الإيداع.');
 
       const actorName = currentUserName();
-      const previousBalance = getBankLedgerBalance(bank);
-      const previousStoredBalance = Number(bank.balance || 0);
-      await pb.collection('banks').update(bank.id, {
-        balance: previousBalance + amount,
-        actor_name: actorName,
-      });
-
-      try {
-        return await pb.collection('treasury_transactions').create({
+      return requestCompoundOperation([
+        {
+          type: 'balance_delta',
+          collection: 'banks',
+          id: bank.id,
+          delta: amount,
+          data: { actor_name: actorName },
+        },
+        {
+          type: 'create',
+          collection: 'treasury_transactions',
+          data: {
           type: 'purchase',
           movement_type: 'bank_adjustment',
           source_type: 'bank',
@@ -385,23 +393,19 @@ export default function BanksPage() {
           notes: bankDepositDescription.trim(),
           date: new Date().toISOString(),
           actor_name: actorName,
-        });
-      } catch (error) {
-        await pb.collection('banks').update(bank.id, {
-          balance: previousStoredBalance,
-          actor_name: actorName,
-        });
-        throw error;
-      }
+          },
+        },
+      ], `إيداع في بنك ${bank.name}`, { reviewType: 'bank' });
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['banks'] });
       await queryClient.invalidateQueries({ queryKey: ['treasury_transactions_banks'] });
+      await queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
       setBankDepositModal(false);
       setBankDepositBankId('');
       setBankDepositAmount('');
       setBankDepositDescription('');
-      showFeedback('✅ تم الإيداع وتحديث رصيد البنك وتسجيل الحركة.', 'success');
+      showFeedback('تم إضافة الإيداع إلى رصيد البنك الآن؛ بانتظار اعتماد المراجع.', 'success');
     },
     onError: (error) => showFeedback('❌ فشل تسجيل الإيداع: ' + error.message, 'error'),
   });
@@ -416,44 +420,44 @@ export default function BanksPage() {
       if (!Number.isFinite(amount) || amount <= 0) throw new Error('اكتب مبلغ سحب صحيح.');
       if (!reason) throw new Error('اكتب سبب السحب.');
 
-      const previousBalance = getBankLedgerBalance(bank);
-
       const actorName = currentUserName();
       const date = new Date().toISOString();
-      const transaction = await pb.collection('treasury_transactions').create({
-        type: 'purchase',
-        movement_type: 'bank_adjustment',
-        source_type: 'bank',
-        bank_id: bank.id,
-        amount: -amount,
-        title: `سحب من البنك: ${bank.name}`,
-        notes: reason,
-        date,
-        actor_name: actorName,
-      });
-
-      try {
-        await pb.collection('banks').update(bank.id, {
-          balance: roundMoney(previousBalance - amount),
-          actor_name: actorName,
-        });
-      } catch (error) {
-        await pb.collection('treasury_transactions').delete(transaction.id).catch(() => {});
-        throw error;
-      }
-
-      return transaction;
+      return requestCompoundOperation([
+        {
+          type: 'balance_delta',
+          collection: 'banks',
+          id: bank.id,
+          delta: -amount,
+          data: { actor_name: actorName },
+        },
+        {
+          type: 'create',
+          collection: 'treasury_transactions',
+          data: {
+            type: 'purchase',
+            movement_type: 'bank_adjustment',
+            source_type: 'bank',
+            bank_id: bank.id,
+            amount: -amount,
+            title: `سحب من البنك: ${bank.name}`,
+            notes: reason,
+            date,
+            actor_name: actorName,
+          },
+        },
+      ], `سحب من بنك ${bank.name}`, { reviewType: 'bank' });
     },
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['banks'] }),
         queryClient.invalidateQueries({ queryKey: ['treasury_transactions_banks'] }),
+        queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] }),
       ]);
       setBankWithdrawalModal(false);
       setBankWithdrawalBankId('');
       setBankWithdrawalAmount('');
       setBankWithdrawalReason('');
-      showFeedback('✅ تم تسجيل السحب وتحديث رصيد البنك.', 'success');
+      showFeedback('تم خصم السحب من رصيد البنك الآن؛ بانتظار اعتماد المراجع.', 'success');
     },
     onError: (error) => {
       const validationDetails = Object.values(error?.response?.data?.data || {})
@@ -468,12 +472,18 @@ export default function BanksPage() {
   // حذف بنك (للمسؤولين فقط)
   const deleteBankMutation = useMutation({
     mutationFn: async (id) => {
-      if (!isAdmin) throw new Error('عذراً، الحذف مقتصر على المسؤولين فقط.');
-      return await archiveAndDeleteRecord('banks', id);
+      const bank = banks.find(item => item.id === id);
+      return requestCompoundOperation([{
+        type: 'delete',
+        collection: 'banks',
+        id,
+        record_label: bank?.name || 'بنك',
+      }], `حذف بنك ${bank?.name || ''}`, { reviewType: 'bank' });
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['banks'] });
-      showFeedback('🗑️ تم حذف البنك بنجاح.', 'success');
+      await queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
+      showFeedback('تم حذف البنك الآن؛ بانتظار اعتماد المراجع.', 'success');
       setDeleteModal({ isOpen: false, bankId: null });
     },
     onError: (error) => {
@@ -484,54 +494,101 @@ export default function BanksPage() {
 
   const deleteBankTransactionMutation = useMutation({
     mutationFn: async (transaction) => {
-      if (!isAdmin) throw new Error('عذراً، حذف الحركات مسموح للأدمن فقط.');
-
       const bankId = historyModal.bank?.id;
       const amount = Number(transaction.amount || 0);
       const collectionName = transaction.collectionName;
 
       if (!bankId) throw new Error('لم يتم تحديد البنك الحالي.');
-      if (!Number.isFinite(amount) || amount <= 0) throw new Error('مبلغ الحركة غير صالح.');
+      if (!Number.isFinite(amount) || amount === 0) throw new Error('مبلغ الحركة غير صالح.');
 
       const bank = await pb.collection('banks').getOne(bankId).catch(() => null);
       if (!bank) throw new Error('البنك المحدد غير موجود.');
 
-      const reverseBalance = (delta) => {
-        return pb.collection('banks').update(bankId, {
-          balance: getBankLedgerBalance(bank) + Number(delta || 0),
-          actor_name: currentUserName(),
-        });
-      };
+      let balanceDelta = 0;
 
       if (collectionName === 'expenses') {
-        await reverseBalance(amount);
+        balanceDelta = amount;
       } else if (collectionName === 'client_transactions') {
-        await reverseBalance(amount);
+        balanceDelta = amount;
       } else if (collectionName === 'supplier_transactions') {
-        await reverseBalance(amount);
+        balanceDelta = amount;
       } else if (collectionName === 'treasury_transactions') {
         const movementType = String(transaction.movement_type || '').toLowerCase();
         const isIncoming = String(transaction.destination_bank_id || '').trim() === bankId || String(transaction.title || '').includes(`إلى بنك ${historyModal.bank.name}`);
         const isOutgoing = String(transaction.bank_id || '').trim() === bankId && !isIncoming;
 
         if (movementType === 'bank_adjustment') {
-          await reverseBalance(-Number(transaction.amount || 0));
+          balanceDelta = -Number(transaction.amount || 0);
         } else if (movementType === 'bank_deposit') {
-          await reverseBalance(-Number(transaction.amount || 0));
+          balanceDelta = -Number(transaction.amount || 0);
         } else if (movementType === 'bank_transfer') {
           if (isIncoming) {
-            await reverseBalance(-Number(transaction.amount || 0));
+            balanceDelta = -Number(transaction.amount || 0);
           } else if (isOutgoing) {
-            await reverseBalance(Number(transaction.amount || 0));
+            balanceDelta = Number(transaction.amount || 0);
           }
         } else if (movementType === 'other_advance' || movementType === 'other_advance_return') {
-          await reverseBalance(movementType === 'other_advance_return' ? -Number(transaction.amount || 0) : Number(transaction.amount || 0));
+          balanceDelta = movementType === 'other_advance_return' ? -Number(transaction.amount || 0) : Number(transaction.amount || 0);
         } else {
-          await reverseBalance(Number(transaction.amount || 0));
+          balanceDelta = Number(transaction.amount || 0);
         }
       }
 
-      await archiveAndDeleteRecord(collectionName, transaction.id, transaction.title || 'حركة بنك');
+      const actions = [];
+      if (balanceDelta) {
+        actions.push({
+          type: 'balance_delta',
+          collection: 'banks',
+          id: bankId,
+          delta: balanceDelta,
+          data: { actor_name: currentUserName() },
+        });
+      }
+      if (collectionName === 'treasury_transactions') {
+        const movementType = String(transaction.movement_type || '').toLowerCase();
+        const isBankTransferToTreasury = movementType === 'bank_transfer'
+          && String(transaction.title || '').includes('إلى الخزنة');
+        const bankDepositFromTreasury = movementType === 'bank_deposit'
+          && String(transaction.source_type || '') === 'treasury';
+
+        if (movementType === 'bank_transfer' && !isBankTransferToTreasury) {
+          const sourceBankId = String(transaction.bank_id || '').trim();
+          const destinationBankId = String(transaction.destination_bank_id || '').trim();
+          const otherBankId = sourceBankId === bankId ? destinationBankId : sourceBankId;
+          if (otherBankId) {
+            const otherBank = await pb.collection('banks').getOne(otherBankId);
+            const otherBankDelta = sourceBankId === bankId ? -amount : amount;
+            actions.push({
+              type: 'balance_delta',
+              collection: 'banks',
+              id: otherBank.id,
+              delta: otherBankDelta,
+              data: { actor_name: currentUserName() },
+            });
+          }
+        }
+
+        if (isBankTransferToTreasury || bankDepositFromTreasury) {
+          const treasuryRecord = treasury?.id
+            ? await pb.collection('treasury').getOne(treasury.id)
+            : null;
+          if (!treasuryRecord) throw new Error('تعذر العثور على الخزنة لعكس الحركة.');
+          const treasuryDelta = isBankTransferToTreasury ? -amount : amount;
+          actions.push({
+            type: 'balance_delta',
+            collection: 'treasury',
+            id: treasuryRecord.id,
+            delta: treasuryDelta,
+          });
+        }
+      }
+      actions.push({
+        type: 'delete',
+        collection: collectionName,
+        id: transaction.id,
+        record_label: transaction.title || 'حركة بنك',
+      });
+      await requestCompoundOperation(actions, `حذف حركة بنك ${transaction.title || ''}`, { reviewType: 'bank' });
 
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['banks'] }),
@@ -539,13 +596,14 @@ export default function BanksPage() {
         queryClient.invalidateQueries({ queryKey: ['client_transactions_banks'] }),
         queryClient.invalidateQueries({ queryKey: ['supplier_transactions_banks'] }),
         queryClient.invalidateQueries({ queryKey: ['treasury_transactions_banks'] }),
+        queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] }),
         queryClient.invalidateQueries({ queryKey: ['treasury'] }),
       ]);
 
       return transaction;
     },
     onSuccess: () => {
-      showFeedback('🗑️ تم حذف الحركة وتحديث رصيد البنك بنجاح.', 'success');
+      showFeedback('تم حذف الحركة وعكس أثرها على الرصيد الآن؛ بانتظار اعتماد المراجع.', 'success');
     },
     onError: (error) => {
       showFeedback('❌ فشل حذف الحركة: ' + error.message, 'error');
@@ -567,10 +625,6 @@ export default function BanksPage() {
 
   const handleEditSubmit = (e) => {
     e.preventDefault();
-    if (!isAdmin) {
-      showFeedback('❌ ليس لديك صلاحية لتعديل البيانات.', 'error');
-      return;
-    }
     if (!editName.trim()) {
       showFeedback('اسم البنك مطلوب', 'error');
       return;
@@ -678,7 +732,10 @@ export default function BanksPage() {
     ...currentBankDeposits,
     ...currentBankTransfers,
     ...currentBankAdjustments,
-  ];
+  ].map((transaction) => ({
+    ...transaction,
+    reviewPending: isFinancialReviewPending(transaction.collectionName, transaction.id),
+  }));
 
   const getBankTransactionSignedAmount = (transaction) => {
     if (transaction.movementType === 'bank_adjustment') return Number(transaction.amount || 0);
@@ -753,11 +810,6 @@ export default function BanksPage() {
   };
 
   const handleDeleteBankTransaction = async (transaction) => {
-    if (!isAdmin) {
-      showFeedback('❌ لا توجد صلاحية حذف حركات البنك.', 'error');
-      return;
-    }
-
     if (!transaction?.id || !transaction?.collectionName) {
       showFeedback('❌ هذه الحركة لا يمكن حذفها.', 'error');
       return;
@@ -790,7 +842,7 @@ export default function BanksPage() {
     <div className="p-4 md:p-8 max-w-5xl mx-auto space-y-8 relative" dir="rtl">
 
       {/* نافذة حذف البنك (للمسؤولين فقط) */}
-      {deleteModal.isOpen && isAdmin && (
+      {deleteModal.isOpen && canRequestChanges && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl space-y-4">
             <h3 className="text-base font-black text-gray-800">تأكيد الحذف</h3>
@@ -802,9 +854,14 @@ export default function BanksPage() {
           </div>
         </div>
       )}
+      {pendingReviewsError && (
+        <p role="alert" className="rounded-xl bg-amber-50 p-3 text-xs font-bold text-amber-800">
+          تعذر تحميل حالات اعتماد العمليات؛ تحقق من اتصال النظام.
+        </p>
+      )}
 
       {/* نافذة تعديل البنك (للمسؤولين فقط) */}
-      {editModal.isOpen && editModal.bank && isAdmin && (
+      {editModal.isOpen && editModal.bank && canRequestChanges && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4">
             <div className="flex justify-between items-center border-b pb-3">
@@ -837,7 +894,7 @@ export default function BanksPage() {
         </div>
       )}
 
-      {reconciliationModal.isOpen && reconciliationModal.bank && isAdmin && (
+      {reconciliationModal.isOpen && reconciliationModal.bank && canRequestChanges && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4">
             <div className="flex justify-between items-center border-b pb-3">
@@ -955,6 +1012,11 @@ export default function BanksPage() {
                   <td className="p-3">
                     <span className={`px-2.5 py-1 rounded-xl text-[10px] font-bold ${getBankTransactionDirection(tx) === 'deposit' ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'}`}>
                       {getBankTransactionDirection(tx) === 'deposit' ? 'إيداع' : 'سحب'}
+                      {tx.reviewPending && (
+                        <span className="mr-2 inline-flex rounded-md bg-amber-100 px-2 py-1 text-[10px] font-bold text-amber-800">
+                          بانتظار اعتماد المراجع
+                        </span>
+                      )}
                     </span>
                   </td>
                   <td className="p-3 font-bold text-blue-600">
@@ -967,7 +1029,7 @@ export default function BanksPage() {
                   <td className="p-3 text-gray-500">{tx.notes || '-'}</td>
                   <td className="p-3 font-bold text-gray-700">{tx.actor_name || 'غير معروف'}</td>
                   <td className="p-3 print:hidden">
-                    {isAdmin && (
+                    {canRequestChanges && (
                       <button
                         type="button"
                         onClick={() => handleDeleteBankTransaction(tx)}
@@ -1219,7 +1281,14 @@ export default function BanksPage() {
             <tbody className="divide-y text-sm">
               {filteredBanks.map((bank) => (
                 <tr key={bank.id} className="hover:bg-gray-50/50 transition">
-                  <td className="p-3 font-black text-gray-900">{bank.name}</td>
+                  <td className="p-3 font-black text-gray-900">
+                    {bank.name}
+                    {isFinancialReviewPending('banks', bank.id) && (
+                      <span className="mr-2 inline-flex rounded-md bg-amber-100 px-2 py-1 text-[10px] font-bold text-amber-800">
+                        بانتظار اعتماد المراجع
+                      </span>
+                    )}
+                  </td>
                   <td className="p-3 font-bold text-gray-600">{Number(bank.opening_balance || 0).toLocaleString()} ج.م</td>
                   <td className="p-3 font-black text-emerald-600">{getBankLedgerBalance(bank).toLocaleString()} ج.م</td>
                   {/* <td className="p-3 text-xs text-gray-500">{bank.notes || '-'}</td> */}
@@ -1239,7 +1308,7 @@ export default function BanksPage() {
                         📜 السجل
                       </button>
 
-                      {isAdmin && (
+                      {canRequestChanges && (
                         <button
                           onClick={() => {
                             setReconciledBalance(bank.balance ?? '');
@@ -1252,8 +1321,7 @@ export default function BanksPage() {
                         </button>
                       )}
                       
-                      {/* أزرار التعديل والحذف تظهر للمسؤولين فقط (isAdmin) */}
-                      {isAdmin && (
+                      {canRequestChanges && (
                         <>
                           <button
                             onClick={() => {

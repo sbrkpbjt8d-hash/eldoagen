@@ -4,7 +4,7 @@ import { useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useReactToPrint } from 'react-to-print';
 import { pb } from '../../lib/pocketbase';
-import { archiveAndDeleteRecord } from '../../lib/deleted-records';
+import { requestRecordDeletion } from '../../lib/approval-requests';
 
 const emptyAuthorization = {
   expense_type: '',
@@ -110,15 +110,14 @@ export default function SpendAuthorizationPage() {
     setDeletingId(authorization.id);
     setFeedback(null);
     try {
-      await archiveAndDeleteRecord(
+      await requestRecordDeletion(
         'spend_authorizations',
         authorization.id,
         authorization.recipient_name || authorization.employee_name || 'إذن صرف',
       );
-      if (selectedAuthorization?.id === authorization.id) setSelectedAuthorization(null);
       setPendingDeleteAuthorization(null);
-      setFeedback({ type: 'success', message: 'تم حذف إذن الصرف بنجاح.' });
-      await queryClient.invalidateQueries({ queryKey: ['spend-authorizations'] });
+      setFeedback({ type: 'success', message: 'تم إرسال طلب حذف إذن الصرف للمدير.' });
+      await queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
     } catch (deleteError) {
       setFeedback({
         type: 'error',

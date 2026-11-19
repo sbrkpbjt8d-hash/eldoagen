@@ -2,13 +2,13 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
-import { archiveAndDeleteRecord } from '../../lib/deleted-records';
+import { requestCompoundOperation } from '../../lib/approval-requests';
 import { addQuantities, formatQuantity, roundQuantity } from '../../lib/quantity';
 import toast, { Toaster } from 'react-hot-toast';
 
 export default function ProductionStockPage() {
   const queryClient = useQueryClient();
-  const isAdmin = pb.authStore.model?.collectionName === '_superusers' || pb.authStore.model?.role === 'admin' || pb.authStore.model?.email === 'mohamedfrf@icloud.com';
+  const canRequestInventoryChanges = Boolean(pb.authStore.model);
   const [searchTerm, setSearchTerm] = useState('');
   const [adjustmentModal, setAdjustmentModal] = useState({ isOpen: false, product: null });
   const [adjustmentQuantity, setAdjustmentQuantity] = useState('');
@@ -307,7 +307,6 @@ export default function ProductionStockPage() {
 
   const adjustmentMutation = useMutation({
     mutationFn: async () => {
-      if (!isAdmin) throw new Error('عفواً، تسوية مخزن المنتجات متاحة للأدمن فقط!');
       const product = adjustmentModal.product;
       const quantity = roundQuantity(adjustmentQuantity);
       if (!product) throw new Error('اختر المنتج أولاً');
@@ -316,25 +315,33 @@ export default function ProductionStockPage() {
       const newStock = addQuantities(product.stock, quantity);
       if (newStock < 0) throw new Error('لا يمكن أن تكون كمية المخزون أقل من صفر');
 
-      const updatedProduct = await pb.collection('products_stock').update(product.id, {
-        stock: newStock,
-        total_cost: product.unit_cost * newStock,
-        actor_name: pb.authStore.model?.name || pb.authStore.model?.email || 'مستخدم',
-      });
-      await pb.collection('product_stock_transactions').create({
+      const actorName = pb.authStore.model?.name || pb.authStore.model?.email || 'مستخدم';
+      await requestCompoundOperation([
+        {
+          type: 'update',
+          collection: 'products_stock',
+          id: product.id,
+          data: { stock: newStock, total_cost: product.unit_cost * newStock, actor_name: actorName },
+        },
+        {
+          type: 'create',
+          collection: 'product_stock_transactions',
+          data: {
         product_name: product.product_name,
         quantity,
         movement_type: 'adjustment',
         title: 'تسوية مخزن المنتجات',
         notes: `تسوية كمية المخزن: ${quantity > 0 ? '+' : ''}${quantity}`,
-        actor_name: pb.authStore.model?.name || pb.authStore.model?.email || 'مستخدم',
+        actor_name: actorName,
         source_type: 'stock_adjustment',
         source_id: product.id,
         product_stock_id: product.id,
         movement_at: new Date().toISOString(),
         balance_after: newStock,
-      });
-      return updatedProduct;
+          },
+        },
+      ], `تسوية مخزون ${product.product_name}`);
+      return product;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products_stock'] });
@@ -348,7 +355,6 @@ export default function ProductionStockPage() {
 
   const editStockMutation = useMutation({
     mutationFn: async () => {
-      if (!isAdmin) throw new Error('تعديل كمية المنتج متاح للأدمن فقط');
       const product = editStockModal.product;
       const nextStock = roundQuantity(editStockQuantity);
       if (!product || !Number.isFinite(nextStock) || nextStock < 0) {
@@ -356,25 +362,33 @@ export default function ProductionStockPage() {
       }
 
       const previousStock = roundQuantity(product.stock || 0);
-      const updatedProduct = await pb.collection('products_stock').update(product.id, {
-        stock: nextStock,
-        total_cost: product.unit_cost * nextStock,
-        actor_name: pb.authStore.model?.name || pb.authStore.model?.email || 'مستخدم',
-      });
-      await pb.collection('product_stock_transactions').create({
+      const actorName = pb.authStore.model?.name || pb.authStore.model?.email || 'مستخدم';
+      await requestCompoundOperation([
+        {
+          type: 'update',
+          collection: 'products_stock',
+          id: product.id,
+          data: { stock: nextStock, total_cost: product.unit_cost * nextStock, actor_name: actorName },
+        },
+        {
+          type: 'create',
+          collection: 'product_stock_transactions',
+          data: {
         product_name: product.product_name,
         quantity: addQuantities(nextStock, -previousStock),
         movement_type: 'stock_edit',
         title: 'تعديل الكمية الحالية',
         notes: `تم تعديل الكمية من ${previousStock} إلى ${nextStock}`,
-        actor_name: pb.authStore.model?.name || pb.authStore.model?.email || 'مستخدم',
+        actor_name: actorName,
         source_type: 'stock_edit',
         source_id: product.id,
         product_stock_id: product.id,
         movement_at: new Date().toISOString(),
         balance_after: nextStock,
-      });
-      return updatedProduct;
+          },
+        },
+      ], `تعديل مخزون ${product.product_name}`);
+      return product;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products_stock'] });
@@ -388,8 +402,11 @@ export default function ProductionStockPage() {
 
   const deleteProductMutation = useMutation({
     mutationFn: async (product) => {
-      if (!isAdmin) throw new Error('حذف المنتج متاح للأدمن فقط');
-      await pb.collection('product_stock_transactions').create({
+      await requestCompoundOperation([
+        {
+          type: 'create',
+          collection: 'product_stock_transactions',
+          data: {
         product_name: product.product_name,
         quantity: -roundQuantity(product.stock || 0),
         movement_type: 'delete',
@@ -401,10 +418,12 @@ export default function ProductionStockPage() {
         product_stock_id: product.id,
         movement_at: new Date().toISOString(),
         balance_after: 0,
-      });
-      const deleted = await archiveAndDeleteRecord('products_stock', product.id, product.product_name);
+          },
+        },
+        { type: 'delete', collection: 'products_stock', id: product.id, record_label: product.product_name },
+      ], `حذف مخزون ${product.product_name}`);
       queryClient.setQueryData(['products_stock'], (records = []) => records.filter((record) => record.id !== product.id));
-      return deleted;
+      return product;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products_stock'] });
@@ -417,7 +436,6 @@ export default function ProductionStockPage() {
 
   const editHistoryMutation = useMutation({
     mutationFn: async () => {
-      if (!isAdmin) throw new Error('تعديل سجل المخزن متاح للأدمن فقط');
       const item = historyEditModal.item;
       const product = historyEditModal.product;
       const nextQuantity = roundQuantity(historyEditQuantity);
@@ -430,15 +448,24 @@ export default function ProductionStockPage() {
       const nextStock = addQuantities(product.stock || 0, delta);
       if (nextStock < 0) throw new Error('لا يمكن أن تصبح كمية المخزن أقل من صفر');
 
-      await pb.collection('products_stock').update(product.id, {
-        stock: nextStock,
-        total_cost: product.unit_cost * nextStock,
-      });
-      await pb.collection('product_stock_transactions').update(item.sourceId, {
-        quantity: nextQuantity,
-        notes: `تم تعديل حركة المخزن إلى كمية ${nextQuantity > 0 ? '+' : ''}${nextQuantity}`,
-        balance_after: addQuantities(transaction.balance_after || 0, delta),
-      });
+      const actions = [
+        {
+          type: 'update',
+          collection: 'products_stock',
+          id: product.id,
+          data: { stock: nextStock, total_cost: product.unit_cost * nextStock },
+        },
+        {
+          type: 'update',
+          collection: 'product_stock_transactions',
+          id: item.sourceId,
+          data: {
+            quantity: nextQuantity,
+            notes: `تم تعديل حركة المخزن إلى كمية ${nextQuantity > 0 ? '+' : ''}${nextQuantity}`,
+            balance_after: addQuantities(transaction.balance_after || 0, delta),
+          },
+        },
+      ];
 
       const normalizeName = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
       const relatedTransactions = (await pb.collection('product_stock_transactions').getFullList())
@@ -457,11 +484,15 @@ export default function ProductionStockPage() {
           continue;
         }
         if (targetFound) {
-          await pb.collection('product_stock_transactions').update(record.id, {
-            balance_after: addQuantities(record.balance_after || 0, delta),
+          actions.push({
+            type: 'update',
+            collection: 'product_stock_transactions',
+            id: record.id,
+            data: { balance_after: addQuantities(record.balance_after || 0, delta) },
           });
         }
       }
+      await requestCompoundOperation(actions, `تعديل حركة مخزون ${product.product_name}`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products_stock'] });
@@ -475,17 +506,25 @@ export default function ProductionStockPage() {
 
   const deleteHistoryMutation = useMutation({
     mutationFn: async (item) => {
-      if (!isAdmin) throw new Error('حذف سجل المخزن متاح للأدمن فقط');
       const product = historyModal.product;
       if (!product) throw new Error('لم يتم اختيار منتج');
       const nextStock = addQuantities(product.stock || 0, -Number(item.quantity || 0));
       if (nextStock < 0) throw new Error('لا يمكن أن تصبح كمية المخزن أقل من صفر');
 
-      await pb.collection('products_stock').update(product.id, {
-        stock: nextStock,
-        total_cost: product.unit_cost * nextStock,
-      });
-      await archiveAndDeleteRecord('product_stock_transactions', item.sourceId, item.title || 'حركة مخزون');
+      await requestCompoundOperation([
+        {
+          type: 'update',
+          collection: 'products_stock',
+          id: product.id,
+          data: { stock: nextStock, total_cost: product.unit_cost * nextStock },
+        },
+        {
+          type: 'delete',
+          collection: 'product_stock_transactions',
+          id: item.sourceId,
+          record_label: item.title || 'حركة مخزون',
+        },
+      ], `حذف حركة مخزون ${product.product_name}`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products_stock'] });
@@ -497,7 +536,6 @@ export default function ProductionStockPage() {
 
   const deleteAllHistoryMutation = useMutation({
     mutationFn: async () => {
-      if (!isAdmin) throw new Error('حذف سجل المخزن متاح للأدمن فقط');
       const product = historyModal.product;
       if (!product) throw new Error('لم يتم اختيار منتج');
 
@@ -509,13 +547,13 @@ export default function ProductionStockPage() {
         )
       ));
 
-      for (const transaction of historyItems) {
-        await archiveAndDeleteRecord(
-          'product_stock_transactions',
-          transaction.id,
-          transaction.title || 'حركة مخزون',
-        );
-      }
+      if (!historyItems.length) throw new Error('لا توجد حركات لحذفها.');
+      await requestCompoundOperation(historyItems.map(transaction => ({
+        type: 'delete',
+        collection: 'product_stock_transactions',
+        id: transaction.id,
+        record_label: transaction.title || 'حركة مخزون',
+      })), `حذف سجل مخزون ${product.product_name}`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['product_stock_transactions'] });
@@ -625,7 +663,7 @@ export default function ProductionStockPage() {
         </button>
       </div>
 
-      {isAdmin && (
+      {canRequestInventoryChanges && (
         <div className="flex justify-start">
           <button
             type="button"
@@ -717,7 +755,7 @@ export default function ProductionStockPage() {
                           >
                             قائمة المبيعات
                           </button>
-                          {isAdmin && (
+                          {canRequestInventoryChanges && (
                             <>
                               <button
                                 type="button"
@@ -827,7 +865,7 @@ export default function ProductionStockPage() {
                 <p className="text-xs text-gray-500 mt-1">الرصيد الحالي: <span className="font-black text-emerald-700">{formatQuantity(historyModal.product.stock)} طن</span></p>
               </div>
               <div className="flex items-center gap-3">
-                {isAdmin && (
+                {canRequestInventoryChanges && (
                   <button
                     type="button"
                     onClick={() => setDeleteConfirmModal({
@@ -899,7 +937,7 @@ export default function ProductionStockPage() {
                       <td className="p-3 font-black text-indigo-700">{formatQuantity(item.balance)} طن</td>
                       <td className="p-3 font-bold text-gray-700">
                         <div>{item.actor}</div>
-                        {isAdmin && (
+                        {canRequestInventoryChanges && (
                           <div className="flex gap-2 mt-2 whitespace-nowrap">
                             {item.editable && (
                               <button

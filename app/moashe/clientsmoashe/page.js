@@ -2,7 +2,13 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
-import { archiveAndDeleteRecord } from '../../lib/deleted-records';
+import {
+  getPendingReviewActionKeys,
+  requestCompoundOperation,
+  requestRecordDeletion,
+  requestRecordUpdate,
+  requestSettlement,
+} from '../../lib/approval-requests';
 
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 const EGYPT_TIME_ZONE = 'Africa/Cairo';
@@ -54,8 +60,6 @@ export default function ClientsPage() {
   const [clientSalesAgent, setClientSalesAgent] = useState('');
 
   // فحص صلاحيات الأدمن
-  const isAdmin = pb.authStore.model?.collectionName === '_superusers' || pb.authStore.model?.role === 'admin';
-
   // دالة جلب اسم المستخدم الحالي لتلافي خطأ عدم التعريف
   const currentUserName = () => {
     return pb.authStore.model?.name || pb.authStore.model?.email || 'مسؤول النظام';
@@ -119,6 +123,14 @@ export default function ClientsPage() {
       }).catch(() => []);
     },
   });
+  const { data: pendingReviewActionKeys = [], isError: pendingReviewsError } = useQuery({
+    queryKey: ['pending_financial_review_action_keys'],
+    queryFn: getPendingReviewActionKeys,
+    refetchOnWindowFocus: true,
+  });
+  const isFinancialReviewPending = (collection, id) => (
+    pendingReviewActionKeys.includes(`${collection}/${id}`)
+  );
 
   const getClientLedgerBalance = (client) => {
     if (!client) return 0;
@@ -182,6 +194,8 @@ export default function ClientsPage() {
   // دمج الحركات والفواتير في قائمة واحدة لكشف الحساب وترتيبها حسب الأحدث
   const formattedTransactions = transactions.map(tx => ({
     id: tx.id,
+    collection: 'client_transactions',
+    reviewPending: isFinancialReviewPending('client_transactions', tx.id),
     date: tx.created || tx.date,
     type: tx.type === 'opening_balance' ? 'opening_balance' : tx.type === 'settlement' ? 'settlement' : 'payment',
     amount: Number(tx.amount || 0),
@@ -192,6 +206,8 @@ export default function ClientsPage() {
 
   const formattedInvoices = invoices.map(inv => ({
     id: inv.id,
+    collection: 'sales_invoices',
+    reviewPending: isFinancialReviewPending('sales_invoices', inv.id),
     date: inv.created,
     type: 'invoice',
     isCash: !isCreditInvoice(inv),
@@ -260,17 +276,16 @@ const combinedStatement = [...statementWithBalance].reverse();
 
   const updateClientAgentMutation = useMutation({
     mutationFn: async ({ clientId, agentId }) => {
-      if (!isAdmin) throw new Error('تعديل مندوب العميل متاح للأدمن فقط');
       const agent = salesAgents.find((item) => item.id === agentId);
-      return await pb.collection('clientsmoashe').update(clientId, {
+      return requestRecordUpdate('clientsmoashe', clientId, {
         sales_agent_id: agentId,
         sales_agent_name: agent?.name || '',
         sales_agent_region: agent?.region || '',
-      });
+      }, clients.find((client) => client.id === clientId)?.name);
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
-      showFeedback('تم تعديل مندوب العميل بنجاح.', 'success');
+      await queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
+      showFeedback('تم إرسال طلب تعديل مندوب العميل للمدير.', 'success');
     },
     onError: (error) => showFeedback('فشل تعديل مندوب العميل: ' + error.message, 'error'),
   });
@@ -287,6 +302,87 @@ const combinedStatement = [...statementWithBalance].reverse();
 
       if (destination === 'banks' && !payBankId) {
         throw new Error('اختر البنك الذي تم استلام التحصيل عليه');
+      }
+
+      if (destination === 'banks') {
+        const bank = banks.find(item => item.id === payBankId);
+        if (!bank) throw new Error('البنك المختار غير موجود');
+        await requestCompoundOperation([
+          {
+            type: 'balance_delta',
+            collection: 'clientsmoashe',
+            id: client.id,
+            delta: -numericAmount,
+          },
+          {
+            type: 'create',
+            collection: 'client_transactions',
+            data: {
+              client_id: client.id,
+              type: 'payment',
+              amount: numericAmount,
+              destination,
+              bank_id: payBankId,
+              sales_agent_id: paymentAgentId,
+              sales_agent_name: paymentAgent?.name || client.sales_agent_name || '',
+              sales_agent_region: paymentAgent?.region || client.sales_agent_region || '',
+              actor_name: currentUserName(),
+              notes: notes || 'تحصيل مديونية',
+              date: new Date().toISOString(),
+            },
+          },
+          {
+            type: 'balance_delta',
+            collection: 'banks',
+            id: bank.id,
+            delta: numericAmount,
+          },
+        ], `تحصيل من العميل ${client.name}`, { reviewType: 'bank' });
+        return { reviewRequested: true };
+      }
+
+      if (destination === 'treasury') {
+        const actions = [
+          {
+            type: 'balance_delta',
+            collection: 'clientsmoashe',
+            id: client.id,
+            delta: -numericAmount,
+          },
+          {
+            type: 'create',
+            collection: 'client_transactions',
+            data: {
+              client_id: client.id,
+              type: 'payment',
+              amount: numericAmount,
+              destination,
+              bank_id: '',
+              sales_agent_id: paymentAgentId,
+              sales_agent_name: paymentAgent?.name || client.sales_agent_name || '',
+              sales_agent_region: paymentAgent?.region || client.sales_agent_region || '',
+              actor_name: currentUserName(),
+              notes: notes || 'تحصيل مديونية',
+              date: new Date().toISOString(),
+            },
+          },
+        ];
+        if (treasury?.id) {
+          actions.push({
+            type: 'balance_delta',
+            collection: 'treasury',
+            id: treasury.id,
+            delta: numericAmount,
+          });
+        } else {
+          actions.push({
+            type: 'create',
+            collection: 'treasury',
+            data: { balance: roundMoney(numericAmount), opening_balance: 0 },
+          });
+        }
+        await requestCompoundOperation(actions, `تحصيل نقدي من العميل ${client.name}`, { reviewType: 'treasury' });
+        return { reviewRequested: true };
       }
 
       await pb.collection('clientsmoashe').update(client.id, {
@@ -307,29 +403,16 @@ const combinedStatement = [...statementWithBalance].reverse();
         date: new Date().toISOString()
       });
 
-      if (destination === 'treasury') {
-        const currentTreasuryBalance = treasury ? Number(treasury.balance || 0) : 0;
-        const newTreasuryBalance = currentTreasuryBalance + numericAmount;
-
-        if (treasury) {
-          await pb.collection('treasury').update(treasury.id, { balance: roundMoney(newTreasuryBalance) });
-        } else {
-          await pb.collection('treasury').create({ balance: roundMoney(newTreasuryBalance), opening_balance: 0 });
-        }
-      } else {
-        const bank = banks.find(item => item.id === payBankId);
-        if (!bank) throw new Error('البنك المختار غير موجود');
-        await pb.collection('banks').update(bank.id, {
-          balance: roundMoney(Number(bank.balance || 0) + numericAmount),
-        });
-      }
     },
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       await queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
       await queryClient.invalidateQueries({ queryKey: ['treasury'] });
       await queryClient.invalidateQueries({ queryKey: ['client_transactions'] });
       await queryClient.invalidateQueries({ queryKey: ['all_client_transactions_summary'] });
-      showFeedback('💵 تم تسجيل التحصيل وتحديث الحسابات بنجاح!', 'success');
+      await queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
+      showFeedback(result?.reviewRequested
+        ? `تم تسجيل التحصيل ${payDestination === 'banks' ? 'البنكي' : 'النقدي'} وتحديث الأرصدة الآن؛ بانتظار اعتماد المراجع.`
+        : '💵 تم تسجيل التحصيل وتحديث الحسابات بنجاح!', 'success');
       setPaymentModal({ isOpen: false, client: null });
       setPayAmount('');
       setPayNotes('');
@@ -363,6 +446,90 @@ const combinedStatement = [...statementWithBalance].reverse();
 
         return { client, amount: numericAmount, currentClientBalance, paymentAgent };
       });
+
+      if (destination === 'banks') {
+        const bank = banks.find((item) => item.id === bankId);
+        if (!bank) throw new Error('البنك المختار غير موجود.');
+        const totalAmount = roundMoney(validatedPayments.reduce((sum, payment) => sum + payment.amount, 0));
+        const actions = validatedPayments.flatMap(({ client, amount, currentClientBalance, paymentAgent }) => ([
+          {
+            type: 'create',
+            collection: 'client_transactions',
+            data: {
+              client_id: client.id,
+              type: 'payment',
+              amount,
+              destination,
+              bank_id: bankId,
+              sales_agent_id: client.sales_agent_id,
+              sales_agent_name: paymentAgent?.name || client.sales_agent_name || '',
+              sales_agent_region: paymentAgent?.region || client.sales_agent_region || '',
+              actor_name: currentUserName(),
+              notes: 'تحصيل مجمع',
+              date: new Date().toISOString(),
+            },
+          },
+          {
+            type: 'balance_delta',
+            collection: 'clientsmoashe',
+            id: client.id,
+            delta: -amount,
+          },
+        ]));
+        actions.push({
+          type: 'balance_delta',
+          collection: 'banks',
+          id: bank.id,
+          delta: totalAmount,
+        });
+        await requestCompoundOperation(actions, 'تحصيل مجمع على البنك', { reviewType: 'bank' });
+        return { reviewRequested: true };
+      }
+
+      if (destination === 'treasury') {
+        const totalAmount = roundMoney(validatedPayments.reduce((sum, payment) => sum + payment.amount, 0));
+        const actions = validatedPayments.flatMap(({ client, amount, currentClientBalance, paymentAgent }) => ([
+          {
+            type: 'create',
+            collection: 'client_transactions',
+            data: {
+              client_id: client.id,
+              type: 'payment',
+              amount,
+              destination,
+              bank_id: '',
+              sales_agent_id: client.sales_agent_id,
+              sales_agent_name: paymentAgent?.name || client.sales_agent_name || '',
+              sales_agent_region: paymentAgent?.region || client.sales_agent_region || '',
+              actor_name: currentUserName(),
+              notes: 'تحصيل مجمع',
+              date: new Date().toISOString(),
+            },
+          },
+          {
+            type: 'balance_delta',
+            collection: 'clientsmoashe',
+            id: client.id,
+            delta: -amount,
+          },
+        ]));
+        if (treasury?.id) {
+          actions.push({
+            type: 'balance_delta',
+            collection: 'treasury',
+            id: treasury.id,
+            delta: totalAmount,
+          });
+        } else {
+          actions.push({
+            type: 'create',
+            collection: 'treasury',
+            data: { balance: totalAmount, opening_balance: 0 },
+          });
+        }
+        await requestCompoundOperation(actions, 'تحصيل مجمع نقدي', { reviewType: 'treasury' });
+        return { reviewRequested: true };
+      }
 
       const completedClients = [];
       try {
@@ -414,13 +581,16 @@ const combinedStatement = [...statementWithBalance].reverse();
         throw new Error(`${errorMessage}${completedMessage}`);
       }
     },
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       await queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
       await queryClient.invalidateQueries({ queryKey: ['treasury'] });
       await queryClient.invalidateQueries({ queryKey: ['banks'] });
       await queryClient.invalidateQueries({ queryKey: ['client_transactions'] });
       await queryClient.invalidateQueries({ queryKey: ['all_client_transactions_summary'] });
-      showFeedback('💵 تم تسجيل التحصيل المجمع وتحديث الحسابات بنجاح!', 'success');
+      await queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
+      showFeedback(result?.reviewRequested
+        ? 'تم تسجيل التحصيل المجمع وتحديث الأرصدة الآن؛ بانتظار اعتماد المراجع.'
+        : '💵 تم تسجيل التحصيل المجمع وتحديث الحسابات بنجاح!', 'success');
       setBulkCollectionOpen(false);
       setBulkCollectionAmounts({});
       setBulkCollectionSearch('');
@@ -433,6 +603,7 @@ const combinedStatement = [...statementWithBalance].reverse();
       await queryClient.invalidateQueries({ queryKey: ['banks'] });
       await queryClient.invalidateQueries({ queryKey: ['client_transactions'] });
       await queryClient.invalidateQueries({ queryKey: ['all_client_transactions_summary'] });
+      await queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
       showFeedback('❌ فشل التحصيل المجمع: ' + error.message, 'error');
     },
   });
@@ -447,25 +618,26 @@ const combinedStatement = [...statementWithBalance].reverse();
         ? currentClientBalance - numericAmount 
         : currentClientBalance + numericAmount;
 
-      await pb.collection('clientsmoashe').update(client.id, {
-        balance: newClientBalance,
-      });
-
-      await pb.collection('client_transactions').create({
-        client_id: client.id,
-        type: 'settlement',
-        amount: numericAmount,
-        destination: '-',
-        actor_name: currentUserName(),
-        notes: `تسوية (${type === 'minus' ? 'خصم/تخفيض' : 'إضافة/زيادة'}): ${notes || 'تسوية حساب'}`,
-        date: new Date().toISOString()
+      return requestSettlement({
+        collectionName: 'clientsmoashe',
+        recordId: client.id,
+        recordLabel: client.name,
+        changes: { balance: newClientBalance },
+        transactionCollection: 'client_transactions',
+        transactionData: {
+          client_id: client.id,
+          type: 'settlement',
+          amount: numericAmount,
+          destination: '-',
+          actor_name: currentUserName(),
+          notes: `تسوية (${type === 'minus' ? 'خصم/تخفيض' : 'إضافة/زيادة'}): ${notes || 'تسوية حساب'}`,
+          date: new Date().toISOString(),
+        },
       });
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
-      await queryClient.invalidateQueries({ queryKey: ['client_transactions'] });
-      await queryClient.invalidateQueries({ queryKey: ['all_client_transactions_summary'] });
-      showFeedback('⚙️ تم إجراء التسوية وتحديث الحساب بنجاح!', 'success');
+      await queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
+      showFeedback('تم إرسال طلب التسوية للمدير، ولم يتغير الحساب بعد.', 'success');
       setSettlementModal({ isOpen: false, client: null });
       setSettlementAmount('');
       setSettlementNotes('');
@@ -478,10 +650,6 @@ const combinedStatement = [...statementWithBalance].reverse();
 
   const deleteClientPaymentMutation = useMutation({
     mutationFn: async ({ transactionId, clientId }) => {
-      if (!isAdmin) {
-        throw new Error('حذف تحصيل العميل متاح للأدمن فقط.');
-      }
-
       const transaction = await pb.collection('client_transactions').getOne(transactionId);
       if (String(transaction.type || '').toLowerCase() !== 'payment') {
         throw new Error('هذه الحركة ليست تحصيل عميل.');
@@ -496,48 +664,65 @@ const combinedStatement = [...statementWithBalance].reverse();
         throw new Error('قيمة التحصيل غير صحيحة.');
       }
 
+      const actions = [{
+        type: 'delete',
+        collection: 'client_transactions',
+        id: transactionId,
+        record_label: 'تحصيل عميل',
+      }];
+
       if (destination === 'treasury') {
         const treasuryRecords = await pb.collection('treasury').getFullList().catch(() => []);
         const treasuryRecord = treasuryRecords[0] || null;
         if (treasuryRecord) {
-          await pb.collection('treasury').update(treasuryRecord.id, {
-            balance: Number(treasuryRecord.balance || 0) - amount,
+          actions.push({
+            type: 'balance_delta',
+            collection: 'treasury',
+            id: treasuryRecord.id,
+            delta: -amount,
           });
         } else {
-          await pb.collection('treasury').create({
-            balance: -amount,
-            opening_balance: 0,
+          actions.push({
+            type: 'create',
+            collection: 'treasury',
+            data: { balance: -amount, opening_balance: 0 },
           });
         }
       } else if (destination === 'banks' && bankId) {
         const bank = await pb.collection('banks').getOne(bankId).catch(() => null);
         if (bank) {
-          await pb.collection('banks').update(bank.id, {
-            balance: Number(bank.balance || 0) - amount,
+          actions.push({
+            type: 'balance_delta',
+            collection: 'banks',
+            id: bank.id,
+            delta: -amount,
           });
         }
       }
 
       if (client) {
-        await pb.collection('clientsmoashe').update(client.id, {
-          balance: roundMoney(getClientLedgerBalance(client) + amount),
+        actions.push({
+          type: 'balance_delta',
+          collection: 'clientsmoashe',
+          id: client.id,
+          delta: amount,
         });
       }
 
-      await archiveAndDeleteRecord('client_transactions', transactionId, 'تحصيل عميل');
-
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] }),
-        queryClient.invalidateQueries({ queryKey: ['client_transactions'] }),
-        queryClient.invalidateQueries({ queryKey: ['all_client_transactions_summary'] }),
-        queryClient.invalidateQueries({ queryKey: ['treasury'] }),
-        queryClient.invalidateQueries({ queryKey: ['banks'] }),
-      ]);
-
-      return transaction;
+      return requestCompoundOperation(
+        actions,
+        `حذف تحصيل العميل ${client?.name || clientId}`,
+        { reviewType: destination === 'banks' ? 'bank' : 'treasury' },
+      );
     },
     onSuccess: () => {
-      showFeedback('✅ تم حذف التحصيل واسترجاع تأثيره من الخزنة/البنك وتحديث العميل.', 'success');
+      queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
+      queryClient.invalidateQueries({ queryKey: ['treasury'] });
+      queryClient.invalidateQueries({ queryKey: ['banks'] });
+      queryClient.invalidateQueries({ queryKey: ['all_client_transactions_summary'] });
+      queryClient.invalidateQueries({ queryKey: ['client_transactions'] });
+      queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
+      showFeedback('تم حذف التحصيل وإلغاء أثره مؤقتًا؛ بانتظار اعتماد المراجع.', 'success');
     },
     onError: (error) => {
       showFeedback('❌ فشل حذف التحصيل: ' + error.message, 'error');
@@ -547,26 +732,25 @@ const combinedStatement = [...statementWithBalance].reverse();
   // إضافة أو تعديل الرصيد الافتتاحي للعميل (محمي للأدمن فقط)
   const openingBalanceMutation = useMutation({
     mutationFn: async ({ client, amount }) => {
-      if (!isAdmin) throw new Error('تعديل الرصيد الافتتاحي متاح للأدمن فقط');
       const numericAmount = Number(amount);
-      
-      await pb.collection('clientsmoashe').update(client.id, {
-        balance: roundMoney(numericAmount),
-      });
-
-      await pb.collection('client_transactions').create({
-        client_id: client.id,
-        type: 'opening_balance',
-        amount: numericAmount,
-        notes: 'إضافة/تعديل الرصيد الافتتاحي',
-        date: new Date().toISOString()
+      return requestSettlement({
+        collectionName: 'clientsmoashe',
+        recordId: client.id,
+        recordLabel: client.name,
+        changes: { balance: roundMoney(numericAmount) },
+        transactionCollection: 'client_transactions',
+        transactionData: {
+          client_id: client.id,
+          type: 'opening_balance',
+          amount: numericAmount,
+          notes: 'إضافة/تعديل الرصيد الافتتاحي',
+          date: new Date().toISOString(),
+        },
       });
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
-      await queryClient.invalidateQueries({ queryKey: ['client_transactions'] });
-      await queryClient.invalidateQueries({ queryKey: ['all_client_transactions_summary'] });
-      showFeedback('✨ تم تحديث الرصيد الافتتاحي بنجاح', 'success');
+      await queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
+      showFeedback('تم إرسال طلب تعديل الرصيد الافتتاحي للمدير.', 'success');
       setOpeningModal({ isOpen: false, client: null });
       setOpeningAmount('');
     },
@@ -577,12 +761,10 @@ const combinedStatement = [...statementWithBalance].reverse();
 
   // حذف عميل
   const deleteClientMutation = useMutation({
-    mutationFn: async (id) => {
-      return await archiveAndDeleteRecord('clientsmoashe', id);
-    },
+    mutationFn: (id) => requestRecordDeletion('clientsmoashe', id),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
-      showFeedback('تم حذف العميل بنجاح.', 'success');
+      await queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
+      showFeedback('تم إرسال طلب حذف العميل للمدير.', 'success');
       setDeleteModal({ isOpen: false, clientId: null });
     },
     onError: () => {
@@ -653,11 +835,6 @@ const combinedStatement = [...statementWithBalance].reverse();
 
   const handleOpeningSubmit = (e) => {
     e.preventDefault();
-    if (!isAdmin) {
-      showFeedback('عذراً، تعديل الرصيد الافتتاحي متاح للمشرف (Admin) فقط.', 'error');
-      setOpeningModal({ isOpen: false, client: null });
-      return;
-    }
     openingBalanceMutation.mutate({
       client: openingModal.client,
       amount: openingAmount
@@ -904,8 +1081,8 @@ const combinedStatement = [...statementWithBalance].reverse();
         </div>
       )}
 
-      {/* نافذة الرصيد الافتتاحي (محمية للأدمن فقط) */}
-      {openingModal.isOpen && isAdmin && (
+      {/* نافذة الرصيد الافتتاحي */}
+      {openingModal.isOpen && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4">
             <div className="flex justify-between items-center border-b pb-3">
@@ -1093,6 +1270,11 @@ const combinedStatement = [...statementWithBalance].reverse();
             </div>
 
             <div className="overflow-x-auto">
+              {pendingReviewsError && (
+                <p role="alert" className="mb-3 rounded-xl bg-amber-50 p-3 text-xs font-bold text-amber-800">
+                  تعذر تحميل حالات اعتماد العمليات؛ تحقق من اتصال النظام.
+                </p>
+              )}
               {loadingTransactions ? (
                 <div className="p-8 text-center text-blue-600 text-xs font-bold">جاري تحميل كشف الحساب...</div>
               ) : filteredStatement.length === 0 ? (
@@ -1127,6 +1309,11 @@ const combinedStatement = [...statementWithBalance].reverse();
                           ) : (
                             <span className="text-emerald-600 bg-emerald-50 px-2 py-1 rounded-md">تحصيل</span>
                           )}
+                          {tx.reviewPending && (
+                            <span className="mr-2 inline-flex rounded-md bg-amber-100 px-2 py-1 text-[10px] font-bold text-amber-800">
+                              بانتظار اعتماد المراجع
+                            </span>
+                          )}
                         </td>
                         <td className={`p-3 font-black ${tx.type === 'invoice' ? 'text-purple-600' : 'text-gray-900'}`}>
                           {Number(tx.amount).toLocaleString()} ج.م
@@ -1138,7 +1325,7 @@ const combinedStatement = [...statementWithBalance].reverse();
                         <td className="p-3 text-gray-500">{tx.notes}</td>
                         <td className="p-3 font-bold text-gray-700">{tx.actorName}</td>
                         <td className="p-3 text-center">
-                          {isAdmin && tx.type === 'payment' && (
+                          {tx.type === 'payment' && (
                             <button
                               type="button"
                               onClick={() => deleteClientPaymentMutation.mutate({ transactionId: tx.id, clientId: statementModal.client?.id })}
@@ -1264,19 +1451,15 @@ const combinedStatement = [...statementWithBalance].reverse();
                       )}
                     </td>
                     <td className="p-3 text-xs font-bold text-emerald-700">
-                      {isAdmin ? (
-                        <select
-                          value={client.sales_agent_id || ''}
-                          onChange={(event) => updateClientAgentMutation.mutate({ clientId: client.id, agentId: event.target.value })}
-                          disabled={updateClientAgentMutation.isPending}
-                          className="rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-bold text-emerald-800 outline-none"
-                        >
-                          <option value="">غير محدد</option>
-                          {salesAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
-                        </select>
-                      ) : (
-                        client.sales_agent_name || 'غير محدد'
-                      )}
+                      <select
+                        value={client.sales_agent_id || ''}
+                        onChange={(event) => updateClientAgentMutation.mutate({ clientId: client.id, agentId: event.target.value })}
+                        disabled={updateClientAgentMutation.isPending}
+                        className="rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-bold text-emerald-800 outline-none"
+                      >
+                        <option value="">غير محدد</option>
+                        {salesAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+                      </select>
                     </td>
                     {/* <td className="p-3 font-bold text-gray-700">{client.phone || '-'}</td> */}
                     <td className="p-3 text-gray-600">{client.address || '-'}</td>
@@ -1318,19 +1501,15 @@ const combinedStatement = [...statementWithBalance].reverse();
                         >
                           ⚙️ تسوية
                         </button>
-                        {/* <button
+                        <button
                           onClick={() => {
-                            if (!isAdmin) {
-                              showFeedback('عذراً، تعديل الرصيد الافتتاحي متاح للمشرف (Admin) فقط.', 'error');
-                              return;
-                            }
                             setOpeningModal({ isOpen: true, client });
                             setOpeningAmount(client.balance || '');
                           }}
                           className="bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 px-2.5 py-1 rounded-lg text-xs font-bold transition"
                         >
                           ⚙️ الرصيد الافتتاحي
-                        </button> */}
+                        </button>
                         <button
                           onClick={() => setDeleteModal({ isOpen: true, clientId: client.id })}
                           className="bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 px-2.5 py-1 rounded-lg text-xs font-bold transition"

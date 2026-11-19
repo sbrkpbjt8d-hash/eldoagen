@@ -2,7 +2,10 @@
 import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
-import { archiveAndDeleteRecord } from '../../lib/deleted-records';
+import {
+  getPendingReviewActionKeys,
+  requestCompoundOperation,
+} from '../../lib/approval-requests';
 import { useReactToPrint } from 'react-to-print';
 
 const EGYPT_TIME_ZONE = 'Africa/Cairo';
@@ -40,7 +43,7 @@ export default function TreasuryPage() {
   });
 
   const currentUser = pb.authStore.model;
-  const isAdmin = currentUser?.role === 'admin' || currentUser?.isAdmin === true || currentUser?.email === 'mohamedfrf@icloud.com'; 
+  const canRequestChanges = Boolean(currentUser);
 
   const showToast = (message, type = 'success') => {
     setToast({ show: true, message, type });
@@ -125,6 +128,11 @@ export default function TreasuryPage() {
     queryFn: () => pb.collection('treasury_transactions').getFullList(),
   });
   const treasuryTransactions = treasuryTransactionsQuery.data || [];
+  const { data: pendingReviewActionKeys = [], isError: pendingReviewsError } = useQuery({
+    queryKey: ['pending_financial_review_action_keys'],
+    queryFn: getPendingReviewActionKeys,
+    refetchOnWindowFocus: true,
+  });
 
   const treasuryDataQueries = [
     treasuryRecordsQuery,
@@ -145,39 +153,33 @@ export default function TreasuryPage() {
   const saveOpeningBalanceMutation = useMutation({
     mutationFn: async () => {
       ensureTreasuryDataReady();
-      if (!isAdmin) {
-        throw new Error('عذراً، غير مسموح لك بتعديل الرصيد الافتتاحي. هذه الصلاحية للأدمن فقط.');
-      }
-
       const val = parseFloat(openingBalanceInput);
       if (isNaN(val)) throw new Error('الرصيد الافتتاحي غير صالح');
 
-      if (treasury) {
-        return await pb.collection('treasury').update(treasury.id, {
-          opening_balance: val,
-          balance: roundMoney(currentBalance - openingBalance + val),
-        });
-      } else {
-        return await pb.collection('treasury').create({
-          opening_balance: val,
-          balance: val,
-        });
-      }
+      const action = treasury
+        ? {
+          type: 'balance_delta',
+          collection: 'treasury',
+          id: treasury.id,
+          delta: val - openingBalance,
+          data: { opening_balance: val },
+        }
+        : { type: 'create', collection: 'treasury', data: { opening_balance: val, balance: val } };
+      return requestCompoundOperation([action], 'تعديل الرصيد الافتتاحي للخزنة', { reviewType: 'treasury' });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['treasury'] });
-      showToast('✨ تم حفظ الرصيد الافتتاحي بنجاح!');
+      queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
+      showToast('تم تطبيق تعديل الرصيد الافتتاحي الآن؛ بانتظار اعتماد المراجع.');
     },
     onError: (err) => showToast('❌ خطأ: ' + err.message, 'error'),
   });
 
-  // Mutation لحذف أي حركة معلقة للأدمن فقط
+  // حذف الحركة مع عكس أثرها المالي عند اعتماد الطلب
   const deleteTransactionMutation = useMutation({
     mutationFn: async ({ id, collectionName, signedAmount }) => {
       ensureTreasuryDataReady();
-      if (!isAdmin) {
-        throw new Error('عذراً، هذه الصلاحية للأدمن فقط.');
-      }
+      const actions = [];
       if (collectionName === 'treasury_transactions') {
         const transaction = await pb.collection(collectionName).getOne(id);
         const movementType = String(transaction.movement_type || '').toLowerCase();
@@ -185,32 +187,47 @@ export default function TreasuryPage() {
         if (String(transaction.movement_type || '').toLowerCase() === 'bank_deposit') {
           const bank = banks.find(item => item.id === transaction.bank_id);
           if (bank) {
-            await pb.collection('banks').update(bank.id, {
-              balance: Math.max(0, Number(bank.balance || 0) - Number(transaction.amount || 0)),
+            actions.push({
+              type: 'balance_delta',
+              collection: 'banks',
+              id: bank.id,
+              delta: -Number(transaction.amount || 0),
             });
           }
           if (treasury?.id) {
-            await pb.collection('treasury').update(treasury.id, {
-              balance: roundMoney(currentBalance + Number(transaction.amount || 0)),
+            actions.push({
+              type: 'balance_delta',
+              collection: 'treasury',
+              id: treasury.id,
+              delta: Number(transaction.amount || 0),
             });
           }
         }
         if (isBankTransferToTreasury) {
           const bank = banks.find(item => item.id === transaction.bank_id);
           if (bank) {
-            await pb.collection('banks').update(bank.id, {
-              balance: roundMoney(Number(bank.balance || 0) + Number(transaction.amount || 0)),
+            actions.push({
+              type: 'balance_delta',
+              collection: 'banks',
+              id: bank.id,
+              delta: Number(transaction.amount || 0),
             });
           }
           if (treasury?.id) {
-            await pb.collection('treasury').update(treasury.id, {
-              balance: roundMoney(currentBalance - Number(transaction.amount || 0)),
+            actions.push({
+              type: 'balance_delta',
+              collection: 'treasury',
+              id: treasury.id,
+              delta: -Number(transaction.amount || 0),
             });
           }
         }
         if (String(transaction.movement_type || '').toLowerCase() === 'cash_deposit' && treasury?.id) {
-          await pb.collection('treasury').update(treasury.id, {
-            balance: roundMoney(currentBalance - Number(transaction.amount || 0)),
+          actions.push({
+            type: 'balance_delta',
+            collection: 'treasury',
+            id: treasury.id,
+            delta: -Number(transaction.amount || 0),
           });
         }
         if (
@@ -220,16 +237,25 @@ export default function TreasuryPage() {
           movementType !== 'cash_deposit' &&
           !isBankTransferToTreasury
         ) {
-          await pb.collection('treasury').update(treasury.id, {
-            balance: roundMoney(currentBalance - Number(signedAmount)),
+          actions.push({
+            type: 'balance_delta',
+            collection: 'treasury',
+            id: treasury.id,
+            delta: -Number(signedAmount),
           });
         }
       } else if (treasury?.id && Number.isFinite(Number(signedAmount))) {
-        await pb.collection('treasury').update(treasury.id, {
-          balance: roundMoney(currentBalance - Number(signedAmount)),
+        actions.push({
+          type: 'balance_delta',
+          collection: 'treasury',
+          id: treasury.id,
+          delta: -Number(signedAmount),
         });
       }
-      return await archiveAndDeleteRecord(collectionName, id);
+      actions.push({ type: 'delete', collection: collectionName, id, record_label: 'حركة خزنة' });
+      return requestCompoundOperation(actions, 'حذف حركة من سجل الخزنة', {
+        reviewType: actions.some((action) => action.collection === 'banks') ? 'bank' : 'treasury',
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['expenses'] });
@@ -238,7 +264,8 @@ export default function TreasuryPage() {
       queryClient.invalidateQueries({ queryKey: ['sales_invoices_treasury'] });
       queryClient.invalidateQueries({ queryKey: ['treasury_transactions_treasury'] });
       queryClient.invalidateQueries({ queryKey: ['treasury'] });
-      showToast('🗑️ تم حذف الحركة بنجاح وتحديث الرصيد!');
+      queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
+      showToast('تم حذف الحركة وعكس أثرها مؤقتًا؛ بانتظار اعتماد المراجع.');
     },
     onError: (err) => showToast('❌ فشل الحذف: ' + err.message, 'error'),
   });
@@ -255,40 +282,54 @@ export default function TreasuryPage() {
 
       const actorName = currentUser?.name || currentUser?.email || 'مستخدم النظام';
       const date = new Date().toISOString();
-      const treasuryTargetBalance = roundMoney(currentBalance - amount);
-      if (treasury?.id) {
-        await pb.collection('treasury').update(treasury.id, { balance: treasuryTargetBalance });
-      } else {
-        await pb.collection('treasury').create({
-          opening_balance: 0,
-          balance: treasuryTargetBalance,
-        });
-      }
-      await pb.collection('banks').update(bank.id, {
-        balance: roundMoney(Number(bank.balance || 0) + amount),
-        actor_name: actorName,
-      });
-      return await pb.collection('treasury_transactions').create({
-        type: 'purchase',
-        movement_type: 'bank_deposit',
-        source_type: 'treasury',
-        bank_id: bank.id,
-        amount,
-        title: `إيداع من الخزنة إلى البنك: ${bank.name}`,
-        notes: depositNotes.trim() || 'إيداع بنكي',
-        date,
-        actor_name: actorName,
-      });
+      const actions = [
+        treasury?.id
+          ? {
+            type: 'balance_delta',
+            collection: 'treasury',
+            id: treasury.id,
+            delta: -amount,
+          }
+          : {
+            type: 'create',
+            collection: 'treasury',
+            data: { opening_balance: 0, balance: treasuryTargetBalance },
+          },
+        {
+          type: 'balance_delta',
+          collection: 'banks',
+          id: bank.id,
+          delta: amount,
+          data: { actor_name: actorName },
+        },
+        {
+          type: 'create',
+          collection: 'treasury_transactions',
+          data: {
+            type: 'purchase',
+            movement_type: 'bank_deposit',
+            source_type: 'treasury',
+            bank_id: bank.id,
+            amount,
+            title: `إيداع من الخزنة إلى البنك: ${bank.name}`,
+            notes: depositNotes.trim() || 'إيداع بنكي',
+            date,
+            actor_name: actorName,
+          },
+        },
+      ];
+      return requestCompoundOperation(actions, `إيداع من الخزنة إلى بنك ${bank.name}`, { reviewType: 'bank' });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['treasury'] });
+      queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
       queryClient.invalidateQueries({ queryKey: ['banks'] });
       queryClient.invalidateQueries({ queryKey: ['treasury_transactions_treasury'] });
       queryClient.invalidateQueries({ queryKey: ['treasury_transactions_banks'] });
       setDepositBankId('');
       setDepositAmount('');
       setDepositNotes('');
-      showToast('تم الإيداع وتحديث رصيد الخزنة والبنك وتسجيل الحركة.');
+      showToast('تم تسجيل الإيداع البنكي وأثره على الأرصدة؛ بانتظار اعتماد المراجع.');
     },
     onError: (err) => showToast('❌ فشل الإيداع: ' + err.message, 'error'),
   });
@@ -302,36 +343,46 @@ export default function TreasuryPage() {
 
       const actorName = currentUser?.name || currentUser?.email || 'مستخدم النظام';
       const date = new Date().toISOString();
-      const treasuryTargetBalance = roundMoney(currentBalance + amount);
+      const actions = [];
       if (treasury?.id) {
-        await pb.collection('treasury').update(treasury.id, {
-          balance: treasuryTargetBalance,
+        actions.push({
+          type: 'balance_delta',
+          collection: 'treasury',
+          id: treasury.id,
+          delta: amount,
         });
       } else {
-        await pb.collection('treasury').create({
-          opening_balance: 0,
-          balance: treasuryTargetBalance,
+        actions.push({
+          type: 'create',
+          collection: 'treasury',
+          data: { opening_balance: 0, balance: treasuryTargetBalance },
         });
       }
-
-      return await pb.collection('treasury_transactions').create({
-        type: 'purchase',
-        movement_type: 'cash_deposit',
-        source_type: 'treasury',
-        amount,
-        title: cashDepositDescription.trim(),
-        notes: cashDepositDescription.trim(),
-        date,
-        actor_name: actorName,
+      actions.push({
+        type: 'create',
+        collection: 'treasury_transactions',
+        data: {
+          type: 'purchase',
+          movement_type: 'cash_deposit',
+          source_type: 'treasury',
+          amount,
+          title: cashDepositDescription.trim(),
+          notes: cashDepositDescription.trim(),
+          date,
+          actor_name: actorName,
+        },
       });
+      await requestCompoundOperation(actions, cashDepositDescription.trim(), { reviewType: 'treasury' });
+      return { reviewRequested: true };
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['treasury'] });
+      queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
       queryClient.invalidateQueries({ queryKey: ['treasury_transactions_treasury'] });
       setCashDepositAmount('');
       setCashDepositDescription('');
       setCashDepositFormOpen(false);
-      showToast('تم تسجيل الإيداع وتحديث رصيد الخزنة.');
+      showToast('تم تسجيل الإيداع النقدي وأثره على الرصيد؛ بانتظار اعتماد المراجع.');
     },
     onError: (err) => showToast('❌ فشل تسجيل الإيداع: ' + err.message, 'error'),
   });
@@ -346,33 +397,45 @@ export default function TreasuryPage() {
 
       const actorName = currentUser?.name || currentUser?.email || 'مستخدم النظام';
       const date = new Date().toISOString();
-      const treasuryTargetBalance = roundMoney(currentBalance - amount);
-      const transaction = await pb.collection('treasury_transactions').create({
-        type: 'purchase',
-        movement_type: 'cash_withdrawal',
-        source_type: 'treasury',
-        amount,
-        title: 'سحب نقدي من الخزنة',
-        notes: reason,
-        date,
-        actor_name: actorName,
-      });
-
+      const actions = [{
+        type: 'create',
+        collection: 'treasury_transactions',
+        data: {
+          type: 'purchase',
+          movement_type: 'cash_withdrawal',
+          source_type: 'treasury',
+          amount,
+          title: 'سحب نقدي من الخزنة',
+          notes: reason,
+          date,
+          actor_name: actorName,
+        },
+      }];
       if (treasury?.id) {
-        await pb.collection('treasury').update(treasury.id, { balance: treasuryTargetBalance });
+        actions.push({
+          type: 'balance_delta',
+          collection: 'treasury',
+          id: treasury.id,
+          delta: -amount,
+        });
       } else {
-        await pb.collection('treasury').create({ opening_balance: 0, balance: treasuryTargetBalance });
+        actions.push({
+          type: 'create',
+          collection: 'treasury',
+          data: { opening_balance: 0, balance: treasuryTargetBalance },
+        });
       }
-
-      return transaction;
+      await requestCompoundOperation(actions, reason, { reviewType: 'treasury' });
+      return { reviewRequested: true };
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['treasury'] });
+      queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
       queryClient.invalidateQueries({ queryKey: ['treasury_transactions_treasury'] });
       setCashWithdrawalAmount('');
       setCashWithdrawalReason('');
       setCashWithdrawalFormOpen(false);
-      showToast('تم تسجيل السحب وتحديث رصيد الخزنة.');
+      showToast('تم تسجيل السحب النقدي وأثره على الرصيد؛ بانتظار اعتماد المراجع.');
     },
     onError: (err) => showToast('❌ فشل تسجيل السحب: ' + err.message, 'error'),
   });
@@ -449,7 +512,8 @@ export default function TreasuryPage() {
   const formattedSupplierPayments = supplierTransactions
     .filter(tx => {
       const isOpening = String(tx.type || '').toLowerCase().includes('open') || String(tx.notes || '').toLowerCase().includes('افتتاحي');
-      if (isOpening) return false;
+      const isSettlement = String(tx.notes || '').startsWith('تسوية (');
+      if (isOpening || isSettlement) return false;
 
       return true;
     })
@@ -475,6 +539,7 @@ export default function TreasuryPage() {
   const formattedSalesInvoices = salesInvoices
     .filter(inv => {
       if (String(inv.status || '') === 'مرتجع') return false;
+      if (['بانتظار اعتماد المراجع', 'رفض اعتماد التحصيل'].includes(String(inv.status || ''))) return false;
       const paymentType = String(inv.payment_type || inv.payment_method || inv.type || '').toLowerCase();
       const isCash = paymentType.includes('cash') || paymentType.includes('كاش') || paymentType.includes('نقدي') || paymentType === '';
       
@@ -653,11 +718,16 @@ const transactionsWithTreasuryBalance = sortedAscTransactions.reduce((transactio
 }, []);
 
 // Keep each calculated balance while showing the most recently created movement first.
-const allTransactions = [...transactionsWithTreasuryBalance].sort((a, b) => {
+const allTransactions = transactionsWithTreasuryBalance
+  .map((transaction) => ({
+    ...transaction,
+    reviewPending: pendingReviewActionKeys.includes(`${transaction.collection}/${transaction.id}`),
+  }))
+  .sort((a, b) => {
   const createdDifference = getTransactionCreatedTimestamp(b) - getTransactionCreatedTimestamp(a);
   if (createdDifference !== 0) return createdDifference;
   return getTransactionTimestamp(b) - getTransactionTimestamp(a);
-});
+  });
 
   const filteredTreasuryTransactions = allTransactions.filter(transaction => {
     const transactionDay = getTransactionDay(transaction);
@@ -713,6 +783,11 @@ const allTransactions = [...transactionsWithTreasuryBalance].sort((a, b) => {
         aria-label="سجل الحركات النقدية"
         className="w-full overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm"
       >
+        {pendingReviewsError && (
+          <p role="alert" className="m-3 rounded-xl bg-amber-50 p-3 text-xs font-bold text-amber-800">
+            تعذر تحميل حالات اعتماد العمليات؛ تحقق من اتصال النظام.
+          </p>
+        )}
         <header className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 bg-gray-50 p-4 text-gray-900">
           <h3 className="font-black">📋 سجل الحركات النقدية</h3>
           <span className="text-xs font-bold">عرض {transactions.length} من {filteredTreasuryTransactions.length} حركة</span>
@@ -729,7 +804,7 @@ const allTransactions = [...transactionsWithTreasuryBalance].sort((a, b) => {
                 <th className="whitespace-nowrap bg-emerald-50 p-3 text-emerald-900">قيمة الخزنة (بعد الحركة)</th>
                 <th className="whitespace-nowrap p-3">ملاحظات</th>
                 <th className="whitespace-nowrap p-3">بواسطة</th>
-                {isAdmin && <th className="whitespace-nowrap p-3 text-center print:hidden">إجراءات</th>}
+                {canRequestChanges && <th className="whitespace-nowrap p-3 text-center print:hidden">إجراءات</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -749,7 +824,14 @@ const allTransactions = [...transactionsWithTreasuryBalance].sort((a, b) => {
                     <td className="whitespace-nowrap p-3">
                       <span className={`rounded-xl px-2.5 py-1 text-[10px] font-bold ${labelClasses}`}>{label}</span>
                     </td>
-                    <td className="p-3 font-bold text-gray-900">{tx.title}</td>
+                    <td className="p-3 font-bold text-gray-900">
+                      {tx.title}
+                      {tx.reviewPending && (
+                        <span className="mr-2 inline-flex rounded-md bg-amber-100 px-2 py-1 text-[10px] font-bold text-amber-800">
+                          بانتظار اعتماد المراجع
+                        </span>
+                      )}
+                    </td>
                     <td className={`whitespace-nowrap p-3 font-black ${isDeposit ? 'text-emerald-600' : 'text-red-600'}`}>
                       {isDeposit ? '+' : '-'} {tx.amount.toLocaleString()} ج.م
                     </td>
@@ -758,7 +840,7 @@ const allTransactions = [...transactionsWithTreasuryBalance].sort((a, b) => {
                     </td>
                     <td className="p-3 text-gray-500">{tx.notes || '—'}</td>
                     <td className="whitespace-nowrap p-3 font-bold text-gray-700">{tx.actor}</td>
-                    {isAdmin && (
+                    {canRequestChanges && (
                       <td className="whitespace-nowrap p-3 text-center print:hidden">
                         <button
                           onClick={async () => {
@@ -781,7 +863,7 @@ const allTransactions = [...transactionsWithTreasuryBalance].sort((a, b) => {
               })}
               {transactions.length === 0 && (
                 <tr>
-                  <td colSpan={isAdmin ? 9 : 8} className="p-8 text-center font-bold text-gray-400">
+                  <td colSpan={canRequestChanges ? 9 : 8} className="p-8 text-center font-bold text-gray-400">
                     لا توجد حركات في الفترة المحددة.
                   </td>
                 </tr>
@@ -818,6 +900,7 @@ const allTransactions = [...transactionsWithTreasuryBalance].sort((a, b) => {
         </button>
         <button onClick={() => { 
           queryClient.invalidateQueries({ queryKey: ['treasury'] }); 
+          queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
           queryClient.invalidateQueries({ queryKey: ['expenses'] }); 
           queryClient.invalidateQueries({ queryKey: ['client_transactions_treasury'] }); 
           queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
@@ -918,7 +1001,7 @@ const allTransactions = [...transactionsWithTreasuryBalance].sort((a, b) => {
             <p className="text-3xl font-black text-gray-800 mt-1">{openingBalance.toLocaleString()} ج.م</p>
           </div>
 
-          {isAdmin ? (
+          {canRequestChanges ? (
             <div className="mt-4 flex gap-2">
               <input
                 type="number"
@@ -938,7 +1021,7 @@ const allTransactions = [...transactionsWithTreasuryBalance].sort((a, b) => {
             </div>
           ) : (
             <div className="mt-4 bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 rounded-xl text-xs font-bold text-center">
-              🔒 تعديل الرصيد الافتتاحي متاح لمسؤول النظام (الأدمن) فقط.
+              🔒 سجل الدخول لطلب تعديل الرصيد الافتتاحي.
             </div>
           )}
         </div>

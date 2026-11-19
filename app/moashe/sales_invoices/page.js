@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
 import { addQuantities, roundQuantity } from '../../lib/quantity';
-import { archiveAndDeleteRecord } from '../../lib/deleted-records';
+import { requestCompoundOperation } from '../../lib/approval-requests';
 import { useReactToPrint } from 'react-to-print';
 const currentUserName = localStorage.getItem('userName') || 'مسؤول النظام';
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
@@ -33,7 +33,7 @@ const getCairoDateKey = (value) => {
 
 export default function SalesInvoicesPage() {
   const queryClient = useQueryClient();
-  const isAdmin = pb.authStore.model?.collectionName === '_superusers' || pb.authStore.model?.role === 'admin' || pb.authStore.model?.email === 'mohamedfrf@icloud.com';
+  const canRequestChanges = Boolean(pb.authStore.model);
   
   const [customerType, setCustomerType] = useState('walk-in');
   const [selectedCustomer, setSelectedCustomer] = useState('');
@@ -42,6 +42,8 @@ export default function SalesInvoicesPage() {
   const [selectedSalesAgent, setSelectedSalesAgent] = useState('');
   const [walkInName, setWalkInName] = useState('عميل فوري');
   const [selectedProducts, setSelectedProducts] = useState([]);
+  const [productSearch, setProductSearch] = useState('');
+  const [productDropdownOpen, setProductDropdownOpen] = useState(false);
   const [discountAmount, setDiscountAmount] = useState('');
   
   // إضافة حالة نوع الدفع (كاش / آجل)
@@ -158,6 +160,9 @@ export default function SalesInvoicesPage() {
     }
   });
   const uniqueProductsList = Object.keys(uniqueProductsMap);
+  const filteredProducts = uniqueProductsList.filter((productName) => (
+    productName.toLowerCase().includes(productSearch.trim().toLowerCase())
+  ));
 
   const uniqueMaterialsMap = materials.reduce((result, material) => {
     const name = material.name || material.material_name || material.title;
@@ -254,8 +259,7 @@ export default function SalesInvoicesPage() {
   }
 
   const updateMaterialStock = async (materialId, quantityChange) => {
-    const material = await pb.collection('khamat_moashe').getOne(materialId).catch(() => null);
-    if (!material) return;
+    const material = await pb.collection('khamat_moashe').getOne(materialId);
     const currentStock = Number(material.stock ?? material.quantity ?? 0);
     await pb.collection('khamat_moashe').update(materialId, {
       stock: currentStock + quantityChange,
@@ -265,17 +269,25 @@ export default function SalesInvoicesPage() {
   const normalizeProductName = value => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
 
   const updateFinishedProductStock = async (productName, quantityChange, movement = {}) => {
-    const stockRecords = await pb.collection('products_stock').getFullList({ requestKey: null }).catch(() => []);
+    const stockRecords = await pb.collection('products_stock').getFullList({ requestKey: null });
     const normalizedName = normalizeProductName(productName);
-    const stockRecord = stockRecords.find(record => normalizeProductName(record.product_name || record.name) === normalizedName);
-    if (!stockRecord) return;
+    let stockRecord = stockRecords.find(record => normalizeProductName(record.product_name || record.name) === normalizedName);
 
     const normalizedChange = roundQuantity(quantityChange);
-    const currentStock = roundQuantity(stockRecord.stock || 0);
+    const currentStock = roundQuantity(stockRecord?.stock || 0);
     const nextStock = addQuantities(currentStock, normalizedChange);
-    await pb.collection('products_stock').update(stockRecord.id, {
-      stock: nextStock,
-    });
+    if (stockRecord) {
+      await pb.collection('products_stock').update(stockRecord.id, {
+        stock: nextStock,
+      });
+    } else {
+      stockRecord = await pb.collection('products_stock').create({
+        product_name: productName,
+        stock: nextStock,
+        total_cost: 0,
+        actor_name: currentUserName,
+      });
+    }
     await pb.collection('product_stock_transactions').create({
       product_name: stockRecord.product_name || stockRecord.name || productName,
       quantity: normalizedChange,
@@ -296,38 +308,202 @@ export default function SalesInvoicesPage() {
   const discount = roundMoney(discountAmount);
   const netTotal = roundMoney(Math.max(0, subTotal - discount));
 
+  const requestInvoiceEdit = async (invoiceCustomerName, selectedAgent, currentCustomer) => {
+    const actions = [];
+    const customerBalanceChanges = new Map();
+    const readBalance = customer => Number(customer.balance ?? customer.debt ?? customer.total_debt ?? 0);
+    const balanceField = customer => ('balance' in customer ? 'balance' : 'debt' in customer ? 'debt' : 'total_debt');
+    const findCustomer = async (customerId, customerName) => {
+      const id = customerId || customers.find(item => normalizeCustomerName(item.name) === normalizeCustomerName(customerName))?.id;
+      if (!id) return null;
+      return pb.collection('clientsmoashe').getOne(id);
+    };
+
+    if (oldInvoiceData?.payment_type === 'credit' && oldInvoiceData?.customer_type === 'registered') {
+      const oldCustomer = await findCustomer(oldInvoiceData.customer_id, oldInvoiceData.customer_name);
+      if (!oldCustomer) throw new Error('تعذر قراءة العميل المرتبط بالفاتورة القديمة.');
+      customerBalanceChanges.set(oldCustomer.id, {
+        customer: oldCustomer,
+        balance: roundMoney(Math.max(0, readBalance(oldCustomer) - Number(oldInvoiceData.total_amount || 0))),
+      });
+    }
+
+    if (paymentType === 'credit' && customerType === 'registered' && selectedCustomer) {
+      const newCustomer = await pb.collection('clientsmoashe').getOne(selectedCustomer);
+      const existing = customerBalanceChanges.get(newCustomer.id);
+      customerBalanceChanges.set(newCustomer.id, {
+        customer: newCustomer,
+        balance: roundMoney((existing?.balance ?? readBalance(newCustomer)) + netTotal),
+      });
+    }
+
+    const materialsById = new Map();
+    const finishedStocks = await pb.collection('products_stock').getFullList({ requestKey: null });
+    const stockChanges = new Map();
+    const stockTransactionActions = [];
+    const addInventoryMovement = async (item, quantity, movement) => {
+      if (item.itemType === 'material' && item.materialId) {
+        let material = materialsById.get(item.materialId);
+        if (!material) {
+          material = await pb.collection('khamat_moashe').getOne(item.materialId);
+          materialsById.set(item.materialId, material);
+        }
+        const key = `material:${material.id}`;
+        const currentStock = stockChanges.has(key)
+          ? stockChanges.get(key)
+          : Number(material.stock ?? material.quantity ?? 0);
+        stockChanges.set(key, currentStock + quantity);
+        return;
+      }
+
+      const name = normalizeProductName(item.name || item.product_name);
+      const stockRecord = finishedStocks.find(record => normalizeProductName(record.product_name || record.name) === name);
+      if (!stockRecord) return;
+      const key = `product:${stockRecord.id}`;
+      const currentStock = stockChanges.has(key)
+        ? stockChanges.get(key)
+        : roundQuantity(stockRecord.stock || 0);
+      const nextStock = addQuantities(currentStock, quantity);
+      stockChanges.set(key, nextStock);
+      stockTransactionActions.push({
+        type: 'create',
+        collection: 'product_stock_transactions',
+        data: {
+          product_name: stockRecord.product_name || stockRecord.name || item.name,
+          quantity: roundQuantity(quantity),
+          movement_type: movement.type,
+          title: movement.title,
+          notes: '-',
+          actor_name: currentUserName,
+          customer_name: movement.customerName,
+          source_type: 'sales_invoice',
+          source_id: editingInvoiceId,
+          product_stock_id: stockRecord.id,
+          movement_at: new Date().toISOString(),
+          balance_after: nextStock,
+        },
+      });
+    };
+
+    for (const item of oldInvoiceItems) {
+      await addInventoryMovement(item, Number(item.qty || 0), {
+        type: 'invoice_edit',
+        title: 'تعديل فاتورة بيع - إرجاع القديم',
+        customerName: oldInvoiceData?.customer_name || invoiceCustomerName,
+      });
+    }
+    for (const item of selectedProducts) {
+      await addInventoryMovement(item, -Number(item.qty || 0), {
+        type: 'sale',
+        title: 'فاتورة بيع - سحب من المخزن',
+        customerName: invoiceCustomerName,
+      });
+    }
+
+    for (const [key, stock] of stockChanges) {
+      const [recordType, recordId] = key.split(':');
+      if (recordType === 'material') {
+        actions.push({
+          type: 'update',
+          collection: 'khamat_moashe',
+          id: recordId,
+          data: { stock },
+        });
+      } else {
+        actions.push({
+          type: 'update',
+          collection: 'products_stock',
+          id: recordId,
+          data: { stock },
+        });
+      }
+    }
+    actions.push(...stockTransactionActions);
+
+    const invoiceData = {
+      customer_name: invoiceCustomerName,
+      customer_id: customerType === 'registered' ? selectedCustomer : '',
+      customer_type: customerType,
+      sales_agent_id: selectedSalesAgent || '',
+      sales_agent_name: selectedAgent?.name || '',
+      sales_agent_region: selectedAgent?.region || '',
+      items: selectedProducts,
+      sub_total: subTotal,
+      discount,
+      total_amount: netTotal,
+      payment_type: paymentType,
+      actor_name: currentUserName,
+      status: 'مكتملة',
+      previous_balance: currentCustomer
+        ? Number(currentCustomer.balance ?? currentCustomer.debt ?? currentCustomer.total_debt ?? 0)
+        : 0,
+    };
+
+    actions.push({
+      type: 'update',
+      collection: 'sales_invoices',
+      id: editingInvoiceId,
+      data: invoiceData,
+    });
+    for (const { customer, balance } of customerBalanceChanges.values()) {
+      actions.push({
+        type: 'update',
+        collection: 'clientsmoashe',
+        id: customer.id,
+        data: { [balanceField(customer)]: balance },
+      });
+    }
+    const invDiscountOld = oldInvoiceData?.discount !== undefined
+      ? oldInvoiceData.discount
+      : oldInvoiceData?.discount_amount || 0;
+    actions.push({
+      type: 'create',
+      collection: 'invoices_logs',
+      data: {
+        action_type: 'تعديل',
+        actor_name: currentUserName,
+        invoice_number: oldInvoiceData?.invoice_number || editingInvoiceId.slice(-6),
+        details: JSON.stringify({
+          customer_name: invoiceCustomerName,
+          customer_type: customerType,
+          payment_type: paymentType,
+          old_data: {
+            customer_name: oldInvoiceData?.customer_name || 'غير متوفر',
+            payment_type: oldInvoiceData?.payment_type || 'cash',
+            items: oldInvoiceItems,
+            sub_total: oldInvoiceData?.sub_total || 0,
+            discount: invDiscountOld,
+            total_amount: oldInvoiceData?.total_amount || 0,
+          },
+          new_data: {
+            customer_name: invoiceCustomerName,
+            payment_type: paymentType,
+            items: selectedProducts,
+            sub_total: subTotal,
+            discount,
+            total_amount: netTotal,
+          },
+          message: `تم تعديل الفاتورة للعميل: ${invoiceCustomerName} (${paymentType === 'credit' ? 'آجل' : 'كاش'})`,
+        }),
+      },
+    });
+    await requestCompoundOperation(actions, `تعديل فاتورة بيع ${oldInvoiceData?.invoice_number || editingInvoiceId}`);
+    return { approvalRequested: true };
+  };
+
   const saveInvoiceMutation = useMutation({
     mutationFn: async () => {
       const invoiceCustomerName = customerType === 'walk-in'
         ? (walkInName.trim() || 'عميل فوري')
         : (customers.find(c => c.id === selectedCustomer)?.name || 'عميل مسجل');
 
-      if (editingInvoiceId && oldInvoiceItems.length > 0) {
-        for (const oldProd of oldInvoiceItems) {
-          if (oldProd.itemType === 'material' && oldProd.materialId) {
-            await updateMaterialStock(oldProd.materialId, Number(oldProd.qty || 0));
-            continue;
-          }
-          await updateFinishedProductStock(oldProd.name, Number(oldProd.qty || 0), {
-            type: 'invoice_edit',
-            title: 'تعديل فاتورة بيع - إرجاع القديم',
-            sourceId: editingInvoiceId,
-            customerName: oldInvoiceData?.customer_name || invoiceCustomerName,
-          });
-        }
-
-        if (oldInvoiceData?.payment_type === 'credit' && oldInvoiceData?.customer_type === 'registered') {
-          const oldCustId = customers.find(c => normalizeCustomerName(c.name) === normalizeCustomerName(oldInvoiceData.customer_name))?.id;
-          if (oldCustId) {
-            const custRecord = await pb.collection('clientsmoashe').getOne(oldCustId).catch(() => null);
-            if (!custRecord) throw new Error('تعذر قراءة رصيد العميل القديم');
-            const currentDebt = Number(custRecord.balance || custRecord.debt || custRecord.total_debt || 0);
-            const oldAmount = Number(oldInvoiceData.total_amount || 0);
-            await pb.collection('clientsmoashe').update(oldCustId, {
-              balance: roundMoney(Math.max(0, currentDebt - oldAmount))
-            }).catch(() => {});
-          }
-        }
+      if (editingInvoiceId) {
+        const assignedAgent = customerType === 'walk-in' ? factoryAgent : customerAgent;
+        const selectedAgent = assignedAgent || salesAgents.find((agent) => agent.id === selectedSalesAgent);
+        const currentCustomer = customerType === 'registered' && selectedCustomer
+          ? await pb.collection('clientsmoashe').getOne(selectedCustomer).catch(() => null)
+          : clientsList.find(c => normalizeCustomerName(c.name) === normalizeCustomerName(invoiceCustomerName));
+        return requestInvoiceEdit(invoiceCustomerName, selectedAgent, currentCustomer);
       }
 
       for (const prod of selectedProducts) {
@@ -338,7 +514,7 @@ export default function SalesInvoicesPage() {
         await updateFinishedProductStock(prod.name, -Number(prod.qty || 0), {
           type: 'sale',
           title: 'فاتورة بيع - سحب من المخزن',
-          sourceId: editingInvoiceId || 'new-sale',
+          sourceId: 'new-sale',
           customerName: invoiceCustomerName,
         });
       }
@@ -375,48 +551,12 @@ export default function SalesInvoicesPage() {
         total_amount: netTotal,
         payment_type: paymentType,
         actor_name: currentUserName,
-        status: 'مكتملة',
+        status: paymentType === 'cash' && netTotal > 0 ? 'بانتظار اعتماد المراجع' : 'مكتملة',
         previous_balance: previousBalance
       };
 
-      let savedInvoice;
-      if (editingInvoiceId) {
-        savedInvoice = await pb.collection('sales_invoices').update(editingInvoiceId, invoiceData);
-        
-        const invDiscountOld = oldInvoiceData?.discount !== undefined ? oldInvoiceData.discount : (oldInvoiceData?.discount_amount || 0);
-
-        await pb.collection('invoices_logs').create({
-          action_type: 'تعديل',
-          actor_name: currentUserName,
-          invoice_number: savedInvoice.invoice_number || editingInvoiceId.slice(-6),
-          details: JSON.stringify({
-            customer_name: customerName,
-            customer_type: customerType,
-            payment_type: paymentType,
-            old_data: {
-              customer_name: oldInvoiceData?.customer_name || 'غير متوفر',
-              payment_type: oldInvoiceData?.payment_type || 'cash',
-              items: oldInvoiceItems,
-              sub_total: oldInvoiceData?.sub_total || 0,
-              discount: invDiscountOld,
-              total_amount: oldInvoiceData?.total_amount || 0
-            },
-            new_data: {
-              customer_name: customerName,
-              payment_type: paymentType,
-              items: selectedProducts,
-              sub_total: subTotal,
-              discount: discount,
-              total_amount: netTotal
-            },
-            message: `تم تعديل الفاتورة للعميل: ${customerName} (${paymentType === 'credit' ? 'آجل' : 'كاش'}) | الإجمالي السابق: ${oldInvoiceData?.total_amount || 0} ج.م ➔ الإجمالي الجديد: ${netTotal} ج.م`
-          })
-        }).catch(() => {});
-
-      } else {
-        invoiceData.invoice_number = getNextInvoiceNumber();
-        savedInvoice = await pb.collection('sales_invoices').create(invoiceData);
-      }
+      invoiceData.invoice_number = getNextInvoiceNumber();
+      const savedInvoice = await pb.collection('sales_invoices').create(invoiceData);
 
       if (paymentType === 'credit' && customerType === 'registered' && selectedCustomer) {
         const custRecord = await pb.collection('clientsmoashe').getOne(selectedCustomer).catch(() => null);
@@ -435,25 +575,56 @@ export default function SalesInvoicesPage() {
       if (!editingInvoiceId && paymentType === 'cash' && netTotal > 0) {
         const treasuryRecords = await pb.collection('treasury').getFullList().catch(() => []);
         const treasury = treasuryRecords[0];
-        const newBalance = roundMoney(Number(treasury?.balance || 0) + netTotal);
-        if (treasury) {
-          await pb.collection('treasury').update(treasury.id, { balance: newBalance });
+        const actions = [];
+        if (treasury?.id) {
+          actions.push({
+            type: 'balance_delta',
+            collection: 'treasury',
+            id: treasury.id,
+            delta: netTotal,
+          });
         } else {
-          await pb.collection('treasury').create({ balance: newBalance, opening_balance: 0 });
+          actions.push({
+            type: 'create',
+            collection: 'treasury',
+            data: { balance: newBalance, opening_balance: 0 },
+          });
         }
-        await pb.collection('treasury_transactions').create({
-          type: 'sale',
-          amount: netTotal,
-          title: `فاتورة بيع: ${customerName}`,
-          notes: `تحصيل نقدي من العميل: ${customerName}`,
-          actor_name: currentUserName,
-          date: new Date().toISOString(),
+        actions.push(
+          {
+            type: 'create',
+            collection: 'treasury_transactions',
+            data: {
+              type: 'sale',
+              amount: netTotal,
+              title: `فاتورة بيع: ${customerName}`,
+              notes: `تحصيل نقدي من العميل: ${customerName}`,
+              actor_name: currentUserName,
+              date: new Date().toISOString(),
+            },
+          },
+          {
+            type: 'update',
+            collection: 'sales_invoices',
+            id: savedInvoice.id,
+            data: { status: 'مكتملة' },
+          },
+        );
+        await requestCompoundOperation(actions, `تحصيل نقدي من فاتورة البيع ${savedInvoice.invoice_number || savedInvoice.id}`, {
+          reviewType: 'treasury',
+          rejectionActions: [{
+            type: 'update',
+            collection: 'sales_invoices',
+            id: savedInvoice.id,
+            data: { status: 'رفض اعتماد التحصيل' },
+          }],
         });
+        return { reviewRequested: true };
       }
 
       return savedInvoice;
     },
-    onSuccess: () => {
+    onSuccess: result => {
       queryClient.invalidateQueries({ queryKey: ['sales_invoices'] });
       queryClient.invalidateQueries({ queryKey: ['khamat_moashe'] });
       queryClient.invalidateQueries({ queryKey: ['products_stock'] });
@@ -462,8 +633,13 @@ export default function SalesInvoicesPage() {
       queryClient.invalidateQueries({ queryKey: ['clientsList'] });
       queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
       queryClient.invalidateQueries({ queryKey: ['treasury'] });
+      queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
       queryClient.invalidateQueries({ queryKey: ['invoices_logs'] });
-      showToast(editingInvoiceId ? '✨ تم تعديل الفاتورة وتحديث المخازن وسجل التعديلات بنجاح!' : `🚀 تم إصدار الفاتورة (${paymentType === 'credit' ? 'آجل وتسجيلها على العميل' : 'كاش'}) بنجاح!`);
+      showToast(result?.approvalRequested
+        ? 'تم إرسال تعديل فاتورة البيع للمدير لاعتماده.'
+        : result?.reviewRequested
+          ? 'تم تسجيل الفاتورة النقدية وإضافة أثرها للخزنة الآن؛ بانتظار اعتماد المراجع.'
+        : `🚀 تم إصدار الفاتورة (${paymentType === 'credit' ? 'آجل وتسجيلها على العميل' : 'كاش'}) بنجاح!`);
       resetForm();
     },
     onError: (error) => {
@@ -480,17 +656,60 @@ const deleteInvoiceMutation = useMutation({
         ...item,
         qty: Math.max(0, Number(item.qty || 0) - Number(returnedQuantities[getReturnItemKey(item)] || 0)),
       })).filter(item => item.qty > 0);
-      
+      const actions = [];
+      const materialChanges = new Map();
+      const stockRecords = await pb.collection('products_stock').getFullList({ requestKey: null });
+      const productChanges = new Map();
+
       for (const prod of itemsToRestore) {
         if (prod.itemType === 'material' && prod.materialId) {
-          await updateMaterialStock(prod.materialId, Number(prod.qty || 0));
+          const materialId = prod.materialId;
+          let currentStock = materialChanges.get(materialId);
+          if (currentStock === undefined) {
+            const material = await pb.collection('khamat_moashe').getOne(materialId);
+            currentStock = Number(material.stock ?? material.quantity ?? 0);
+          }
+          materialChanges.set(materialId, currentStock + Number(prod.qty || 0));
           continue;
         }
-        await updateFinishedProductStock(prod.name, Number(prod.qty || 0), {
-          type: 'return',
-          title: 'حذف فاتورة بيع - إرجاع للمخزن',
-          sourceId: invoice.id,
-          customerName: invoice.customer_name || 'عميل غير معروف',
+        const stockRecord = stockRecords.find(record => normalizeProductName(record.product_name || record.name) === normalizeProductName(prod.name || prod.product_name));
+        if (!stockRecord) continue;
+        const currentStock = productChanges.get(stockRecord.id) ?? roundQuantity(stockRecord.stock || 0);
+        const nextStock = addQuantities(currentStock, Number(prod.qty || 0));
+        productChanges.set(stockRecord.id, nextStock);
+        actions.push({
+          type: 'create',
+          collection: 'product_stock_transactions',
+          data: {
+            product_name: stockRecord.product_name || stockRecord.name || prod.name,
+            quantity: roundQuantity(prod.qty || 0),
+            movement_type: 'return',
+            title: 'حذف فاتورة بيع - إرجاع للمخزن',
+            notes: '-',
+            actor_name: currentUserName,
+            customer_name: invoice.customer_name || 'عميل غير معروف',
+            source_type: 'sales_invoice',
+            source_id: invoice.id,
+            product_stock_id: stockRecord.id,
+            movement_at: new Date().toISOString(),
+            balance_after: nextStock,
+          },
+        });
+      }
+      for (const [materialId, stock] of materialChanges) {
+        actions.push({
+          type: 'update',
+          collection: 'khamat_moashe',
+          id: materialId,
+          data: { stock },
+        });
+      }
+      for (const [productId, stock] of productChanges) {
+        actions.push({
+          type: 'update',
+          collection: 'products_stock',
+          id: productId,
+          data: { stock },
         });
       }
 
@@ -513,22 +732,24 @@ const deleteInvoiceMutation = useMutation({
         if ('debt' in freshCustomer) updateData.debt = newDebt;
         if ('total_debt' in freshCustomer) updateData.total_debt = newDebt;
 
-        await pb.collection('clientsmoashe').update(matchedCustomerId, updateData);
+        actions.push({
+          type: 'update',
+          collection: 'clientsmoashe',
+          id: matchedCustomerId,
+          data: updateData,
+        });
       }
-
-      const deletedRes = await archiveAndDeleteRecord(
-        'sales_invoices',
-        invoice.id,
-        invoice.invoice_number || invoice.customer_name || invoice.id,
-      );
 
       const invDiscount = invoice.discount !== undefined ? invoice.discount : (invoice.discount_amount || 0);
 
-      await pb.collection('invoices_logs').create({
-        action_type: 'حذف',
-        actor_name: currentUserName,
-        invoice_number: invoice.invoice_number || invoice.id.slice(-6),
-        details: JSON.stringify({
+      actions.push({
+        type: 'create',
+        collection: 'invoices_logs',
+        data: {
+          action_type: 'حذف',
+          actor_name: currentUserName,
+          invoice_number: invoice.invoice_number || invoice.id.slice(-6),
+          details: JSON.stringify({
           customer_name: invoice.customer_name,
           customer_type: invoice.customer_type,
           payment_type: invoice.payment_type || 'cash',
@@ -537,10 +758,17 @@ const deleteInvoiceMutation = useMutation({
           discount: invDiscount,
           total_amount: invoice.total_amount || 0,
           message: `تم حذف الفاتورة الخاصة بالعميل: ${invoice.customer_name} بقيمة: ${invoice.total_amount} ج.م وتم استرجاع الكميات المتبقية للمخزن وتعديل المديونية.`
-        })
-      }).catch(() => {});
+          }),
+        },
+      });
+      actions.push({
+        type: 'delete',
+        collection: 'sales_invoices',
+        id: invoice.id,
+        record_label: invoice.invoice_number || invoice.customer_name || invoice.id,
+      });
 
-      return deletedRes;
+      return requestCompoundOperation(actions, `حذف فاتورة بيع ${invoice.invoice_number || invoice.customer_name || invoice.id}`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sales_invoices'] });
@@ -620,6 +848,8 @@ const deleteInvoiceMutation = useMutation({
       setCustomerSearch('');
     }
     setSelectedProducts(invoice.items || []);
+    setProductSearch('');
+    setProductDropdownOpen(false);
     const invDiscount = invoice.discount !== undefined ? invoice.discount : (invoice.discount_amount || 0);
     setDiscountAmount(invDiscount ? invDiscount.toString() : '');
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -630,6 +860,8 @@ const deleteInvoiceMutation = useMutation({
     setOldInvoiceItems([]);
     setOldInvoiceData(null);
     setSelectedProducts([]);
+    setProductSearch('');
+    setProductDropdownOpen(false);
     setCustomerType('walk-in');
     setWalkInName('عميل فوري');
     setSelectedCustomer('');
@@ -662,36 +894,11 @@ const deleteInvoiceMutation = useMutation({
     for (const prod of selectedProducts) {
       if (prod.itemType === 'material') {
         const material = materials.find((item) => item.id === prod.materialId);
-        const availableStock = Number(material?.stock ?? material?.quantity ?? 0);
-        let adjustedStock = availableStock;
-
-        if (editingInvoiceId && oldInvoiceItems.length > 0) {
-          const oldMaterial = oldInvoiceItems.find((item) => item.itemType === 'material' && item.materialId === prod.materialId);
-          adjustedStock += Number(oldMaterial?.qty || 0);
-        }
-
-        if (!material || adjustedStock < Number(prod.qty || 0)) {
-          showToast(`⚠️ الخامة "${prod.name}" غير متوفرة بالكمية المطلوبة! (المتوفر: ${adjustedStock}، المطلوب: ${prod.qty})`, 'error');
+        if (!material) {
+          showToast(`⚠️ تعذر العثور على الخامة "${prod.name}" في المخزن.`, 'error');
           return;
         }
         continue;
-      }
-      const matchedStockProd = productsStock.find(p => (p.product_name || p.name) === prod.name);
-      
-      if (matchedStockProd) {
-        let availableProdStock = Number(matchedStockProd.stock || 0);
-
-        if (editingInvoiceId && oldInvoiceItems.length > 0) {
-          const oldProdItem = oldInvoiceItems.find(op => op.name === prod.name);
-          if (oldProdItem) {
-            availableProdStock += Number(oldProdItem.qty || 0);
-          }
-        }
-
-        if (availableProdStock < Number(prod.qty)) {
-          showToast(`⚠️ المنتج "${prod.name}" غير متوفر بالكمية المطلوبة في المخزن! (المتوفر: ${availableProdStock}، المطلوب: ${prod.qty})`, 'error');
-          return;
-        }
       }
     }
 
@@ -866,6 +1073,16 @@ const deleteInvoiceMutation = useMutation({
                   {viewInvoiceModal.invoice.payment_type === 'credit' ? '⏳ آجل (على الحساب)' : '💵 كاش'}
                 </span>
               </div>
+              {viewInvoiceModal.invoice.status === 'بانتظار اعتماد المراجع' && (
+                <p className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-center text-xs font-bold text-amber-800">
+                  الفاتورة النقدية بانتظار اعتماد المراجع، ولم تُضف قيمتها للخزنة بعد.
+                </p>
+              )}
+              {viewInvoiceModal.invoice.status === 'رفض اعتماد التحصيل' && (
+                <p className="rounded-2xl border border-red-200 bg-red-50 p-3 text-center text-xs font-bold text-red-800">
+                  رُفض اعتماد تحصيل هذه الفاتورة، ولم تُضف قيمتها للخزنة.
+                </p>
+              )}
               <div className="flex justify-between bg-gray-50 p-3 rounded-2xl">
                 <span className="text-gray-500">تاريخ الإصدار:</span>
                 <span className="font-bold text-gray-800">{formatCairoDateTime(viewInvoiceModal.invoice.created)}</span>
@@ -1090,19 +1307,61 @@ const deleteInvoiceMutation = useMutation({
           <div className="space-y-4">
             <label className="block text-xs font-bold text-gray-700">إضافة أصناف للفاتورة:</label>
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              {/* <select
-                defaultValue=""
-                onChange={(event) => {
-                  handleAddProduct(event.target.value);
-                  event.target.value = '';
-                }}
-                className="w-full rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-bold text-emerald-800 outline-none focus:ring-2 focus:ring-emerald-500"
-              >
-                <option value="">-- اختر منتجًا --</option>
-                {uniqueProductsList.map((prodName) => (
-                  <option key={prodName} value={prodName}>{prodName} ({uniqueProductsMap[prodName]} ج.م)</option>
-                ))}
-              </select> */}
+              <div className="relative">
+                <input
+                  type="search"
+                  value={productSearch}
+                  onFocus={() => setProductDropdownOpen(true)}
+                  onChange={(event) => {
+                    setProductSearch(event.target.value);
+                    setProductDropdownOpen(true);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') setProductDropdownOpen(false);
+                    if (event.key === 'Enter' && filteredProducts.length === 1) {
+                      event.preventDefault();
+                      handleAddProduct(filteredProducts[0]);
+                      setProductSearch('');
+                      setProductDropdownOpen(false);
+                    }
+                  }}
+                  placeholder="ابحث واختر منتجًا..."
+                  aria-label="ابحث واختر منتجًا"
+                  role="combobox"
+                  aria-controls="sales-invoice-product-options"
+                  aria-expanded={productDropdownOpen}
+                  className="w-full rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-bold text-emerald-800 outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+                {productDropdownOpen && (
+                  <div
+                    id="sales-invoice-product-options"
+                    role="listbox"
+                    className="absolute z-30 mt-1 max-h-56 w-full overflow-y-auto rounded-xl border border-emerald-100 bg-white shadow-xl"
+                  >
+                    {filteredProducts.length ? filteredProducts.map((productName) => (
+                      <button
+                        key={productName}
+                        type="button"
+                        role="option"
+                        aria-selected="false"
+                        onClick={() => {
+                          handleAddProduct(productName);
+                          setProductSearch('');
+                          setProductDropdownOpen(false);
+                        }}
+                        className="flex w-full items-center justify-between px-4 py-2.5 text-right text-xs font-bold text-gray-800 hover:bg-emerald-50"
+                      >
+                        <span>{productName}</span>
+                        <span className="text-[10px] font-normal text-emerald-700">
+                          {uniqueProductsMap[productName]} ج.م
+                        </span>
+                      </button>
+                    )) : (
+                      <p className="p-3 text-xs text-gray-400">لا يوجد منتج بهذا الاسم.</p>
+                    )}
+                  </div>
+                )}
+              </div>
               <select
                 defaultValue=""
                 onChange={(event) => {
@@ -1117,18 +1376,6 @@ const deleteInvoiceMutation = useMutation({
                   return <option key={material.id} value={materialName}>{materialName} ({material.price} ج.م - متاح {material.stock})</option>;
                 })}
               </select>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {uniqueProductsList.map((prodName, idx) => (
-                <button
-                  key={idx}
-                  type="button"
-                  onClick={() => handleAddProduct(prodName)}
-                  className="px-4 py-2 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 rounded-2xl text-xs font-bold transition shadow-sm"
-                >
-                  + {prodName} ({uniqueProductsMap[prodName]} ج.م)
-                </button>
-              ))}
             </div>
           </div>
 
@@ -1152,7 +1399,7 @@ const deleteInvoiceMutation = useMutation({
                     <tr key={itemKey || index}>
                       <td className="p-3 font-bold text-gray-800">{p.itemType === 'material' ? 'خامة: ' : 'منتج: '}{p.name}</td>
                       <td className="p-3 text-gray-600">
-                        {isAdmin ? (
+                        {canRequestChanges ? (
                           <input
                             type="number"
                             step="any"
@@ -1319,7 +1566,9 @@ const deleteInvoiceMutation = useMutation({
                 {filteredInvoices.map((inv) => {
                   const isReturned = isInvoiceFullyReturned(inv);
                   const isPartiallyReturned = inv.status === 'مرتجع جزئي';
-                  const isClosed = isReturned || isPartiallyReturned;
+                  const isPendingReview = inv.status === 'بانتظار اعتماد المراجع';
+                  const isRejectedReview = inv.status === 'رفض اعتماد التحصيل';
+                  const isClosed = isReturned || isPartiallyReturned || isPendingReview;
                   const invDiscount = roundMoney(inv.discount !== undefined ? inv.discount : (inv.discount_amount || 0));
                   const invSubTotal = (inv.sub_total !== undefined && inv.sub_total !== null && inv.sub_total !== 0) 
                     ? roundMoney(inv.sub_total) 
@@ -1342,8 +1591,8 @@ const deleteInvoiceMutation = useMutation({
                       </td>
                       <td className="p-3 font-bold text-emerald-600">{roundMoney(inv.total_amount || 0).toLocaleString()} ج.م</td>
                       <td className="p-3">
-                        <span className={`px-2 py-1 rounded-xl text-white text-[10px] ${isReturned || isPartiallyReturned ? 'bg-red-600' : inv.payment_type === 'credit' ? 'bg-amber-600' : 'bg-emerald-600'}`}>
-                          {isReturned ? 'مرتجع' : isPartiallyReturned ? 'مرتجع جزئي' : inv.payment_type === 'credit' ? 'آجل' : 'كاش'}
+                        <span className={`px-2 py-1 rounded-xl text-white text-[10px] ${isReturned || isPartiallyReturned || isRejectedReview ? 'bg-red-600' : isPendingReview ? 'bg-orange-600' : inv.payment_type === 'credit' ? 'bg-amber-600' : 'bg-emerald-600'}`}>
+                          {isReturned ? 'مرتجع' : isPartiallyReturned ? 'مرتجع جزئي' : isPendingReview ? 'بانتظار المراجع' : isRejectedReview ? 'تحصيل مرفوض' : inv.payment_type === 'credit' ? 'آجل' : 'كاش'}
                         </span>
                       </td>
                       <td className="p-3 text-gray-500">{formatCairoDateTime(inv.created, false)}</td>
@@ -1468,7 +1717,3 @@ const deleteInvoiceMutation = useMutation({
     </div>
   );
 }
-
-
-
-

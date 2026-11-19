@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { pb } from '../lib/pocketbase';
 import { isFactoryAdmin } from '../lib/deleted-records';
 
-const otherPageRoutes = ['/re', '/moashe/analytics', '/alerts', '/moashe/manadeb', '/moashe/spend-authorizations', '/moashe/deleted'];
+const otherPageRoutes = ['/re', '/moashe/analytics', '/alerts', '/moashe/manadeb', '/moashe/spend-authorizations', '/moashe/deleted', '/manager', '/reviewer'];
 const REPORT_ACCESS_PASSWORD = '01234';
 const protectedPageLabels = {
   '/re': 'التقارير',
@@ -129,6 +129,7 @@ export default function Sidebar() {
               <Link href="/moashe/Treasury" className={navLinkClass('/moashe/Treasury')}>
                 الخزنه (Treasury )
               </Link>
+              <Link href="/reviewer" className={navLinkClass('/reviewer')}>المراجع</Link>
             </div>
           ) : (
             <div className="space-y-2">
@@ -186,6 +187,8 @@ export default function Sidebar() {
                     <Link href="/alerts" className={navLinkClass('/alerts')}>التنبيهات الذكية</Link>
                     <Link href="/moashe/manadeb" className={navLinkClass('/moashe/manadeb')}>المناديب</Link>
                     <Link href="/moashe/spend-authorizations" className={navLinkClass('/moashe/spend-authorizations')}>إذن الصرف</Link>
+                    <Link href="/manager" className={navLinkClass('/manager')}>المدير</Link>
+                    <Link href="/reviewer" className={navLinkClass('/reviewer')}>المراجع</Link>
                     {isFactoryAdmin() && (
                       <Link href="/moashe/deleted" className={navLinkClass('/moashe/deleted')}>المحذوفات</Link>
                     )}
