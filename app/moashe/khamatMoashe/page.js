@@ -63,12 +63,7 @@ export default function ProductsPage() {
 
   const { data: products = [], isLoading } = useQuery({
     queryKey: ['khamat_moashe'],
-    queryFn: async () => {
-      const records = await pb.collection('khamat_moashe').getList(1, 50, {
-        sort: '-created',
-      });
-      return records.items;
-    },
+    queryFn: async () => await pb.collection('khamat_moashe').getFullList({ sort: '-created' }),
   });
 
   const { data: adjustments = [] } = useQuery({
