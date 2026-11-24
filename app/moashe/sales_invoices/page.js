@@ -258,51 +258,7 @@ export default function SalesInvoicesPage() {
     setSelectedProducts(selectedProducts.filter((p) => (p.itemKey || p.name) !== productName));
   }
 
-  const updateMaterialStock = async (materialId, quantityChange) => {
-    const material = await pb.collection('khamat_moashe').getOne(materialId);
-    const currentStock = Number(material.stock ?? material.quantity ?? 0);
-    await pb.collection('khamat_moashe').update(materialId, {
-      stock: currentStock + quantityChange,
-    });
-  };
-
   const normalizeProductName = value => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
-
-  const updateFinishedProductStock = async (productName, quantityChange, movement = {}) => {
-    const stockRecords = await pb.collection('products_stock').getFullList({ requestKey: null });
-    const normalizedName = normalizeProductName(productName);
-    let stockRecord = stockRecords.find(record => normalizeProductName(record.product_name || record.name) === normalizedName);
-
-    const normalizedChange = roundQuantity(quantityChange);
-    const currentStock = roundQuantity(stockRecord?.stock || 0);
-    const nextStock = addQuantities(currentStock, normalizedChange);
-    if (stockRecord) {
-      await pb.collection('products_stock').update(stockRecord.id, {
-        stock: nextStock,
-      });
-    } else {
-      stockRecord = await pb.collection('products_stock').create({
-        product_name: productName,
-        stock: nextStock,
-        total_cost: 0,
-        actor_name: currentUserName,
-      });
-    }
-    await pb.collection('product_stock_transactions').create({
-      product_name: stockRecord.product_name || stockRecord.name || productName,
-      quantity: normalizedChange,
-      movement_type: movement.type || (quantityChange < 0 ? 'sale' : 'return'),
-      title: movement.title || (quantityChange < 0 ? 'سحب من فاتورة بيع' : 'إضافة للمخزن'),
-      notes: movement.notes || '-',
-      actor_name: currentUserName,
-      customer_name: movement.customerName || '',
-      source_type: movement.sourceType || 'sales_invoice',
-      source_id: movement.sourceId || '',
-      product_stock_id: stockRecord.id,
-      movement_at: new Date().toISOString(),
-      balance_after: nextStock,
-    });
-  };
 
   const subTotal = roundMoney(selectedProducts.reduce((sum, p) => sum + (Number(p.price || 0) * Number(p.qty || 0)), 0));
   const discount = roundMoney(discountAmount);
@@ -506,19 +462,6 @@ export default function SalesInvoicesPage() {
         return requestInvoiceEdit(invoiceCustomerName, selectedAgent, currentCustomer);
       }
 
-      for (const prod of selectedProducts) {
-        if (prod.itemType === 'material' && prod.materialId) {
-          await updateMaterialStock(prod.materialId, -Number(prod.qty || 0));
-          continue;
-        }
-        await updateFinishedProductStock(prod.name, -Number(prod.qty || 0), {
-          type: 'sale',
-          title: 'فاتورة بيع - سحب من المخزن',
-          sourceId: 'new-sale',
-          customerName: invoiceCustomerName,
-        });
-      }
-
       const customerName = invoiceCustomerName;
 
       let matchedCustomerById = null;
@@ -551,32 +494,119 @@ export default function SalesInvoicesPage() {
         total_amount: netTotal,
         payment_type: paymentType,
         actor_name: currentUserName,
-        status: paymentType === 'cash' && netTotal > 0 ? 'بانتظار اعتماد المراجع' : 'مكتملة',
+        status: 'مكتملة',
         previous_balance: previousBalance
       };
 
       invoiceData.invoice_number = getNextInvoiceNumber();
-      const savedInvoice = await pb.collection('sales_invoices').create(invoiceData);
+      const actions = [{
+        type: 'create',
+        collection: 'sales_invoices',
+        data: invoiceData,
+      }];
 
-      if (paymentType === 'credit' && customerType === 'registered' && selectedCustomer) {
-        const custRecord = await pb.collection('clientsmoashe').getOne(selectedCustomer).catch(() => null);
-        if (custRecord) {
-          const currentDebt = Number(custRecord.balance || custRecord.debt || custRecord.total_debt || 0);
-          await pb.collection('clientsmoashe').update(selectedCustomer, {
-            balance: roundMoney(currentDebt + netTotal)
-          }).catch(async () => {
-            await pb.collection('clientsmoashe').update(selectedCustomer, {
-              debt: roundMoney(currentDebt + netTotal)
-            }).catch(() => {});
-          });
+      const materialChanges = new Map();
+      const productChanges = new Map();
+      const stockRecords = await pb.collection('products_stock').getFullList({ requestKey: null });
+
+      for (const item of selectedProducts) {
+        const quantity = Number(item.qty || 0);
+        if (item.itemType === 'material' && item.materialId) {
+          let materialChange = materialChanges.get(item.materialId);
+          if (!materialChange) {
+            const material = await pb.collection('khamat_moashe').getOne(item.materialId);
+            materialChange = {
+              stock: Number(material.stock ?? material.quantity ?? 0),
+            };
+          }
+          materialChange.stock -= quantity;
+          materialChanges.set(item.materialId, materialChange);
+          continue;
         }
+
+        const productName = item.name || item.product_name;
+        const stockRecord = stockRecords.find((record) => (
+          normalizeProductName(record.product_name || record.name) === normalizeProductName(productName)
+        ));
+        const key = stockRecord?.id || `new:${normalizeProductName(productName)}`;
+        const change = productChanges.get(key) || {
+          stockRecord,
+          productName,
+          quantity: 0,
+          currentStock: roundQuantity(stockRecord?.stock || 0),
+        };
+        change.quantity = addQuantities(change.quantity, -quantity);
+        productChanges.set(key, change);
       }
 
-      if (!editingInvoiceId && paymentType === 'cash' && netTotal > 0) {
-        const treasuryRecords = await pb.collection('treasury').getFullList().catch(() => []);
-        const treasury = treasuryRecords[0];
-        const actions = [];
-        if (treasury?.id) {
+      for (const [materialId, change] of materialChanges) {
+        actions.push({
+          type: 'update',
+          collection: 'khamat_moashe',
+          id: materialId,
+          data: { stock: change.stock },
+        });
+      }
+
+      for (const change of productChanges.values()) {
+        const quantity = roundQuantity(change.quantity);
+        const nextStock = addQuantities(change.currentStock, quantity);
+        if (change.stockRecord) {
+          actions.push({
+            type: 'update',
+            collection: 'products_stock',
+            id: change.stockRecord.id,
+            data: { stock: nextStock },
+          });
+        } else {
+          actions.push({
+            type: 'create',
+            collection: 'products_stock',
+            data: {
+              product_name: change.productName,
+              stock: nextStock,
+              total_cost: 0,
+              actor_name: currentUserName,
+            },
+          });
+        }
+        actions.push({
+          type: 'create',
+          collection: 'product_stock_transactions',
+          data: {
+            product_name: change.stockRecord?.product_name || change.stockRecord?.name || change.productName,
+            quantity,
+            movement_type: 'sale',
+            title: 'فاتورة بيع - سحب من المخزن',
+            notes: '-',
+            actor_name: currentUserName,
+            customer_name: customerName,
+            source_type: 'sales_invoice',
+            source_id: invoiceData.invoice_number,
+            product_stock_id: change.stockRecord?.id || '',
+            movement_at: new Date().toISOString(),
+            balance_after: nextStock,
+          },
+        });
+      }
+
+      if (paymentType === 'credit' && customerType === 'registered' && selectedCustomer) {
+        const customer = await pb.collection('clientsmoashe').getOne(selectedCustomer);
+        const balanceField = ['balance', 'debt', 'total_debt'].find((field) => field in customer);
+        if (!balanceField) throw new Error('لا يوجد حقل رصيد مسجل لهذا العميل.');
+        const currentBalance = Number(customer[balanceField] || 0);
+        actions.push({
+          type: 'update',
+          collection: 'clientsmoashe',
+          id: customer.id,
+          data: { [balanceField]: roundMoney(currentBalance + netTotal) },
+        });
+      }
+
+      if (paymentType === 'cash' && netTotal > 0) {
+        const treasuryRecords = await pb.collection('treasury').getFullList({ requestKey: null });
+        const treasury = treasuryRecords.find((record) => 'balance' in record);
+        if (treasury) {
           actions.push({
             type: 'balance_delta',
             collection: 'treasury',
@@ -587,42 +617,25 @@ export default function SalesInvoicesPage() {
           actions.push({
             type: 'create',
             collection: 'treasury',
-            data: { balance: newBalance, opening_balance: 0 },
+            data: { balance: netTotal, opening_balance: 0 },
           });
         }
-        actions.push(
-          {
-            type: 'create',
-            collection: 'treasury_transactions',
-            data: {
-              type: 'sale',
-              amount: netTotal,
-              title: `فاتورة بيع: ${customerName}`,
-              notes: `تحصيل نقدي من العميل: ${customerName}`,
-              actor_name: currentUserName,
-              date: new Date().toISOString(),
-            },
+        actions.push({
+          type: 'create',
+          collection: 'treasury_transactions',
+          data: {
+            type: 'sale',
+            amount: netTotal,
+            title: `فاتورة بيع: ${customerName}`,
+            notes: `تحصيل نقدي من العميل: ${customerName}`,
+            actor_name: currentUserName,
+            date: new Date().toISOString(),
           },
-          {
-            type: 'update',
-            collection: 'sales_invoices',
-            id: savedInvoice.id,
-            data: { status: 'مكتملة' },
-          },
-        );
-        await requestCompoundOperation(actions, `تحصيل نقدي من فاتورة البيع ${savedInvoice.invoice_number || savedInvoice.id}`, {
-          reviewType: 'treasury',
-          rejectionActions: [{
-            type: 'update',
-            collection: 'sales_invoices',
-            id: savedInvoice.id,
-            data: { status: 'رفض اعتماد التحصيل' },
-          }],
         });
-        return { reviewRequested: true };
       }
 
-      return savedInvoice;
+      await requestCompoundOperation(actions, `إصدار فاتورة بيع ${invoiceData.invoice_number} — ${customerName}`);
+      return { approvalRequested: true };
     },
     onSuccess: result => {
       queryClient.invalidateQueries({ queryKey: ['sales_invoices'] });
@@ -634,11 +647,12 @@ export default function SalesInvoicesPage() {
       queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
       queryClient.invalidateQueries({ queryKey: ['treasury'] });
       queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
+      queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
       queryClient.invalidateQueries({ queryKey: ['invoices_logs'] });
       showToast(result?.approvalRequested
-        ? 'تم إرسال تعديل فاتورة البيع للمدير لاعتماده.'
-        : result?.reviewRequested
-          ? 'تم تسجيل الفاتورة النقدية وإضافة أثرها للخزنة الآن؛ بانتظار اعتماد المراجع.'
+        ? (editingInvoiceId
+          ? 'تم إرسال تعديل فاتورة البيع للمدير لاعتماده.'
+          : 'تم إرسال طلب الفاتورة للمدير؛ ستُسجل وتُحدث الأرصدة والمخزون بعد الاعتماد.')
         : `🚀 تم إصدار الفاتورة (${paymentType === 'credit' ? 'آجل وتسجيلها على العميل' : 'كاش'}) بنجاح!`);
       resetForm();
     },
@@ -914,7 +928,7 @@ const deleteInvoiceMutation = useMutation({
     const title = editingInvoiceId ? 'تأكيد تعديل الفاتورة' : 'تأكيد إصدار الفاتورة';
     const message = editingInvoiceId 
       ? `هل تريد حفظ التعديلات على الفاتورة (${paymentType === 'credit' ? 'آجل' : 'كاش'}) بالقيمة (${netTotal.toLocaleString()} ج.م) وتحديث المخازن وحساب العميل؟`
-      : `هل أنت متأكد من حفظ الفاتورة (${paymentType === 'credit' ? 'آجل وتسجيل مديونية على العميل' : 'كاش'}) بقيمة صافية (${netTotal.toLocaleString()} ج.م)؟`;
+      : `سيتم إرسال الفاتورة (${paymentType === 'credit' ? 'آجل وتسجيل مديونية على العميل' : 'كاش'}) بقيمة صافية (${netTotal.toLocaleString()} ج.م) للمدير لاعتمادها قبل تحديث المخازن والأرصدة. هل تريد المتابعة؟`;
 
     setConfirmModal({
       show: true,
@@ -1487,7 +1501,7 @@ const deleteInvoiceMutation = useMutation({
               disabled={saveInvoiceMutation.isPending}
               className="px-6 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-2xl shadow-lg transition flex items-center gap-2"
             >
-              {saveInvoiceMutation.isPending ? 'جاري الحفظ...' : (editingInvoiceId ? '💾 حفظ تعديلات الفاتورة' : '🚀 إصدار وحفظ الفاتورة')}
+              {saveInvoiceMutation.isPending ? 'جاري الحفظ...' : (editingInvoiceId ? '💾 حفظ تعديلات الفاتورة' : '🚀 إرسال الفاتورة للاعتماد')}
             </button>
           </div>
         </form>
