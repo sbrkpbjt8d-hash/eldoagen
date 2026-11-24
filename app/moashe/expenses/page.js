@@ -171,7 +171,7 @@ export default function ExpensesPage() {
     }
   });
 
-  // Mutation تسجيل مصروف جديد (مع التعديل الآمن لتحديث الرصيد)
+  // Submit a pending approval so ordinary users do not need direct balance-write access.
   const addExpenseMutation = useMutation({
     mutationFn: async () => {
       const expenseAmount = parseFloat(amount);
@@ -193,46 +193,36 @@ export default function ExpensesPage() {
         actor_name: currentUserName(),
       };
 
+      const actions = [{ type: 'create', collection: 'expenses', data: expenseData }];
       if (!isTreasury) {
-        const targetBank = banks.find(b => b.id === paymentSource);
+        const targetBank = banks.find((bank) => bank.id === paymentSource);
         if (!targetBank) throw new Error('البنك المختار غير موجود.');
-        await requestCompoundOperation([
-          { type: 'create', collection: 'expenses', data: expenseData },
-          {
-            type: 'balance_delta',
-            collection: 'banks',
-            id: targetBank.id,
-            delta: -expenseAmount,
-          },
-        ], `مصروف: ${selectedCategoryName}${notes.trim() ? ` — ${notes.trim()}` : ''}`, { reviewType: 'bank' });
-        return { reviewRequested: true };
+        actions.push({
+          type: 'balance_delta',
+          collection: 'banks',
+          id: targetBank.id,
+          delta: -expenseAmount,
+        });
+      } else if (treasury?.id) {
+        actions.push({
+          type: 'balance_delta',
+          collection: 'treasury',
+          id: treasury.id,
+          delta: -expenseAmount,
+        });
+      } else {
+        actions.push({
+          type: 'create',
+          collection: 'treasury',
+          data: { balance: roundMoney(-expenseAmount), opening_balance: 0 },
+        });
       }
 
-      if (isTreasury) {
-        const actions = [{ type: 'create', collection: 'expenses', data: expenseData }];
-        if (treasury?.id) {
-          actions.push({
-            type: 'balance_delta',
-            collection: 'treasury',
-            id: treasury.id,
-            delta: -expenseAmount,
-          });
-        } else {
-          actions.push({
-            type: 'create',
-            collection: 'treasury',
-            data: { balance: roundMoney(-expenseAmount), opening_balance: 0 },
-          });
-        }
-        await requestCompoundOperation(
-          actions,
-          `مصروف: ${selectedCategoryName}${notes.trim() ? ` — ${notes.trim()}` : ''}`,
-          { reviewType: 'treasury' },
-        );
-        return { reviewRequested: true };
-      }
-
-      return await pb.collection('expenses').create(expenseData);
+      await requestCompoundOperation(
+        actions,
+        `مصروف: ${selectedCategoryName}${notes.trim() ? ` — ${notes.trim()}` : ''}`,
+      );
+      return { reviewRequested: true };
     },
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['expenses'] });
@@ -240,7 +230,7 @@ export default function ExpensesPage() {
       queryClient.invalidateQueries({ queryKey: ['banks'] });
       queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
       showToast(result?.reviewRequested
-        ? 'تم تسجيل المصروف وخصمه من الرصيد الآن؛ بانتظار اعتماد المراجع.'
+        ? 'تم إرسال طلب المصروف للمراجع؛ سيتم تسجيله وخصمه من الرصيد بعد الاعتماد.'
         : '🚀 تم تسجيل المصروف وخصمه من مصدر الدفع بنجاح!');
       setAmount('');
       setNotes('');
@@ -678,7 +668,7 @@ export default function ExpensesPage() {
               disabled={addExpenseMutation.isPending}
               className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-2xl font-black text-xs transition shadow-lg shadow-blue-600/20"
             >
-              {addExpenseMutation.isPending ? 'جاري الخصم والحفظ...' : 'حفظ المصروف وخصمه من المصدر'}
+              {addExpenseMutation.isPending ? 'جاري إرسال الطلب...' : 'إرسال طلب المصروف للمراجعة'}
             </button>
           </form>
         </div>

@@ -136,7 +136,9 @@ export default function ProductsPage() {
   // 3. استخدام Mutation لتحديث سعر البيع لكل صفوف المنتج في قاعدة البيانات
   const updatePriceMutation = useMutation({
     mutationFn: async ({ prodName, newPrice }) => {
-      const prodRecipes = allRecipes.filter(r => (r.product_name || r.name) === prodName);
+      const prodRecipes = allRecipes.filter(r =>
+        normalizeProductName(r.product_name ?? r.name ?? r.product ?? '') === normalizeProductName(prodName)
+      );
       if (!prodRecipes.length) throw new Error('لا توجد بيانات لهذا المنتج');
       const actions = prodRecipes.map(record => ({
         type: 'update',
@@ -219,7 +221,9 @@ export default function ProductsPage() {
   // 4. استخدام Mutation لحذف المنتج وكل تراكيبه وتحديث الكاش تلقائياً
   const deleteProductMutation = useMutation({
     mutationFn: async (prodName) => {
-      const prodRecipes = allRecipes.filter(r => (r.product_name || r.name) === prodName);
+      const prodRecipes = allRecipes.filter(r =>
+        normalizeProductName(r.product_name ?? r.name ?? r.product ?? '') === normalizeProductName(prodName)
+      );
       if (!prodRecipes.length) throw new Error('لا توجد بيانات لهذا المنتج');
       await requestCompoundOperation(prodRecipes.map(record => ({
         type: 'delete',
@@ -230,7 +234,7 @@ export default function ProductsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products_recipes'] });
-      toast.success('تم حذف المنتج بنجاح!');
+      toast.success('تم إرسال طلب حذف المنتج للمدير لاعتماده.');
       setConfirmModal({ isOpen: false, title: '', message: '', onConfirm: null });
     },
     onError: (error) => {
