@@ -2,7 +2,7 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
-import { requestCompoundOperation } from '../../lib/approval-requests';
+import { getPendingDeletionActionKeys, requestCompoundOperation } from '../../lib/approval-requests';
 import { addQuantities, formatQuantity, roundQuantity } from '../../lib/quantity';
 import toast, { Toaster } from 'react-hot-toast';
 
@@ -69,6 +69,14 @@ export default function ProductionOrdersPage() {
       return await pb.collection('production_orders').getFullList({ sort: '-created' }).catch(() => []);
     },
   });
+
+  const { data: pendingDeletionKeys = [], isError: pendingDeletionLoadFailed } = useQuery({
+    queryKey: ['pending_manager_deletion_action_keys'],
+    queryFn: getPendingDeletionActionKeys,
+    refetchOnWindowFocus: true,
+    refetchInterval: 15000,
+  });
+  const pendingDeletionKeySet = new Set(pendingDeletionKeys);
 
   const { data: productsStock = [] } = useQuery({
     queryKey: ['products_stock'],
@@ -297,7 +305,9 @@ export default function ProductionOrdersPage() {
       queryClient.invalidateQueries({ queryKey: ['products_stock'] });
       queryClient.invalidateQueries({ queryKey: ['product_stock_transactions'] });
       queryClient.invalidateQueries({ queryKey: ['invoices_logs_products_stock_history'] });
-      toast.success('تم حذف أمر التصنيع وإرجاع الخامات بنجاح!');
+      queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
+      queryClient.invalidateQueries({ queryKey: ['pending_manager_deletion_action_keys'] });
+      toast.success('تم إرسال طلب حذف أمر التصنيع للمدير لاعتماده.');
       setConfirmModal({ isOpen: false, title: '', message: '', onConfirm: null });
     },
     onError: (error) => {
@@ -381,7 +391,7 @@ export default function ProductionOrdersPage() {
     setConfirmModal({
       isOpen: true,
       title: 'تأكيد الحذف والإرجاع',
-      message: `هل تريد حقاً حذف أمر التصنيع للمنتج "${order.product_name}"؟ سيتم إرجاع الخامات وخصم المنتجات من المخزن.`,
+      message: `هل تريد إرسال طلب حذف أمر التصنيع للمنتج "${order.product_name}" للمدير؟ سيتم إرجاع الخامات وخصم المنتجات من المخزن بعد الاعتماد.`,
       onConfirm: () => deleteProductionMutation.mutate(order)
     });
   };
@@ -406,6 +416,11 @@ export default function ProductionOrdersPage() {
       {materialsLoadFailed && (
         <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-800">
           تعذر تحميل سجل الخامات من PocketBase؛ لن يمكن التحقق من مكونات أوامر التصنيع. تحقق من اتصال قاعدة البيانات.
+        </div>
+      )}
+      {pendingDeletionLoadFailed && (
+        <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-bold text-amber-800">
+          تعذر تحميل طلبات الحذف المعلقة؛ قد لا تظهر علامة الانتظار على أوامر التصنيع.
         </div>
       )}
 
@@ -641,6 +656,11 @@ export default function ProductionOrdersPage() {
                   <div>
                     <h3 className="text-base font-black text-gray-900">{order.product_name}</h3>
                     <span className="text-xs text-gray-500">الحالة: <strong className="text-emerald-600">{order.status || 'مكتمل'}</strong></span>
+                    {pendingDeletionKeySet.has(`production_orders/${order.id}`) && (
+                      <span className="mt-1 inline-block rounded-lg bg-orange-100 px-2 py-1 text-[10px] font-bold text-orange-800">
+                        طلب الحذف بانتظار موافقة المدير
+                      </span>
+                    )}
                     <span className="block text-[10px] text-gray-400 mt-1">بواسطة: {order.actor_name || 'غير معروف'}</span>
                   </div>
                   <div className="flex items-center gap-2">
@@ -655,8 +675,8 @@ export default function ProductionOrdersPage() {
                     <button
                       onClick={() => handleDeleteOrder(order)}
                       className={`border p-2.5 rounded-xl transition text-xs font-bold ${canRequestChanges ? 'bg-red-50 hover:bg-red-100 text-red-600 border-red-200' : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'}`}
-                      title={canRequestChanges ? 'إرسال طلب حذف الأمر' : 'سجل الدخول لطلب الحذف'}
-                      disabled={!canRequestChanges || deleteProductionMutation.isPending}
+                      title={pendingDeletionKeySet.has(`production_orders/${order.id}`) ? 'طلب الحذف بانتظار موافقة المدير' : canRequestChanges ? 'إرسال طلب حذف الأمر' : 'سجل الدخول لطلب الحذف'}
+                      disabled={!canRequestChanges || deleteProductionMutation.isPending || pendingDeletionKeySet.has(`production_orders/${order.id}`)}
                     >
                       🗑️
                     </button>

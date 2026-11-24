@@ -2,7 +2,7 @@
 import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
-import { requestCompoundOperation } from '../../lib/approval-requests';
+import { getPendingDeletionActionKeys, requestCompoundOperation } from '../../lib/approval-requests';
 import toast, { Toaster } from 'react-hot-toast';
 import { useReactToPrint } from 'react-to-print';
 
@@ -86,6 +86,14 @@ export default function ProductsPage() {
     refetchOnMount: true,
     refetchOnWindowFocus: true,
   });
+
+  const { data: pendingDeletionKeys = [], isError: pendingDeletionLoadFailed } = useQuery({
+    queryKey: ['pending_manager_deletion_action_keys'],
+    queryFn: getPendingDeletionActionKeys,
+    refetchOnWindowFocus: true,
+    refetchInterval: 15000,
+  });
+  const pendingDeletionKeySet = new Set(pendingDeletionKeys);
 
   const normalizeProductName = (value) => String(value ?? '')
     .replace(/[\u200B-\u200D\uFEFF]/g, '')
@@ -234,6 +242,8 @@ export default function ProductsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products_recipes'] });
+      queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
+      queryClient.invalidateQueries({ queryKey: ['pending_manager_deletion_action_keys'] });
       toast.success('تم إرسال طلب حذف المنتج للمدير لاعتماده.');
       setConfirmModal({ isOpen: false, title: '', message: '', onConfirm: null });
     },
@@ -319,6 +329,11 @@ export default function ProductsPage() {
     <div className="products-print-root p-4 md:p-8 max-w-7xl mx-auto space-y-8 relative" dir="rtl">
       {/* إشعارات الـ Toasts */}
       <Toaster position="top-center" reverseOrder={false} />
+      {pendingDeletionLoadFailed && (
+        <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-bold text-amber-800">
+          تعذر تحميل طلبات الحذف المعلقة؛ قد لا تظهر علامة الانتظار على المنتجات.
+        </div>
+      )}
 
       {((editingMaterialsProd && editingMaterials.length > 0) || recipePrintData) && (
         <div ref={recipePrintRef} className="product-recipe-print-document print-only" dir="rtl">
@@ -536,6 +551,9 @@ export default function ProductsPage() {
             ) : (
               filteredProducts.map((prodName, index) => {
                 const prodRecipes = allRecipes.filter(r => normalizeProductName(r.product_name || r.name) === normalizeProductName(prodName));
+                const hasPendingDeletion = prodRecipes.some((recipe) => (
+                  pendingDeletionKeySet.has(`products_recipes/${recipe.id}`)
+                ));
                 const firstRow = prodRecipes[0] || {};
                 const sellingPriceVal = Number(firstRow.selling_price || firstRow.sellingPrice || firstRow.price || 0);
                 const otherCostVal = Number(firstRow.other_cost || 0);
@@ -565,6 +583,11 @@ export default function ProductsPage() {
                     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
                       <h3 className="text-base font-black text-gray-900">{prodName}</h3>
                       <span className="text-[10px] text-gray-400">بواسطة: {firstRow.actor_name || 'غير معروف'}</span>
+                      {hasPendingDeletion && (
+                        <span className="rounded-lg bg-orange-100 px-2 py-1 text-[10px] font-bold text-orange-800">
+                          طلب الحذف بانتظار موافقة المدير
+                        </span>
+                      )}
                       <div className="flex items-center gap-2">
                         <button
                           onClick={() => {
@@ -610,10 +633,10 @@ export default function ProductsPage() {
                         )}
                         <button
                           onClick={() => handleDeleteProduct(prodName)}
-                          disabled={deleteProductMutation.isPending}
-                          className="text-red-500 hover:text-red-700 text-xs font-bold bg-red-50 px-2.5 py-1 rounded-lg border border-red-100 transition"
+                          disabled={deleteProductMutation.isPending || hasPendingDeletion}
+                          className="text-red-500 hover:text-red-700 text-xs font-bold bg-red-50 px-2.5 py-1 rounded-lg border border-red-100 transition disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          🗑️ حذف المنتج
+                          {hasPendingDeletion ? 'بانتظار الموافقة' : '🗑️ حذف المنتج'}
                         </button>
                       </div>
                     </div>

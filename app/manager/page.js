@@ -136,6 +136,7 @@ export default function ManagerPage() {
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [message, setMessage] = useState({ text: '', type: 'success' });
   const [rejectInvoice, setRejectInvoice] = useState(null);
+  const [showBulkApproveConfirm, setShowBulkApproveConfirm] = useState(false);
 
   const { data: pendingInvoices = [], isLoading, isError } = useQuery({
     queryKey: ['pending_purchase_invoices'],
@@ -212,6 +213,63 @@ export default function ManagerPage() {
     onError: (error) => setMessage({ text: `تعذر معالجة الطلب: ${error.message}`, type: 'error' }),
   });
 
+  const bulkApprovalMutation = useMutation({
+    mutationFn: async () => {
+      const tasks = [
+        ...pendingRequests.map((request) => ({
+          type: 'request',
+          record: request,
+          label: request.payload?.record_label || 'طلب تعديل أو حذف',
+        })),
+        ...pendingInvoices.map((invoice) => ({
+          type: 'purchase',
+          record: invoice,
+          label: `فاتورة شراء ${invoice.invoice_number || invoice.supplier_name || invoice.id}`,
+        })),
+      ];
+      const results = [];
+
+      for (const task of tasks) {
+        try {
+          if (task.type === 'purchase') {
+            await approvePurchaseInvoice(task.record.id);
+          } else {
+            await decideApprovalRequest(task.record, APPROVAL_APPROVED);
+          }
+          results.push({ label: task.label, success: true });
+        } catch (error) {
+          results.push({ label: task.label, success: false, error: error.message });
+        }
+      }
+
+      return results;
+    },
+    onSuccess: async (results) => {
+      await queryClient.invalidateQueries();
+      setShowBulkApproveConfirm(false);
+      const approvedCount = results.filter((result) => result.success).length;
+      const failures = results.filter((result) => !result.success);
+      const failureSummary = failures
+        .slice(0, 3)
+        .map((failure) => `${failure.label}: ${failure.error}`)
+        .join('؛ ');
+      const remainingFailures = failures.length > 3 ? `؛ وهناك ${failures.length - 3} طلبات أخرى تعذرت` : '';
+      setMessage({
+        text: failures.length
+          ? `تم اعتماد ${approvedCount} من ${results.length}. تعذر اعتماد ${failures.length}: ${failureSummary}${remainingFailures}`
+          : `تم اعتماد جميع الطلبات (${approvedCount}) بنجاح.`,
+        type: failures.length ? 'error' : 'success',
+      });
+    },
+    onError: (error) => setMessage({ text: `تعذر اعتماد الطلبات: ${error.message}`, type: 'error' }),
+  });
+
+  const pendingActionCount = pendingRequests.length + pendingInvoices.length;
+  const isApprovalActionPending = approvalMutation.isPending
+    || rejectionMutation.isPending
+    || requestDecisionMutation.isPending
+    || bulkApprovalMutation.isPending;
+
   const unlockPage = (event) => {
     event.preventDefault();
     if (password !== MANAGER_PAGE_PASSWORD) {
@@ -254,6 +312,45 @@ export default function ManagerPage() {
 
   return (
     <main className="mx-auto max-w-6xl space-y-6" dir="rtl">
+      {showBulkApproveConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md space-y-5 rounded-3xl border border-slate-100 bg-white p-6 shadow-2xl">
+            <div className="flex items-start gap-3">
+              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 text-xl text-emerald-700">✓</span>
+              <div>
+                <h2 className="text-lg font-black text-slate-900">اعتماد كل الطلبات؟</h2>
+                <p className="mt-1 text-sm leading-6 text-slate-600">
+                  سيتم اعتماد {pendingActionCount} طلبًا معلّقًا، بما فيها طلبات التعديل والحذف وفواتير الشراء، وتطبيق آثارها بالتتابع.
+                </p>
+              </div>
+            </div>
+            <p className="rounded-2xl bg-slate-50 p-3 text-xs leading-5 text-slate-600">
+              طلبات مراجعة البنك والخزنة لا تدخل ضمن هذه القائمة؛ تُراجع من صفحة المراجع.
+            </p>
+            <p className="rounded-2xl bg-amber-50 p-3 text-xs leading-5 text-amber-800">
+              إذا تعذر اعتماد طلب بسبب صلاحيات قاعدة البيانات أو بياناته، سيُترك معلّقًا ويظهر سببه بعد انتهاء الباقي.
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setShowBulkApproveConfirm(false)}
+                disabled={bulkApprovalMutation.isPending}
+                className="flex-1 rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold text-slate-700 disabled:opacity-50"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                onClick={() => bulkApprovalMutation.mutate()}
+                disabled={bulkApprovalMutation.isPending || pendingActionCount === 0}
+                className="flex-1 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white disabled:opacity-50"
+              >
+                {bulkApprovalMutation.isPending ? 'جارٍ اعتماد الطلبات...' : `اعتماد ${pendingActionCount} طلب`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {rejectInvoice && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="w-full max-w-sm space-y-4 rounded-2xl bg-white p-6 shadow-2xl">
@@ -283,14 +380,38 @@ export default function ManagerPage() {
         </div>
       )}
 
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b pb-4">
-        <div>
-          <h1 className="text-2xl font-black text-gray-900">👔 صفحة المدير</h1>
-          <p className="mt-1 text-sm text-gray-500">مراجعة طلبات التعديل والحذف والتسوية وفواتير الشراء</p>
+      <header className="overflow-hidden rounded-3xl bg-gradient-to-l from-slate-950 via-slate-900 to-indigo-950 p-6 text-white shadow-xl md:p-8">
+        <div className="flex flex-wrap items-center justify-between gap-5">
+          <div>
+            <span className="text-xs font-bold tracking-wide text-indigo-200">لوحة التحكم</span>
+            <h1 className="mt-1 text-2xl font-black">👔 مراجعة واعتماد الطلبات</h1>
+            <p className="mt-2 text-sm text-slate-300">راجع التفاصيل واعتمد كل الطلبات أو اختر طلبًا بعينه.</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="rounded-2xl border border-white/10 bg-white/10 px-5 py-3 text-center">
+              <span className="block text-2xl font-black">{pendingActionCount}</span>
+              <span className="text-xs font-bold text-slate-300">طلب معلّق</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowBulkApproveConfirm(true)}
+              disabled={pendingActionCount === 0 || isApprovalActionPending || isLoading || isLoadingRequests || isError || isRequestsError}
+              className="rounded-2xl bg-emerald-500 px-5 py-3 text-sm font-black text-white shadow-lg shadow-emerald-950/30 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {bulkApprovalMutation.isPending ? 'جارٍ اعتماد الكل...' : '✓ اعتماد الكل'}
+            </button>
+          </div>
         </div>
-        <span className="rounded-xl bg-amber-100 px-4 py-2 text-sm font-bold text-amber-800">
-          {pendingRequests.length + pendingInvoices.length} طلب بانتظار الاعتماد
-        </span>
+        <div className="mt-5 grid grid-cols-2 gap-3 sm:max-w-lg">
+          <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+            <span className="block text-lg font-black">{pendingRequests.length}</span>
+            <span className="text-xs text-slate-300">تعديل / حذف / تسوية</span>
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+            <span className="block text-lg font-black">{pendingInvoices.length}</span>
+            <span className="text-xs text-slate-300">فواتير شراء</span>
+          </div>
+        </div>
       </header>
 
       {message.text && (
@@ -306,9 +427,12 @@ export default function ManagerPage() {
       )}
 
       <section className="space-y-4">
-        <div>
-          <h2 className="text-lg font-black text-gray-900">طلبات التعديل والحذف والتسوية</h2>
-          <p className="mt-1 text-sm text-gray-500">لن يتغير السجل قبل اعتماد الطلب.</p>
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-black text-gray-900">طلبات التعديل والحذف والتسوية</h2>
+            <p className="mt-1 text-sm text-gray-500">التغييرات لا تُطبّق إلا بعد الاعتماد.</p>
+          </div>
+          <span className="rounded-xl bg-indigo-50 px-3 py-2 text-xs font-bold text-indigo-700">{pendingRequests.length} طلب</span>
         </div>
 
         {isRequestsError && (
@@ -320,7 +444,7 @@ export default function ManagerPage() {
         {isLoadingRequests ? (
           <div className="rounded-2xl bg-white p-6 text-center text-sm text-gray-500">جارٍ تحميل الطلبات...</div>
         ) : pendingRequests.length ? (
-          <div className="space-y-3">
+          <div className="grid gap-4 xl:grid-cols-2">
             {pendingRequests.map((approval) => {
               const request = approval.payload;
               const operationLabel = request.operation === 'update'
@@ -356,66 +480,85 @@ export default function ManagerPage() {
                 }];
 
               return (
-                <article key={approval.id} className="space-y-3 rounded-2xl border bg-white p-5 shadow-sm">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <h3 className="font-black text-gray-900">{operationLabel}: {request.record_label}</h3>
-                      <p className="mt-1 text-xs text-gray-500">
-                        المجموعة: {request.collection_name} · أرسل الطلب: {request.requested_by || 'مستخدم'}
-                      </p>
+                <article key={approval.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:border-indigo-200 hover:shadow-md">
+                  <div className="border-r-4 border-amber-400 p-4 sm:p-5">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="mb-2 flex flex-wrap items-center gap-2">
+                          <span className="rounded-lg bg-indigo-50 px-2.5 py-1 text-[11px] font-black text-indigo-700">{operationLabel}</span>
+                          <span className="rounded-lg bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-800">بانتظار الاعتماد</span>
+                        </div>
+                        <h3 className="break-words text-base font-black text-slate-900">{request.record_label || 'طلب بدون وصف'}</h3>
+                      </div>
+                      <span className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-bold text-slate-600">
+                        {COLLECTION_LABELS[request.collection_name] || request.collection_name || 'عملية متعددة'}
+                      </span>
                     </div>
-                    <span className="rounded-lg bg-amber-50 px-3 py-1 text-xs font-bold text-amber-800">
-                      بانتظار الاعتماد
-                    </span>
-                  </div>
+                    <div className="mt-4 grid grid-cols-2 gap-2 rounded-xl bg-slate-50 p-3 text-xs">
+                      <div>
+                        <span className="block text-[10px] font-bold text-slate-400">مقدم الطلب</span>
+                        <span className="mt-1 block truncate font-bold text-slate-700">{request.requested_by || 'مستخدم'}</span>
+                      </div>
+                      <div>
+                        <span className="block text-[10px] font-bold text-slate-400">التاريخ</span>
+                        <span className="mt-1 block font-bold text-slate-700">{new Date(approval.created).toLocaleString('ar-EG')}</span>
+                      </div>
+                    </div>
 
-                  <div className="space-y-3 rounded-xl bg-gray-50 p-3">
-                    {details.map((detail) => (
-                      <section key={detail.id} className="space-y-2">
-                        {request.operation === 'compound' && (
-                          <h4 className="text-sm font-black text-gray-800">
-                            {detail.operation === 'create' ? 'إضافة' : detail.operation === 'update' ? 'تعديل' : 'حذف'}
-                            {' '}{COLLECTION_LABELS[detail.collection] || detail.collection}
-                            {detail.record ? ` — ${detail.record}` : ''}
-                          </h4>
-                        )}
-                        {detail.operation === 'delete' && request.operation !== 'compound' && (
-                          <p className="text-sm font-bold text-gray-700">بيانات السجل قبل الحذف</p>
-                        )}
-                        <ApprovalDetails data={detail.changes} />
-                        {detail.transaction && Object.keys(detail.transaction).length > 0 && (
-                          <div>
-                            <h4 className="mb-2 text-sm font-black text-gray-800">تفاصيل حركة التسوية</h4>
-                            <ApprovalDetails data={detail.transaction} />
-                          </div>
-                        )}
-                      </section>
-                    ))}
-                  </div>
+                    <details className="group mt-3 rounded-xl border border-slate-200">
+                      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-4 py-3 text-xs font-bold text-slate-700 marker:content-none">
+                        <span>عرض التفاصيل ({details.length})</span>
+                        <span className="text-slate-400 transition group-open:rotate-180">⌄</span>
+                      </summary>
+                      <div className="space-y-3 border-t border-slate-100 bg-slate-50 p-3">
+                        {details.map((detail) => (
+                          <section key={detail.id} className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
+                            {request.operation === 'compound' && (
+                              <h4 className="text-xs font-black text-slate-800">
+                                {detail.operation === 'create' ? 'إضافة' : detail.operation === 'update' ? 'تعديل' : 'حذف'}
+                                {' '}{COLLECTION_LABELS[detail.collection] || detail.collection}
+                                {detail.record ? ` — ${detail.record}` : ''}
+                              </h4>
+                            )}
+                            {detail.operation === 'delete' && request.operation !== 'compound' && (
+                              <p className="text-xs font-bold text-slate-700">بيانات السجل قبل الحذف</p>
+                            )}
+                            <ApprovalDetails data={detail.changes} />
+                            {detail.transaction && Object.keys(detail.transaction).length > 0 && (
+                              <div>
+                                <h4 className="mb-2 text-xs font-black text-slate-800">تفاصيل حركة التسوية</h4>
+                                <ApprovalDetails data={detail.transaction} />
+                              </div>
+                            )}
+                          </section>
+                        ))}
+                      </div>
+                    </details>
 
-                  <div className="flex justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => requestDecisionMutation.mutate({
-                        request: approval,
-                        decision: APPROVAL_REJECTED,
-                      })}
-                      disabled={requestDecisionMutation.isPending}
-                      className="rounded-xl bg-red-50 px-4 py-2.5 text-xs font-bold text-red-700 disabled:opacity-50"
-                    >
-                      رفض وإلغاء الطلب
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => requestDecisionMutation.mutate({
-                        request: approval,
-                        decision: APPROVAL_APPROVED,
-                      })}
-                      disabled={requestDecisionMutation.isPending}
-                      className="rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white disabled:opacity-50"
-                    >
-                      {requestDecisionMutation.isPending ? 'جارٍ التنفيذ...' : 'اعتماد'}
-                    </button>
+                    <div className="mt-4 flex flex-wrap justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => requestDecisionMutation.mutate({
+                          request: approval,
+                          decision: APPROVAL_REJECTED,
+                        })}
+                        disabled={isApprovalActionPending}
+                        className="rounded-xl border border-red-100 bg-red-50 px-4 py-2.5 text-xs font-bold text-red-700 transition hover:bg-red-100 disabled:opacity-50"
+                      >
+                        رفض الطلب
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => requestDecisionMutation.mutate({
+                          request: approval,
+                          decision: APPROVAL_APPROVED,
+                        })}
+                        disabled={isApprovalActionPending}
+                        className="rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-bold text-white transition hover:bg-emerald-700 disabled:opacity-50"
+                      >
+                        اعتماد هذا الطلب
+                      </button>
+                    </div>
                   </div>
                 </article>
               );
@@ -429,13 +572,20 @@ export default function ManagerPage() {
       </section>
 
       <section className="space-y-4">
-        <h2 className="text-lg font-black text-gray-900">فواتير شراء الخامات</h2>
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-black text-gray-900">فواتير شراء الخامات</h2>
+            <p className="mt-1 text-sm text-gray-500">اعتماد فاتورة يضيف الخامات ويحدّث رصيد المورد.</p>
+          </div>
+          <span className="rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700">{pendingInvoices.length} فاتورة</span>
+        </div>
       {isLoading ? (
         <div className="rounded-2xl bg-white p-8 text-center text-sm text-gray-500">جارٍ تحميل الفواتير...</div>
       ) : pendingInvoices.length ? (
         <div className="space-y-4">
           {pendingInvoices.map((invoice) => (
-            <article key={invoice.id} className="space-y-4 rounded-2xl border bg-white p-5 shadow-sm">
+            <article key={invoice.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+              <div className="space-y-4 border-r-4 border-blue-400 p-4 sm:p-5">
               <div className="flex flex-wrap items-start justify-between gap-3 border-b pb-3">
                 <div>
                   <h2 className="font-black text-gray-900">{invoice.invoice_number} — {invoice.supplier_name}</h2>
@@ -478,7 +628,7 @@ export default function ManagerPage() {
                   <button
                     type="button"
                     onClick={() => setRejectInvoice(invoice)}
-                    disabled={approvalMutation.isPending || rejectionMutation.isPending}
+                    disabled={isApprovalActionPending}
                     className="rounded-xl bg-red-50 px-4 py-2.5 text-xs font-bold text-red-700 disabled:opacity-50"
                   >
                     رفض
@@ -486,12 +636,13 @@ export default function ManagerPage() {
                   <button
                     type="button"
                     onClick={() => approvalMutation.mutate(invoice.id)}
-                    disabled={approvalMutation.isPending || rejectionMutation.isPending}
+                    disabled={isApprovalActionPending}
                     className="rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white disabled:opacity-50"
                   >
                     {approvalMutation.isPending ? 'جارٍ الاعتماد...' : 'اعتماد الفاتورة'}
                   </button>
                 </div>
+              </div>
               </div>
             </article>
           ))}

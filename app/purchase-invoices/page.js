@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../lib/pocketbase';
 import { isFactoryAdmin } from '../lib/deleted-records';
-import { requestCompoundOperation } from '../lib/approval-requests';
+import { getPendingDeletionActionKeys, requestCompoundOperation } from '../lib/approval-requests';
 import {
   isPurchaseInvoiceApproved,
   PURCHASE_INVOICE_APPROVED,
@@ -46,6 +46,13 @@ export default function PurchaseInvoicesPage() {
     queryKey: ['purchase_invoices'],
     queryFn: () => pb.collection('purchase_invoices').getFullList().catch(() => []),
   });
+  const { data: pendingDeletionKeys = [], isError: pendingDeletionLoadFailed } = useQuery({
+    queryKey: ['pending_manager_deletion_action_keys'],
+    queryFn: getPendingDeletionActionKeys,
+    refetchOnWindowFocus: true,
+    refetchInterval: 15000,
+  });
+  const pendingDeletionKeySet = new Set(pendingDeletionKeys);
 
   const { data: supplierTransactions = [] } = useQuery({
     queryKey: ['all_supplier_transactions'],
@@ -246,8 +253,10 @@ export default function PurchaseInvoicesPage() {
       queryClient.invalidateQueries({ queryKey: ['purchase_invoices'] });
       queryClient.invalidateQueries({ queryKey: ['khamat_moashe'] });
       queryClient.invalidateQueries({ queryKey: ['suppliers'] });
+      queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
+      queryClient.invalidateQueries({ queryKey: ['pending_manager_deletion_action_keys'] });
       setDeleteInvoice(null);
-      notify('تم حذف الفاتورة بنجاح.');
+      notify('تم إرسال طلب حذف فاتورة الشراء للمدير لاعتماده.');
     },
     onError: error => notify(`فشل الحذف: ${error.message}`, 'error'),
   });
@@ -297,15 +306,22 @@ export default function PurchaseInvoicesPage() {
           {message.text}
         </div>
       )}
+      {pendingDeletionLoadFailed && (
+        <div role="alert" className="rounded-2xl bg-amber-50 p-4 text-xs font-bold text-amber-800">
+          تعذر تحميل طلبات الحذف المعلقة؛ قد لا تظهر علامة الانتظار على الفواتير.
+        </div>
+      )}
 
       {deleteInvoice && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl p-6 max-w-sm w-full space-y-4">
             <h3 className="font-black">تأكيد حذف الفاتورة</h3>
-            <p className="text-xs text-gray-500">هل تريد حذف الفاتورة {deleteInvoice.invoice_number}؟</p>
+            <p className="text-xs text-gray-500">سيتم إرسال طلب حذف الفاتورة {deleteInvoice.invoice_number} للمدير لاعتماده، ولن يتغير المخزون أو رصيد المورد قبل الاعتماد.</p>
             <div className="flex gap-2">
-              <button onClick={() => setDeleteInvoice(null)} className="flex-1 bg-gray-100 p-3 rounded-xl text-xs font-bold">إلغاء</button>
-              <button onClick={() => deleteMutation.mutate(deleteInvoice)} className="flex-1 bg-red-600 text-white p-3 rounded-xl text-xs font-bold">حذف</button>
+              <button onClick={() => setDeleteInvoice(null)} disabled={deleteMutation.isPending} className="flex-1 bg-gray-100 p-3 rounded-xl text-xs font-bold disabled:opacity-50">إلغاء</button>
+              <button onClick={() => deleteMutation.mutate(deleteInvoice)} disabled={deleteMutation.isPending} className="flex-1 bg-red-600 text-white p-3 rounded-xl text-xs font-bold disabled:opacity-50">
+                {deleteMutation.isPending ? 'جاري إرسال الطلب...' : 'إرسال طلب الحذف'}
+              </button>
             </div>
           </div>
         </div>
@@ -445,7 +461,9 @@ export default function PurchaseInvoicesPage() {
                   <td className="p-3">{invoice.payment_type === 'credit' ? 'آجل' : 'كاش'}</td>
                   <td className="p-3 font-black text-blue-700">{money(invoice.total_amount)}</td>
                   <td className="p-3">
-                    {invoice.status === PURCHASE_INVOICE_PENDING ? (
+                    {pendingDeletionKeySet.has(`purchase_invoices/${invoice.id}`) ? (
+                      <span className="rounded-lg bg-orange-100 px-2 py-1 font-bold text-orange-800">طلب الحذف بانتظار الموافقة</span>
+                    ) : invoice.status === PURCHASE_INVOICE_PENDING ? (
                       <span className="rounded-lg bg-amber-100 px-2 py-1 font-bold text-amber-800">بانتظار اعتماد المدير</span>
                     ) : invoice.status === 'مرفوضة' ? (
                       <span className="rounded-lg bg-red-100 px-2 py-1 font-bold text-red-700">مرفوضة</span>
@@ -462,7 +480,13 @@ export default function PurchaseInvoicesPage() {
                         {isPurchaseInvoiceApproved(invoice) && (
                           <button onClick={() => editInvoice(invoice)} className="bg-amber-50 text-amber-700 px-2.5 py-1.5 rounded-lg font-bold">تعديل</button>
                         )}
-                        <button onClick={() => setDeleteInvoice(invoice)} className="bg-red-50 text-red-600 px-2.5 py-1.5 rounded-lg font-bold">حذف</button>
+                        <button
+                          onClick={() => setDeleteInvoice(invoice)}
+                          disabled={pendingDeletionKeySet.has(`purchase_invoices/${invoice.id}`)}
+                          className="bg-red-50 text-red-600 px-2.5 py-1.5 rounded-lg font-bold disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {pendingDeletionKeySet.has(`purchase_invoices/${invoice.id}`) ? 'بانتظار الموافقة' : 'حذف'}
+                        </button>
                       </>
                     )}
                   </td>

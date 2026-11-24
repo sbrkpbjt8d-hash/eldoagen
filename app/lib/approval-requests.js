@@ -25,6 +25,16 @@ export async function getPendingReviewActionKeys() {
       .map((action) => `${action.collection}/${action.id}`));
 }
 
+export async function getPendingDeletionActionKeys() {
+  const records = await pb.collection(APPROVAL_REQUEST_COLLECTION).getFullList({ sort: '-created' });
+  return records
+    .filter((record) => record.payload?.status === APPROVAL_PENDING
+      && record.payload?.execution_mode === 'on_approval')
+    .flatMap((record) => (record.payload?.request_data?.actions || [])
+      .filter((action) => action.type === 'delete' && action.id)
+      .map((action) => `${action.collection}/${action.id}`));
+}
+
 async function createApprovalRequest(request) {
   return pb.collection(APPROVAL_REQUEST_COLLECTION).create({ payload: request });
 }
