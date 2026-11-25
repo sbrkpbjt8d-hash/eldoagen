@@ -1,4 +1,5 @@
 import { pb } from './pocketbase';
+import { archiveAndDeleteRecord, createDeletedRecordArchive } from './deleted-records';
 
 export const APPROVAL_REQUEST_COLLECTION = 'manager_approvals';
 export const APPROVAL_PENDING = 'pending';
@@ -38,7 +39,13 @@ function getPendingRequestTargetKeys(requests) {
 }
 
 export async function getPendingReviewActionKeys() {
-  const records = await pb.collection(APPROVAL_REQUEST_COLLECTION).getFullList({ sort: '-created' });
+  let records = [];
+  try {
+    records = await pb.collection(APPROVAL_REQUEST_COLLECTION).getFullList({ sort: '-created' });
+  } catch (error) {
+    if ([403, 404].includes(error?.status)) return [];
+    throw error;
+  }
   return records
     .filter((record) => record.payload?.execution_mode === 'immediate'
       && record.payload?.status === APPROVAL_PENDING)
@@ -48,7 +55,13 @@ export async function getPendingReviewActionKeys() {
 }
 
 export async function getPendingDeletionActionKeys() {
-  const records = await pb.collection(APPROVAL_REQUEST_COLLECTION).getFullList({ sort: '-created' });
+  let records = [];
+  try {
+    records = await pb.collection(APPROVAL_REQUEST_COLLECTION).getFullList({ sort: '-created' });
+  } catch (error) {
+    if ([403, 404].includes(error?.status)) return [];
+    throw error;
+  }
   return records
     .filter((record) => record.payload?.status === APPROVAL_PENDING
       && record.payload?.execution_mode === 'on_approval')
@@ -81,9 +94,7 @@ export async function requestRecordUpdate(collectionName, recordId, changes, rec
 }
 
 export async function requestRecordDeletion(collectionName, recordId, recordLabel) {
-  const record = await pb.collection(collectionName).getOne(recordId);
-  await pb.collection(collectionName).delete(recordId);
-  return record;
+  return archiveAndDeleteRecord(collectionName, recordId, recordLabel);
 }
 
 export async function requestSettlement({
@@ -153,7 +164,7 @@ export async function requestCompoundOperation(actions, recordLabel, options = {
         rejection_snapshots: {},
         compensation_actions: [],
       },
-    }, { directDelete: true });
+    });
   }
 
   const rejectionSnapshots = {};
@@ -245,7 +256,7 @@ export async function executeCompoundOperation(actions) {
       actions: validatedActions,
       snapshots,
     },
-  }, { directDelete: true });
+  });
 }
 
 async function ensureRecordHasNotChanged(request) {
@@ -258,22 +269,17 @@ async function ensureRecordHasNotChanged(request) {
 }
 
 async function deleteWithArchive(request, currentRecord) {
-  const recordData = Object.fromEntries(
-    Object.entries(currentRecord).filter(([field]) => !SYSTEM_FIELDS.has(field)),
+  const archivedRecordId = await createDeletedRecordArchive(
+    request.collection_name,
+    currentRecord,
+    request.record_label,
   );
-  const archivedRecord = await pb.collection('deleted_records').create({
-    collection_name: request.collection_name,
-    record_id: currentRecord.id,
-    record_data: recordData,
-    display_name: request.record_label || recordData.name || recordData.title || currentRecord.id,
-    deleted_by: currentUserLabel(),
-  });
 
   try {
     await pb.collection(request.collection_name).delete(currentRecord.id);
   } catch (deleteError) {
     try {
-      await pb.collection('deleted_records').delete(archivedRecord.id);
+      await pb.collection('deleted_records').delete(archivedRecordId);
     } catch (archiveCleanupError) {
       throw new Error(
         `فشل حذف السجل بعد حفظ نسخة في المحذوفات، وتعذر تنظيف النسخة: ${archiveCleanupError.message}`,
@@ -282,7 +288,7 @@ async function deleteWithArchive(request, currentRecord) {
     }
     throw deleteError;
   }
-  return archivedRecord.id;
+  return archivedRecordId;
 }
 
 function getRestorableRecordData(record) {
@@ -435,7 +441,6 @@ async function applyCompensationActions(actions = []) {
 
 async function applyCompoundApproval(request, options = {}) {
   const { actions = [], snapshots = {} } = request.request_data || {};
-  const directDelete = Boolean(options.directDelete);
   const appliedActions = [];
   const preparedActions = [];
   const completedActions = actions.map((action) => ({ ...action }));
@@ -511,16 +516,11 @@ async function applyCompoundApproval(request, options = {}) {
         });
       } else if (action.type === 'delete') {
         const currentRecord = await pb.collection(action.collection).getOne(action.id);
-        let archiveId = null;
-        if (directDelete) {
-          await pb.collection(action.collection).delete(action.id);
-        } else {
-          archiveId = await deleteWithArchive({
-            collection_name: action.collection,
-            target_id: action.id,
-            record_label: action.record_label || request.record_label,
-          }, currentRecord);
-        }
+        const archiveId = await deleteWithArchive({
+          collection_name: action.collection,
+          target_id: action.id,
+          record_label: action.record_label || request.record_label,
+        }, currentRecord);
         appliedActions.push({
           type: 'delete',
           collection: action.collection,

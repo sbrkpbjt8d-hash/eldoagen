@@ -49,11 +49,30 @@ export async function archiveAndDeleteRecord(collectionName, recordId, displayNa
   if (!ARCHIVABLE_COLLECTIONS.has(collectionName)) {
     throw new Error(`أرشفة الحذف غير مفعلة للمجموعة ${collectionName}`);
   }
-  if (!isFactoryAdmin()) {
-    throw new Error('أرشفة المحذوفات متاحة للأدمن فقط.');
-  }
 
   const record = await pb.collection(collectionName).getOne(recordId);
+  const archivedRecordId = await createDeletedRecordArchive(collectionName, record, displayName);
+
+  try {
+    return await pb.collection(collectionName).delete(recordId);
+  } catch (deleteError) {
+    try {
+      await pb.collection('deleted_records').delete(archivedRecordId);
+    } catch (archiveCleanupError) {
+      throw new Error(
+        `فشل حذف السجل بعد حفظ نسخة في المحذوفات، وتعذر تنظيف النسخة: ${archiveCleanupError.message}`,
+        { cause: deleteError },
+      );
+    }
+    throw deleteError;
+  }
+}
+
+export async function createDeletedRecordArchive(collectionName, record, displayName) {
+  if (!ARCHIVABLE_COLLECTIONS.has(collectionName)) {
+    throw new Error(`أرشفة الحذف غير مفعلة للمجموعة ${collectionName}`);
+  }
+
   const recordData = Object.fromEntries(
     Object.entries(record).filter(([field]) => !SYSTEM_FIELDS.has(field)),
   );
@@ -64,20 +83,7 @@ export async function archiveAndDeleteRecord(collectionName, recordId, displayNa
     display_name: displayName || getDeletedRecordLabel(recordData),
     deleted_by: pb.authStore.model?.email || pb.authStore.model?.name || 'مسؤول النظام',
   });
-
-  try {
-    return await pb.collection(collectionName).delete(recordId);
-  } catch (deleteError) {
-    try {
-      await pb.collection('deleted_records').delete(archivedRecord.id);
-    } catch (archiveCleanupError) {
-      throw new Error(
-        `فشل حذف السجل بعد حفظ نسخة في المحذوفات، وتعذر تنظيف النسخة: ${archiveCleanupError.message}`,
-        { cause: deleteError },
-      );
-    }
-    throw deleteError;
-  }
+  return archivedRecord.id;
 }
 
 export async function restoreDeletedRecord(archivedRecord) {
