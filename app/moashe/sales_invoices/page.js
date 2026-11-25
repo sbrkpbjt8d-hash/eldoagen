@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
 import { addQuantities, roundQuantity } from '../../lib/quantity';
-import { requestCompoundOperation } from '../../lib/approval-requests';
+import { getPendingDeletionActionKeys, requestCompoundOperation } from '../../lib/approval-requests';
 import { useReactToPrint } from 'react-to-print';
 const currentUserName = localStorage.getItem('userName') || 'مسؤول النظام';
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
@@ -144,6 +144,14 @@ export default function SalesInvoicesPage() {
       return await pb.collection('sales_invoices').getFullList({ sort: '-created' }).catch(() => []);
     },
   });
+
+  const { data: pendingDeletionKeys = [], isError: pendingDeletionLoadFailed } = useQuery({
+    queryKey: ['pending_manager_deletion_action_keys'],
+    queryFn: getPendingDeletionActionKeys,
+    refetchOnWindowFocus: true,
+    refetchInterval: 15000,
+  });
+  const pendingDeletionKeySet = new Set(pendingDeletionKeys);
 
   const { data: invoiceLogs = [], isLoading: loadingLogs } = useQuery({
     queryKey: ['invoices_logs'],
@@ -662,8 +670,11 @@ export default function SalesInvoicesPage() {
     }
   });
 
-const deleteInvoiceMutation = useMutation({
+  const deleteInvoiceMutation = useMutation({
     mutationFn: async (invoice) => {
+      if (pendingDeletionKeySet.has(`sales_invoices/${invoice.id}`)) {
+        throw new Error('يوجد بالفعل طلب حذف لهذه الفاتورة بانتظار اعتماد المدير.');
+      }
       const itemsList = Array.isArray(invoice.items) ? invoice.items : [];
       const returnedQuantities = getReturnedQuantities(invoice);
       const itemsToRestore = itemsList.map((item) => ({
@@ -792,7 +803,9 @@ const deleteInvoiceMutation = useMutation({
       queryClient.invalidateQueries({ queryKey: ['customers'] });
       queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
       queryClient.invalidateQueries({ queryKey: ['invoices_logs'] });
-      showToast('🗑️ تم حذف الفاتورة واسترجاع المخزون وتحديث حساب العميل وتسجيل حركة الحذف بنجاح.');
+      queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
+      queryClient.invalidateQueries({ queryKey: ['pending_manager_deletion_action_keys'] });
+      showToast('تم إرسال طلب حذف الفاتورة للمدير؛ ستظل ظاهرة دون تغيير حتى تتم الموافقة.');
     },
     onError: (error) => {
       showToast('❌ فشل الحذف: ' + error.message, 'error');
@@ -1017,6 +1030,11 @@ const deleteInvoiceMutation = useMutation({
           toast.type === 'error' ? 'bg-red-600' : 'bg-emerald-600'
         }`}>
           <span>{toast.message}</span>
+        </div>
+      )}
+      {pendingDeletionLoadFailed && (
+        <div role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-xs font-bold text-amber-800">
+          تعذر تحميل طلبات الحذف المعلقة؛ قد لا تظهر علامة الانتظار على الفواتير.
         </div>
       )}
 
@@ -1578,6 +1596,7 @@ const deleteInvoiceMutation = useMutation({
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {filteredInvoices.map((inv) => {
+                  const hasPendingDeletion = pendingDeletionKeySet.has(`sales_invoices/${inv.id}`);
                   const isReturned = isInvoiceFullyReturned(inv);
                   const isPartiallyReturned = inv.status === 'مرتجع جزئي';
                   const isPendingReview = inv.status === 'بانتظار اعتماد المراجع';
@@ -1594,7 +1613,12 @@ const deleteInvoiceMutation = useMutation({
                   return (
                     <tr key={inv.id} className="hover:bg-gray-50/50 transition">
                       <td className="p-3 font-bold text-gray-800">{inv.invoice_number || inv.id.slice(-6)}</td>
-                      <td className="p-3 text-gray-700">{inv.customer_name}</td>
+                      <td className="p-3 text-gray-700">
+                        {inv.customer_name}
+                        {hasPendingDeletion && (
+                          <span className="mt-1 block text-[10px] font-bold text-amber-700">طلب الحذف بانتظار موافقة المدير</span>
+                        )}
+                      </td>
                       <td className="p-3 font-bold" style={{ color: previousBalance > 0 ? '#dc2626' : '#059669' }}>
                         {previousBalance > 0 ? '💳 ' + previousBalance.toLocaleString() + ' جنيه' : 'نظيف'}
                       </td>
@@ -1619,18 +1643,18 @@ const deleteInvoiceMutation = useMutation({
                         </button>
                         <button
                           onClick={() => handleEditClick(inv)}
-                          disabled={isClosed}
-                          className="px-2.5 py-1 bg-amber-50 text-amber-600 hover:bg-amber-100 rounded-xl font-bold transition"
+                          disabled={isClosed || hasPendingDeletion}
+                          className="px-2.5 py-1 bg-amber-50 text-amber-600 hover:bg-amber-100 rounded-xl font-bold transition disabled:opacity-50"
                         >
                           تعديل
                         </button>
                         <button
-                          disabled={isClosed}
+                          disabled={isClosed || hasPendingDeletion || deleteInvoiceMutation.isPending}
                           onClick={() => {
                             setConfirmModal({
                               show: true,
                               title: 'تأكيد الحذف',
-                              message: `هل أنت متأكد من حذف فاتورة العميل (${inv.customer_name})؟`,
+                              message: `سيتم إرسال طلب حذف فاتورة العميل (${inv.customer_name}) للمدير. ستظل الفاتورة والمخزون وحساب العميل كما هي حتى اعتماد الطلب.`,
                               onConfirm: () => {
                                 setConfirmModal({ show: false });
                                 deleteInvoiceMutation.mutate(inv);
@@ -1639,7 +1663,7 @@ const deleteInvoiceMutation = useMutation({
                           }}
                           className="px-2.5 py-1 bg-red-50 text-red-600 hover:bg-red-100 rounded-xl font-bold transition disabled:opacity-50"
                         >
-                          حذف
+                          {hasPendingDeletion ? 'بانتظار الموافقة' : 'حذف'}
                         </button>
                       </td>
                     </tr>
