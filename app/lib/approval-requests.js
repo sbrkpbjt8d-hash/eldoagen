@@ -82,15 +82,13 @@ export async function requestRecordUpdate(collectionName, recordId, changes, rec
 
 export async function requestRecordDeletion(collectionName, recordId, recordLabel) {
   const record = await pb.collection(collectionName).getOne(recordId);
-  return createApprovalRequest({
+  await deleteWithArchive({
     collection_name: collectionName,
     operation: 'delete',
     target_id: recordId,
     record_label: recordLabel || record.name || record.title || record.invoice_number || record.id,
-    requested_by: currentUserLabel(),
-    status: APPROVAL_PENDING,
-    request_data: { original_updated: record.updated || '', original_record: record },
-  });
+  }, record);
+  return record;
 }
 
 export async function requestSettlement({
@@ -147,6 +145,22 @@ export async function requestCompoundOperation(actions, recordLabel, options = {
 
   const snapshots = {};
   const validatedActions = await validateCompoundActions(actions, snapshots);
+
+  if (validatedActions.some((action) => action.type === 'delete')) {
+    return applyCompoundApproval({
+      collection_name: 'multiple',
+      operation: 'compound',
+      record_label: recordLabel || 'حذف مباشر',
+      request_data: {
+        actions: validatedActions,
+        snapshots,
+        rejection_actions: [],
+        rejection_snapshots: {},
+        compensation_actions: [],
+      },
+    });
+  }
+
   const rejectionSnapshots = {};
   const validatedRejectionActions = options.rejectionActions?.length
     ? await validateCompoundActions(options.rejectionActions, rejectionSnapshots)

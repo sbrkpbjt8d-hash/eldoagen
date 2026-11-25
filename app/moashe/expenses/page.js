@@ -162,7 +162,8 @@ export default function ExpensesPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
-      showToast('تم إرسال طلب حذف نوع المصروف للمدير.');
+      queryClient.invalidateQueries({ queryKey: ['expense_categories'] });
+      showToast('تم حذف نوع المصروف بنجاح.');
       setDeleteConfirmModal({ show: false, type: '', data: null });
     },
     onError: (error) => {

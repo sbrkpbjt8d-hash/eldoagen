@@ -135,7 +135,7 @@ export default function ProductsPage() {
     mutationFn: (id) => requestRecordDeletion('khamat_moashe', id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
-      toast.success('تم إرسال طلب حذف الصنف للمدير.');
+      toast.success('تم حذف الصنف بنجاح.');
       setConfirmModal({ isOpen: false, title: '', message: '', onConfirm: null });
     },
     onError: (error) => {
@@ -148,7 +148,7 @@ export default function ProductsPage() {
     mutationFn: (adjustmentId) => requestRecordDeletion('material_adjustments', adjustmentId, 'تسوية خامة'),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
-      toast.success('تم إرسال طلب حذف التسوية للمدير.');
+      toast.success('تم حذف التسوية بنجاح.');
       setConfirmModal({ isOpen: false, title: '', message: '', onConfirm: null });
     },
     onError: (error) => {

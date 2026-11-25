@@ -307,7 +307,7 @@ export default function ProductionOrdersPage() {
       queryClient.invalidateQueries({ queryKey: ['invoices_logs_products_stock_history'] });
       queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
       queryClient.invalidateQueries({ queryKey: ['pending_manager_deletion_action_keys'] });
-      toast.success('تم إرسال طلب حذف أمر التصنيع للمدير لاعتماده.');
+      toast.success('تم حذف أمر التصنيع وإرجاع/تعديل المخزون بنجاح.');
       setConfirmModal({ isOpen: false, title: '', message: '', onConfirm: null });
     },
     onError: (error) => {
@@ -391,7 +391,7 @@ export default function ProductionOrdersPage() {
     setConfirmModal({
       isOpen: true,
       title: 'تأكيد الحذف والإرجاع',
-      message: `هل تريد إرسال طلب حذف أمر التصنيع للمنتج "${order.product_name}" للمدير؟ سيتم إرجاع الخامات وخصم المنتجات من المخزن بعد الاعتماد.`,
+      message: `هل تريد حذف أمر التصنيع للمنتج "${order.product_name}" وإرجاع الخامات وخصم المنتجات من المخزون مباشرةً؟`,
       onConfirm: () => deleteProductionMutation.mutate(order)
     });
   };
@@ -656,11 +656,6 @@ export default function ProductionOrdersPage() {
                   <div>
                     <h3 className="text-base font-black text-gray-900">{order.product_name}</h3>
                     <span className="text-xs text-gray-500">الحالة: <strong className="text-emerald-600">{order.status || 'مكتمل'}</strong></span>
-                    {pendingDeletionKeySet.has(`production_orders/${order.id}`) && (
-                      <span className="mt-1 inline-block rounded-lg bg-orange-100 px-2 py-1 text-[10px] font-bold text-orange-800">
-                        طلب الحذف بانتظار موافقة المدير
-                      </span>
-                    )}
                     <span className="block text-[10px] text-gray-400 mt-1">بواسطة: {order.actor_name || 'غير معروف'}</span>
                   </div>
                   <div className="flex items-center gap-2">
@@ -675,8 +670,8 @@ export default function ProductionOrdersPage() {
                     <button
                       onClick={() => handleDeleteOrder(order)}
                       className={`border p-2.5 rounded-xl transition text-xs font-bold ${canRequestChanges ? 'bg-red-50 hover:bg-red-100 text-red-600 border-red-200' : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'}`}
-                      title={pendingDeletionKeySet.has(`production_orders/${order.id}`) ? 'طلب الحذف بانتظار موافقة المدير' : canRequestChanges ? 'إرسال طلب حذف الأمر' : 'سجل الدخول لطلب الحذف'}
-                      disabled={!canRequestChanges || deleteProductionMutation.isPending || pendingDeletionKeySet.has(`production_orders/${order.id}`)}
+                      title={canRequestChanges ? 'حذف الأمر مباشرةً' : 'سجل الدخول للحذف'}
+                      disabled={!canRequestChanges || deleteProductionMutation.isPending}
                     >
                       🗑️
                     </button>

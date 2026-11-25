@@ -676,9 +676,6 @@ export default function SalesInvoicesPage() {
 
   const deleteInvoiceMutation = useMutation({
     mutationFn: async (invoice) => {
-      if (pendingDeletionKeySet.has(`sales_invoices/${invoice.id}`)) {
-        throw new Error('يوجد بالفعل طلب حذف لهذه الفاتورة بانتظار اعتماد المدير.');
-      }
       const itemsList = Array.isArray(invoice.items) ? invoice.items : [];
       const returnedQuantities = getReturnedQuantities(invoice);
       const itemsToRestore = itemsList.map((item) => ({
@@ -809,7 +806,7 @@ export default function SalesInvoicesPage() {
       queryClient.invalidateQueries({ queryKey: ['invoices_logs'] });
       queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
       queryClient.invalidateQueries({ queryKey: ['pending_manager_deletion_action_keys'] });
-      showToast('تم إرسال طلب حذف الفاتورة للمدير؛ ستظل ظاهرة دون تغيير حتى تتم الموافقة.');
+      showToast('تم حذف الفاتورة وإرجاع أثرها إلى المخزون والحسابات بنجاح.');
     },
     onError: (error) => {
       showToast('❌ فشل الحذف: ' + error.message, 'error');
@@ -1600,7 +1597,7 @@ export default function SalesInvoicesPage() {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {filteredInvoices.map((inv) => {
-                  const hasPendingDeletion = pendingDeletionKeySet.has(`sales_invoices/${inv.id}`);
+                  const hasPendingDeletion = false;
                   const isReturned = isInvoiceFullyReturned(inv);
                   const isPartiallyReturned = inv.status === 'مرتجع جزئي';
                   const isPendingReview = inv.status === 'بانتظار اعتماد المراجع';
@@ -1619,9 +1616,6 @@ export default function SalesInvoicesPage() {
                       <td className="p-3 font-bold text-gray-800">{inv.invoice_number || inv.id.slice(-6)}</td>
                       <td className="p-3 text-gray-700">
                         {inv.customer_name}
-                        {hasPendingDeletion && (
-                          <span className="mt-1 block text-[10px] font-bold text-amber-700">طلب الحذف بانتظار موافقة المدير</span>
-                        )}
                       </td>
                       <td className="p-3 font-bold" style={{ color: previousBalance > 0 ? '#dc2626' : '#059669' }}>
                         {previousBalance > 0 ? '💳 ' + previousBalance.toLocaleString() + ' جنيه' : 'نظيف'}
@@ -1658,7 +1652,7 @@ export default function SalesInvoicesPage() {
                             setConfirmModal({
                               show: true,
                               title: 'تأكيد الحذف',
-                              message: `سيتم إرسال طلب حذف فاتورة العميل (${inv.customer_name}) للمدير. ستظل الفاتورة والمخزون وحساب العميل كما هي حتى اعتماد الطلب.`,
+                              message: `هل تريد حذف فاتورة العميل (${inv.customer_name}) وإرجاع أثرها إلى المخزون والحسابات مباشرةً؟`,
                               onConfirm: () => {
                                 setConfirmModal({ show: false });
                                 deleteInvoiceMutation.mutate(inv);
@@ -1667,7 +1661,7 @@ export default function SalesInvoicesPage() {
                           }}
                           className="px-2.5 py-1 bg-red-50 text-red-600 hover:bg-red-100 rounded-xl font-bold transition disabled:opacity-50"
                         >
-                          {hasPendingDeletion ? 'بانتظار الموافقة' : 'حذف'}
+                          حذف
                         </button>
                       </td>
                     </tr>

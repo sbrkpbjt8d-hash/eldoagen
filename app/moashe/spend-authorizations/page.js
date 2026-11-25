@@ -116,7 +116,7 @@ export default function SpendAuthorizationPage() {
         authorization.recipient_name || authorization.employee_name || 'إذن صرف',
       );
       setPendingDeleteAuthorization(null);
-      setFeedback({ type: 'success', message: 'تم إرسال طلب حذف إذن الصرف للمدير.' });
+      setFeedback({ type: 'success', message: 'تم حذف إذن الصرف بنجاح.' });
       await queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
     } catch (deleteError) {
       setFeedback({

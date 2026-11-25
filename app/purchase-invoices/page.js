@@ -256,7 +256,7 @@ export default function PurchaseInvoicesPage() {
       queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
       queryClient.invalidateQueries({ queryKey: ['pending_manager_deletion_action_keys'] });
       setDeleteInvoice(null);
-      notify('تم إرسال طلب حذف فاتورة الشراء للمدير لاعتماده.');
+      notify('تم حذف فاتورة الشراء وإرجاع أثرها إلى المخزون ورصيد المورد بنجاح.');
     },
     onError: error => notify(`فشل الحذف: ${error.message}`, 'error'),
   });
@@ -316,7 +316,7 @@ export default function PurchaseInvoicesPage() {
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl p-6 max-w-sm w-full space-y-4">
             <h3 className="font-black">تأكيد حذف الفاتورة</h3>
-            <p className="text-xs text-gray-500">سيتم إرسال طلب حذف الفاتورة {deleteInvoice.invoice_number} للمدير لاعتماده، ولن يتغير المخزون أو رصيد المورد قبل الاعتماد.</p>
+            <p className="text-xs text-gray-500">سيتم حذف الفاتورة {deleteInvoice.invoice_number} وإرجاع أثرها إلى المخزون ورصيد المورد مباشرةً.</p>
             <div className="flex gap-2">
               <button onClick={() => setDeleteInvoice(null)} disabled={deleteMutation.isPending} className="flex-1 bg-gray-100 p-3 rounded-xl text-xs font-bold disabled:opacity-50">إلغاء</button>
               <button onClick={() => deleteMutation.mutate(deleteInvoice)} disabled={deleteMutation.isPending} className="flex-1 bg-red-600 text-white p-3 rounded-xl text-xs font-bold disabled:opacity-50">
@@ -461,9 +461,7 @@ export default function PurchaseInvoicesPage() {
                   <td className="p-3">{invoice.payment_type === 'credit' ? 'آجل' : 'كاش'}</td>
                   <td className="p-3 font-black text-blue-700">{money(invoice.total_amount)}</td>
                   <td className="p-3">
-                    {pendingDeletionKeySet.has(`purchase_invoices/${invoice.id}`) ? (
-                      <span className="rounded-lg bg-orange-100 px-2 py-1 font-bold text-orange-800">طلب الحذف بانتظار الموافقة</span>
-                    ) : invoice.status === PURCHASE_INVOICE_PENDING ? (
+                    {invoice.status === PURCHASE_INVOICE_PENDING ? (
                       <span className="rounded-lg bg-amber-100 px-2 py-1 font-bold text-amber-800">بانتظار اعتماد المدير</span>
                     ) : invoice.status === 'مرفوضة' ? (
                       <span className="rounded-lg bg-red-100 px-2 py-1 font-bold text-red-700">مرفوضة</span>
@@ -482,10 +480,9 @@ export default function PurchaseInvoicesPage() {
                         )}
                         <button
                           onClick={() => setDeleteInvoice(invoice)}
-                          disabled={pendingDeletionKeySet.has(`purchase_invoices/${invoice.id}`)}
                           className="bg-red-50 text-red-600 px-2.5 py-1.5 rounded-lg font-bold disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          {pendingDeletionKeySet.has(`purchase_invoices/${invoice.id}`) ? 'بانتظار الموافقة' : 'حذف'}
+                          حذف
                         </button>
                       </>
                     )}

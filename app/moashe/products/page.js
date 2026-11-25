@@ -244,7 +244,7 @@ export default function ProductsPage() {
       queryClient.invalidateQueries({ queryKey: ['products_recipes'] });
       queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
       queryClient.invalidateQueries({ queryKey: ['pending_manager_deletion_action_keys'] });
-      toast.success('تم إرسال طلب حذف المنتج للمدير لاعتماده.');
+      toast.success('تم حذف المنتج بنجاح.');
       setConfirmModal({ isOpen: false, title: '', message: '', onConfirm: null });
     },
     onError: (error) => {
@@ -583,11 +583,6 @@ export default function ProductsPage() {
                     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
                       <h3 className="text-base font-black text-gray-900">{prodName}</h3>
                       <span className="text-[10px] text-gray-400">بواسطة: {firstRow.actor_name || 'غير معروف'}</span>
-                      {hasPendingDeletion && (
-                        <span className="rounded-lg bg-orange-100 px-2 py-1 text-[10px] font-bold text-orange-800">
-                          طلب الحذف بانتظار موافقة المدير
-                        </span>
-                      )}
                       <div className="flex items-center gap-2">
                         <button
                           onClick={() => {
@@ -633,10 +628,10 @@ export default function ProductsPage() {
                         )}
                         <button
                           onClick={() => handleDeleteProduct(prodName)}
-                          disabled={deleteProductMutation.isPending || hasPendingDeletion}
+                          disabled={deleteProductMutation.isPending}
                           className="text-red-500 hover:text-red-700 text-xs font-bold bg-red-50 px-2.5 py-1 rounded-lg border border-red-100 transition disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          {hasPendingDeletion ? 'بانتظار الموافقة' : '🗑️ حذف المنتج'}
+                          🗑️ حذف المنتج
                         </button>
                       </div>
                     </div>

@@ -149,17 +149,13 @@ export default function SuppliersPage() {
 
 
   const deleteMutation = useMutation({
-    mutationFn: (id) => {
-      if (pendingDeletionKeySet.has(`suppliers/${id}`)) {
-        throw new Error('يوجد بالفعل طلب حذف لهذا المورد بانتظار الموافقة.');
-      }
-      return requestRecordDeletion('suppliers', id);
-    },
+    mutationFn: (id) => requestRecordDeletion('suppliers', id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
       queryClient.invalidateQueries({ queryKey: ['pending_supplier_deletion_action_keys'] });
+      queryClient.invalidateQueries({ queryKey: ['suppliers'] });
       setDeleteId(null);
-      showFeedback('تم إرسال طلب حذف المورد للمدير.');
+      showFeedback('تم حذف المورد بنجاح.');
     },
     onError: (error) => showFeedback(`فشل حذف المورد: ${error.message}`, 'error'),
   });
@@ -808,7 +804,6 @@ const getSupplierDerivedBalance = (supplierId) => {
             <tbody className="divide-y">
               {filteredSuppliers.map((supplier) => {
                 const derivedBalance = getSupplierDerivedBalance(supplier.id);
-                const hasPendingDeletion = pendingDeletionKeySet.has(`suppliers/${supplier.id}`);
 
                 return (
                   <tr key={supplier.id} className="hover:bg-gray-50">
@@ -823,10 +818,9 @@ const getSupplierDerivedBalance = (supplierId) => {
                       <button onClick={() => startEdit(supplier)} className="bg-purple-50 text-purple-700 px-2.5 py-1.5 rounded-lg font-bold">تعديل</button>
                       <button
                         onClick={() => setDeleteId(supplier.id)}
-                        disabled={hasPendingDeletion}
-                        className="bg-red-50 text-red-600 px-2.5 py-1.5 rounded-lg font-bold disabled:cursor-not-allowed disabled:opacity-70"
+                        className="bg-red-50 text-red-600 px-2.5 py-1.5 rounded-lg font-bold"
                       >
-                        {hasPendingDeletion ? 'بانتظار الموافقة' : 'حذف'}
+                        حذف
                       </button>
                     </td>
                   </tr>

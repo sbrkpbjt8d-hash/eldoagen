@@ -766,16 +766,12 @@ const combinedStatement = [...statementWithBalance].reverse();
 
   // حذف عميل
   const deleteClientMutation = useMutation({
-    mutationFn: (id) => {
-      if (pendingDeletionKeySet.has(`clientsmoashe/${id}`)) {
-        throw new Error('يوجد بالفعل طلب حذف لهذا العميل بانتظار الموافقة.');
-      }
-      return requestRecordDeletion('clientsmoashe', id);
-    },
+    mutationFn: (id) => requestRecordDeletion('clientsmoashe', id),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
       await queryClient.invalidateQueries({ queryKey: ['pending_client_deletion_action_keys'] });
-      showFeedback('تم إرسال طلب حذف العميل للمدير.', 'success');
+      await queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
+      showFeedback('تم حذف العميل بنجاح.', 'success');
       setDeleteModal({ isOpen: false, clientId: null });
     },
     onError: () => {
@@ -1447,7 +1443,6 @@ const combinedStatement = [...statementWithBalance].reverse();
             <tbody className="divide-y text-sm">
               {filteredClients.map((client) => {
                 const { lastPayment, lastInvoice, lastActivityDate, isOverdue } = getClientCollectionInfo(client);
-                const hasPendingDeletion = pendingDeletionKeySet.has(`clientsmoashe/${client.id}`);
 
                 const lastPaymentDate = lastPayment ? formatLastDate(lastPayment.created || lastPayment.date) : 'لا يوجد';
                 const lastInvoiceDate = lastInvoice ? formatLastDate(lastInvoice.created) : 'لا يوجد';
@@ -1524,10 +1519,9 @@ const combinedStatement = [...statementWithBalance].reverse();
                         </button>
                         <button
                           onClick={() => setDeleteModal({ isOpen: true, clientId: client.id })}
-                          disabled={hasPendingDeletion}
-                          className="bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 px-2.5 py-1 rounded-lg text-xs font-bold transition disabled:cursor-not-allowed disabled:opacity-70"
+                          className="bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 px-2.5 py-1 rounded-lg text-xs font-bold transition"
                         >
-                          {hasPendingDeletion ? 'بانتظار الموافقة' : '🗑️ حذف'}
+                          🗑️ حذف
                         </button>
                       </div>
                     </td>
