@@ -7,7 +7,6 @@ export const APPROVAL_REJECTED = 'rejected';
 
 const SYSTEM_FIELDS = new Set(['collectionId', 'collectionName', 'created', 'expand', 'updated']);
 const BALANCE_COLLECTIONS = new Set(['banks', 'clientsmoashe', 'suppliers', 'treasury']);
-const activeRequestTargetKeys = new Set();
 
 const currentUserLabel = () => (
   pb.authStore.model?.name
@@ -62,29 +61,10 @@ async function createApprovalRequest(request) {
   const userId = pb.authStore.model?.id;
   if (!userId) throw new Error('يجب تسجيل الدخول لإرسال طلب الاعتماد.');
 
-  const targetKeys = getRequestTargetKeys(request);
-  if (targetKeys.some((key) => activeRequestTargetKeys.has(key))) {
-    throw new Error('تم إرسال طلب بالفعل لهذا السجل، وهو بانتظار الموافقة.');
-  }
-
-  targetKeys.forEach((key) => activeRequestTargetKeys.add(key));
-  try {
-    const existingRequests = await pb.collection(APPROVAL_REQUEST_COLLECTION).getFullList({
-      filter: `requested_by_id = "${userId}"`,
-      sort: '-created',
-    });
-    const pendingKeys = new Set(getPendingRequestTargetKeys(existingRequests));
-    if (targetKeys.some((key) => pendingKeys.has(key))) {
-      throw new Error('تم إرسال طلب بالفعل لهذا السجل، وهو بانتظار الموافقة.');
-    }
-
-    return await pb.collection(APPROVAL_REQUEST_COLLECTION).create({
-      requested_by_id: userId,
-      payload: { ...request, requested_by_id: userId },
-    });
-  } finally {
-    targetKeys.forEach((key) => activeRequestTargetKeys.delete(key));
-  }
+  return await pb.collection(APPROVAL_REQUEST_COLLECTION).create({
+    requested_by_id: userId,
+    payload: { ...request, requested_by_id: userId },
+  });
 }
 
 export async function requestRecordUpdate(collectionName, recordId, changes, recordLabel) {
