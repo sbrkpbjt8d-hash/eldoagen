@@ -7,6 +7,7 @@ export const APPROVAL_REJECTED = 'rejected';
 
 const SYSTEM_FIELDS = new Set(['collectionId', 'collectionName', 'created', 'expand', 'updated']);
 const BALANCE_COLLECTIONS = new Set(['banks', 'clientsmoashe', 'suppliers', 'treasury']);
+const activeRequestTargetKeys = new Set();
 
 const currentUserLabel = () => (
   pb.authStore.model?.name
@@ -14,6 +15,28 @@ const currentUserLabel = () => (
   || pb.authStore.model?.username
   || 'مستخدم'
 );
+
+function getRequestTargetKeys(request) {
+  const actions = request.operation === 'compound'
+    ? request.request_data?.actions || []
+    : request.target_id
+      ? [{ collection: request.collection_name, id: request.target_id }]
+      : [];
+  const keys = actions
+    .filter((action) => action.collection && action.id)
+    .map((action) => `${action.collection}/${action.id}`);
+
+  if (keys.length) return keys;
+  if (request.operation !== 'compound') return [];
+
+  return [`new:${request.record_label}:${JSON.stringify(request.request_data?.actions || [])}`];
+}
+
+function getPendingRequestTargetKeys(requests) {
+  return requests
+    .filter((record) => [APPROVAL_PENDING, 'processing'].includes(record.payload?.status))
+    .flatMap((record) => getRequestTargetKeys(record.payload));
+}
 
 export async function getPendingReviewActionKeys() {
   const records = await pb.collection(APPROVAL_REQUEST_COLLECTION).getFullList({ sort: '-created' });
@@ -36,7 +59,32 @@ export async function getPendingDeletionActionKeys() {
 }
 
 async function createApprovalRequest(request) {
-  return pb.collection(APPROVAL_REQUEST_COLLECTION).create({ payload: request });
+  const userId = pb.authStore.model?.id;
+  if (!userId) throw new Error('يجب تسجيل الدخول لإرسال طلب الاعتماد.');
+
+  const targetKeys = getRequestTargetKeys(request);
+  if (targetKeys.some((key) => activeRequestTargetKeys.has(key))) {
+    throw new Error('تم إرسال طلب بالفعل لهذا السجل، وهو بانتظار الموافقة.');
+  }
+
+  targetKeys.forEach((key) => activeRequestTargetKeys.add(key));
+  try {
+    const existingRequests = await pb.collection(APPROVAL_REQUEST_COLLECTION).getFullList({
+      filter: `requested_by_id = "${userId}"`,
+      sort: '-created',
+    });
+    const pendingKeys = new Set(getPendingRequestTargetKeys(existingRequests));
+    if (targetKeys.some((key) => pendingKeys.has(key))) {
+      throw new Error('تم إرسال طلب بالفعل لهذا السجل، وهو بانتظار الموافقة.');
+    }
+
+    return await pb.collection(APPROVAL_REQUEST_COLLECTION).create({
+      requested_by_id: userId,
+      payload: { ...request, requested_by_id: userId },
+    });
+  } finally {
+    targetKeys.forEach((key) => activeRequestTargetKeys.delete(key));
+  }
 }
 
 export async function requestRecordUpdate(collectionName, recordId, changes, recordLabel) {
