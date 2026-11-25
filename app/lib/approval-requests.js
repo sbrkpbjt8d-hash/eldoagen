@@ -241,6 +241,24 @@ export async function requestCompoundOperation(actions, recordLabel, options = {
   }
 }
 
+export async function executeCompoundOperation(actions) {
+  if (!Array.isArray(actions) || actions.length === 0) {
+    throw new Error('لا توجد تغييرات لتنفيذها.');
+  }
+
+  const snapshots = {};
+  const validatedActions = await validateCompoundActions(actions, snapshots);
+  return applyCompoundApproval({
+    collection_name: 'multiple',
+    operation: 'compound',
+    record_label: 'عملية مباشرة',
+    request_data: {
+      actions: validatedActions,
+      snapshots,
+    },
+  });
+}
+
 async function ensureRecordHasNotChanged(request) {
   const data = request.request_data || {};
   const currentRecord = await pb.collection(request.collection_name).getOne(request.target_id);

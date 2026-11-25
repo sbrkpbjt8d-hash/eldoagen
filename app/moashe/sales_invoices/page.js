@@ -3,7 +3,11 @@ import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
 import { addQuantities, roundQuantity } from '../../lib/quantity';
-import { getPendingDeletionActionKeys, requestCompoundOperation } from '../../lib/approval-requests';
+import {
+  executeCompoundOperation,
+  getPendingDeletionActionKeys,
+  requestCompoundOperation,
+} from '../../lib/approval-requests';
 import { useReactToPrint } from 'react-to-print';
 const currentUserName = localStorage.getItem('userName') || 'مسؤول النظام';
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
@@ -642,8 +646,8 @@ export default function SalesInvoicesPage() {
         });
       }
 
-      await requestCompoundOperation(actions, `إصدار فاتورة بيع ${invoiceData.invoice_number} — ${customerName}`);
-      return { approvalRequested: true };
+      await executeCompoundOperation(actions);
+      return { approvalRequested: false };
     },
     onSuccess: result => {
       queryClient.invalidateQueries({ queryKey: ['sales_invoices'] });
@@ -941,7 +945,7 @@ export default function SalesInvoicesPage() {
     const title = editingInvoiceId ? 'تأكيد تعديل الفاتورة' : 'تأكيد إصدار الفاتورة';
     const message = editingInvoiceId 
       ? `هل تريد حفظ التعديلات على الفاتورة (${paymentType === 'credit' ? 'آجل' : 'كاش'}) بالقيمة (${netTotal.toLocaleString()} ج.م) وتحديث المخازن وحساب العميل؟`
-      : `سيتم إرسال الفاتورة (${paymentType === 'credit' ? 'آجل وتسجيل مديونية على العميل' : 'كاش'}) بقيمة صافية (${netTotal.toLocaleString()} ج.م) للمدير لاعتمادها قبل تحديث المخازن والأرصدة. هل تريد المتابعة؟`;
+      : `سيتم إصدار الفاتورة (${paymentType === 'credit' ? 'آجل وتسجيل مديونية على العميل' : 'كاش'}) بقيمة صافية (${netTotal.toLocaleString()} ج.م) وتحديث المخازن والأرصدة مباشرة بدون انتظار اعتماد المدير. هل تريد المتابعة؟`;
 
     setConfirmModal({
       show: true,
@@ -1519,7 +1523,7 @@ export default function SalesInvoicesPage() {
               disabled={saveInvoiceMutation.isPending}
               className="px-6 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-2xl shadow-lg transition flex items-center gap-2"
             >
-              {saveInvoiceMutation.isPending ? 'جاري الحفظ...' : (editingInvoiceId ? '💾 حفظ تعديلات الفاتورة' : '🚀 إرسال الفاتورة للاعتماد')}
+              {saveInvoiceMutation.isPending ? 'جاري الحفظ...' : (editingInvoiceId ? '💾 حفظ تعديلات الفاتورة' : '🚀 إصدار الفاتورة')}
             </button>
           </div>
         </form>
