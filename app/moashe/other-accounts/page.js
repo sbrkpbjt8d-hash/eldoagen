@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
-import { requestCompoundOperation } from '../../lib/approval-requests';
+import { executeCompoundOperation } from '../../lib/approval-requests';
 
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 
@@ -67,7 +67,7 @@ export default function OtherAccountsPage() {
           actor_name: actorName,
           is_deducted: false,
         };
-        await requestCompoundOperation([
+        await executeCompoundOperation([
           { type: 'create', collection: 'advances', data: advanceData },
           {
             type: 'balance_delta',
@@ -90,8 +90,8 @@ export default function OtherAccountsPage() {
               actor_name: actorName,
             },
           },
-        ], `صرف عهدة من البنك ${bank.name}`, { reviewType: 'bank' });
-        return { reviewRequested: true };
+        ]);
+        return;
       }
 
       const advanceData = {
@@ -141,22 +141,18 @@ export default function OtherAccountsPage() {
           actor_name: actorName,
         },
       });
-      await requestCompoundOperation(actions, `صرف عهدة نقدية لـ ${recipientName.trim()}`, { reviewType: 'treasury' });
-      return { reviewRequested: true };
+      await executeCompoundOperation(actions);
     },
-    onSuccess: result => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['other_accounts_advances'] });
       queryClient.invalidateQueries({ queryKey: ['other_accounts_treasury'] });
       queryClient.invalidateQueries({ queryKey: ['other_accounts_banks'] });
-      queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
       setRecipientName('');
       setAmount('');
       setNotes('');
       setSource('treasury');
       setMessage({
-        text: result?.reviewRequested
-          ? `تم صرف العهدة وتحديث الرصيد الآن؛ بانتظار اعتماد المراجع.`
-          : 'تم صرف العهدة وخصمها من المصدر وتسجيلها في السجل.',
+        text: 'تم صرف العهدة وخصمها من المصدر وتسجيلها في السجل.',
         type: 'success',
       });
     },
@@ -229,24 +225,16 @@ export default function OtherAccountsPage() {
         advance_id: advance.id,
         },
       });
-      await requestCompoundOperation(
-        actions,
-        `رد عهدة ${advance.recipient_name || ''}`,
-        { reviewType: sourceType === 'bank' ? 'bank' : 'treasury' },
-      );
-      return { reviewRequested: true };
+      await executeCompoundOperation(actions);
     },
-    onSuccess: result => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['other_accounts_advances'] });
       queryClient.invalidateQueries({ queryKey: ['other_accounts_treasury'] });
       queryClient.invalidateQueries({ queryKey: ['other_accounts_banks'] });
-      queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
       setReturnAmounts({});
       setReturnSources({});
       setMessage({
-        text: result?.reviewRequested
-          ? 'تم تسجيل رد العهدة وتحديث الرصيد الآن؛ بانتظار اعتماد المراجع.'
-          : 'تم رد المبلغ وتحديث رصيد المصدر وتسجيل الحركة.',
+        text: 'تم رد المبلغ وتحديث رصيد المصدر وتسجيل الحركة.',
         type: 'success',
       });
     },
