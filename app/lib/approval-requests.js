@@ -82,12 +82,7 @@ export async function requestRecordUpdate(collectionName, recordId, changes, rec
 
 export async function requestRecordDeletion(collectionName, recordId, recordLabel) {
   const record = await pb.collection(collectionName).getOne(recordId);
-  await deleteWithArchive({
-    collection_name: collectionName,
-    operation: 'delete',
-    target_id: recordId,
-    record_label: recordLabel || record.name || record.title || record.invoice_number || record.id,
-  }, record);
+  await pb.collection(collectionName).delete(recordId);
   return record;
 }
 
@@ -158,7 +153,7 @@ export async function requestCompoundOperation(actions, recordLabel, options = {
         rejection_snapshots: {},
         compensation_actions: [],
       },
-    });
+    }, { directDelete: true });
   }
 
   const rejectionSnapshots = {};
@@ -250,7 +245,7 @@ export async function executeCompoundOperation(actions) {
       actions: validatedActions,
       snapshots,
     },
-  });
+  }, { directDelete: true });
 }
 
 async function ensureRecordHasNotChanged(request) {
@@ -440,6 +435,7 @@ async function applyCompensationActions(actions = []) {
 
 async function applyCompoundApproval(request, options = {}) {
   const { actions = [], snapshots = {} } = request.request_data || {};
+  const directDelete = Boolean(options.directDelete);
   const appliedActions = [];
   const preparedActions = [];
   const completedActions = actions.map((action) => ({ ...action }));
@@ -515,11 +511,16 @@ async function applyCompoundApproval(request, options = {}) {
         });
       } else if (action.type === 'delete') {
         const currentRecord = await pb.collection(action.collection).getOne(action.id);
-        const archiveId = await deleteWithArchive({
-          collection_name: action.collection,
-          target_id: action.id,
-          record_label: action.record_label || request.record_label,
-        }, currentRecord);
+        let archiveId = null;
+        if (directDelete) {
+          await pb.collection(action.collection).delete(action.id);
+        } else {
+          archiveId = await deleteWithArchive({
+            collection_name: action.collection,
+            target_id: action.id,
+            record_label: action.record_label || request.record_label,
+          }, currentRecord);
+        }
         appliedActions.push({
           type: 'delete',
           collection: action.collection,
@@ -567,7 +568,9 @@ async function applyCompoundApproval(request, options = {}) {
             ...getRestorableRecordData(action.originalRecord),
             id: action.id,
           });
-          await pb.collection('deleted_records').delete(action.archiveId);
+          if (action.archiveId) {
+            await pb.collection('deleted_records').delete(action.archiveId);
+          }
         }
 
       } catch (rollbackError) {
