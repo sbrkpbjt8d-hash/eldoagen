@@ -3,6 +3,7 @@ import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
 import {
+  executeCompoundOperation,
   getPendingReviewActionKeys,
   requestCompoundOperation,
   requestRecordDeletion,
@@ -171,7 +172,7 @@ export default function ExpensesPage() {
     }
   });
 
-  // Submit a pending approval so ordinary users do not need direct balance-write access.
+  // إضافة المصروفات مباشرةً وتحديث الرصيد من الخزنة أو البنك فورًا.
   const addExpenseMutation = useMutation({
     mutationFn: async () => {
       const expenseAmount = parseFloat(amount);
@@ -218,20 +219,15 @@ export default function ExpensesPage() {
         });
       }
 
-      await requestCompoundOperation(
-        actions,
-        `مصروف: ${selectedCategoryName}${notes.trim() ? ` — ${notes.trim()}` : ''}`,
-      );
-      return { reviewRequested: true };
+      await executeCompoundOperation(actions);
+      return { reviewRequested: false };
     },
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['expenses'] });
       queryClient.invalidateQueries({ queryKey: ['treasury'] });
       queryClient.invalidateQueries({ queryKey: ['banks'] });
       queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
-      showToast(result?.reviewRequested
-        ? 'تم إرسال طلب المصروف للمراجع؛ سيتم تسجيله وخصمه من الرصيد بعد الاعتماد.'
-        : '🚀 تم تسجيل المصروف وخصمه من مصدر الدفع بنجاح!');
+      showToast('🚀 تم تسجيل المصروف وخصمه من مصدر الدفع بنجاح!');
       setAmount('');
       setNotes('');
       setSelectedCategory('');
@@ -668,7 +664,7 @@ export default function ExpensesPage() {
               disabled={addExpenseMutation.isPending}
               className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-2xl font-black text-xs transition shadow-lg shadow-blue-600/20"
             >
-              {addExpenseMutation.isPending ? 'جاري إرسال الطلب...' : 'إرسال طلب المصروف للمراجعة'}
+              {addExpenseMutation.isPending ? 'جاري تسجيل المصروف...' : 'تسجيل المصروف'}
             </button>
           </form>
         </div>
