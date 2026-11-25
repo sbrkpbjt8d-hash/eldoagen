@@ -4,6 +4,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
 import { isPurchaseInvoiceApproved } from '../../lib/purchase-approval';
 import {
+  executeCompoundOperation,
+  getPendingDeletionActionKeys,
   getPendingReviewActionKeys,
   requestCompoundOperation,
   requestRecordDeletion,
@@ -57,6 +59,13 @@ export default function SuppliersPage() {
     queryFn: getPendingReviewActionKeys,
     refetchOnWindowFocus: true,
   });
+  const { data: pendingDeletionKeys = [] } = useQuery({
+    queryKey: ['pending_supplier_deletion_action_keys'],
+    queryFn: getPendingDeletionActionKeys,
+    refetchOnWindowFocus: true,
+    refetchInterval: 15000,
+  });
+  const pendingDeletionKeySet = new Set(pendingDeletionKeys);
   const isFinancialReviewPending = (collection, id) => (
     pendingReviewActionKeys.includes(`${collection}/${id}`)
   );
@@ -140,9 +149,15 @@ export default function SuppliersPage() {
 
 
   const deleteMutation = useMutation({
-    mutationFn: (id) => requestRecordDeletion('suppliers', id),
+    mutationFn: (id) => {
+      if (pendingDeletionKeySet.has(`suppliers/${id}`)) {
+        throw new Error('يوجد بالفعل طلب حذف لهذا المورد بانتظار الموافقة.');
+      }
+      return requestRecordDeletion('suppliers', id);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
+      queryClient.invalidateQueries({ queryKey: ['pending_supplier_deletion_action_keys'] });
       setDeleteId(null);
       showFeedback('تم إرسال طلب حذف المورد للمدير.');
     },
@@ -160,7 +175,7 @@ export default function SuppliersPage() {
       if (paymentDestination === 'banks') {
         const bank = banks.find((item) => item.id === paymentBankId);
         if (!bank) throw new Error('البنك المختار غير موجود');
-        await requestCompoundOperation([
+        await executeCompoundOperation([
           {
             type: 'balance_delta',
             collection: 'suppliers',
@@ -187,8 +202,8 @@ export default function SuppliersPage() {
             id: bank.id,
             delta: -amount,
           },
-        ], `سداد للمورد ${supplier.name}`, { reviewType: 'bank' });
-        return { reviewRequested: true };
+        ]);
+        return { reviewRequested: false };
       }
       if (paymentDestination === 'treasury') {
         const actions = [
@@ -227,8 +242,8 @@ export default function SuppliersPage() {
             data: { balance: -amount, opening_balance: 0 },
           });
         }
-        await requestCompoundOperation(actions, `سداد نقدي للمورد ${supplier.name}`, { reviewType: 'treasury' });
-        return { reviewRequested: true };
+        await executeCompoundOperation(actions);
+        return { reviewRequested: false };
       }
 
       await pb.collection('suppliers').update(supplier.id, {
@@ -258,9 +273,7 @@ export default function SuppliersPage() {
       setPaymentNotes('');
       setPaymentDestination('treasury');
       setPaymentBankId('');
-      showFeedback(result?.reviewRequested
-        ? `تم تسجيل السداد ${paymentDestination === 'banks' ? 'البنكي' : 'النقدي'} وتحديث الأرصدة الآن؛ بانتظار اعتماد المراجع.`
-        : 'تم تسجيل السداد وتحديث رصيد المورد.');
+      showFeedback('تم تسجيل السداد وتحديث رصيد المورد والخزنة أو البنك بنجاح.');
     },
     onError: (error) => showFeedback(`فشل تسجيل السداد: ${error.message}`, 'error'),
   });
@@ -795,6 +808,7 @@ const getSupplierDerivedBalance = (supplierId) => {
             <tbody className="divide-y">
               {filteredSuppliers.map((supplier) => {
                 const derivedBalance = getSupplierDerivedBalance(supplier.id);
+                const hasPendingDeletion = pendingDeletionKeySet.has(`suppliers/${supplier.id}`);
 
                 return (
                   <tr key={supplier.id} className="hover:bg-gray-50">
@@ -807,7 +821,13 @@ const getSupplierDerivedBalance = (supplierId) => {
                       <button onClick={() => { setPaymentAmount(''); setPaymentNotes(''); setPaymentDestination('treasury'); setPaymentBankId(''); setPaymentModal({ open: true, supplier }); }} className="bg-emerald-50 text-emerald-700 px-2.5 py-1.5 rounded-lg font-bold">سداد</button>
                       <button onClick={() => { setSettlementAmount(''); setSettlementNotes(''); setSettlementType('minus'); setSettlementModal({ open: true, supplier }); }} className="bg-amber-50 text-amber-700 px-2.5 py-1.5 rounded-lg font-bold">تسوية</button>
                       <button onClick={() => startEdit(supplier)} className="bg-purple-50 text-purple-700 px-2.5 py-1.5 rounded-lg font-bold">تعديل</button>
-                      <button onClick={() => setDeleteId(supplier.id)} className="bg-red-50 text-red-600 px-2.5 py-1.5 rounded-lg font-bold">حذف</button>
+                      <button
+                        onClick={() => setDeleteId(supplier.id)}
+                        disabled={hasPendingDeletion}
+                        className="bg-red-50 text-red-600 px-2.5 py-1.5 rounded-lg font-bold disabled:cursor-not-allowed disabled:opacity-70"
+                      >
+                        {hasPendingDeletion ? 'بانتظار الموافقة' : 'حذف'}
+                      </button>
                     </td>
                   </tr>
                 );

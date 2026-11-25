@@ -3,6 +3,8 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
 import {
+  executeCompoundOperation,
+  getPendingDeletionActionKeys,
   getPendingReviewActionKeys,
   requestCompoundOperation,
   requestRecordDeletion,
@@ -128,6 +130,13 @@ export default function ClientsPage() {
     queryFn: getPendingReviewActionKeys,
     refetchOnWindowFocus: true,
   });
+  const { data: pendingDeletionKeys = [] } = useQuery({
+    queryKey: ['pending_client_deletion_action_keys'],
+    queryFn: getPendingDeletionActionKeys,
+    refetchOnWindowFocus: true,
+    refetchInterval: 15000,
+  });
+  const pendingDeletionKeySet = new Set(pendingDeletionKeys);
   const isFinancialReviewPending = (collection, id) => (
     pendingReviewActionKeys.includes(`${collection}/${id}`)
   );
@@ -307,7 +316,7 @@ const combinedStatement = [...statementWithBalance].reverse();
       if (destination === 'banks') {
         const bank = banks.find(item => item.id === payBankId);
         if (!bank) throw new Error('البنك المختار غير موجود');
-        await requestCompoundOperation([
+        await executeCompoundOperation([
           {
             type: 'balance_delta',
             collection: 'clientsmoashe',
@@ -337,8 +346,8 @@ const combinedStatement = [...statementWithBalance].reverse();
             id: bank.id,
             delta: numericAmount,
           },
-        ], `تحصيل من العميل ${client.name}`, { reviewType: 'bank' });
-        return { reviewRequested: true };
+        ]);
+        return { reviewRequested: false };
       }
 
       if (destination === 'treasury') {
@@ -381,8 +390,8 @@ const combinedStatement = [...statementWithBalance].reverse();
             data: { balance: roundMoney(numericAmount), opening_balance: 0 },
           });
         }
-        await requestCompoundOperation(actions, `تحصيل نقدي من العميل ${client.name}`, { reviewType: 'treasury' });
-        return { reviewRequested: true };
+        await executeCompoundOperation(actions);
+        return { reviewRequested: false };
       }
 
       await pb.collection('clientsmoashe').update(client.id, {
@@ -410,9 +419,7 @@ const combinedStatement = [...statementWithBalance].reverse();
       await queryClient.invalidateQueries({ queryKey: ['client_transactions'] });
       await queryClient.invalidateQueries({ queryKey: ['all_client_transactions_summary'] });
       await queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
-      showFeedback(result?.reviewRequested
-        ? `تم تسجيل التحصيل ${payDestination === 'banks' ? 'البنكي' : 'النقدي'} وتحديث الأرصدة الآن؛ بانتظار اعتماد المراجع.`
-        : '💵 تم تسجيل التحصيل وتحديث الحسابات بنجاح!', 'success');
+      showFeedback('💵 تم تسجيل التحصيل وتحديث الحسابات والخزنة أو البنك بنجاح!', 'success');
       setPaymentModal({ isOpen: false, client: null });
       setPayAmount('');
       setPayNotes('');
@@ -482,8 +489,8 @@ const combinedStatement = [...statementWithBalance].reverse();
           id: bank.id,
           delta: totalAmount,
         });
-        await requestCompoundOperation(actions, 'تحصيل مجمع على البنك', { reviewType: 'bank' });
-        return { reviewRequested: true };
+        await executeCompoundOperation(actions);
+        return { reviewRequested: false };
       }
 
       if (destination === 'treasury') {
@@ -527,8 +534,8 @@ const combinedStatement = [...statementWithBalance].reverse();
             data: { balance: totalAmount, opening_balance: 0 },
           });
         }
-        await requestCompoundOperation(actions, 'تحصيل مجمع نقدي', { reviewType: 'treasury' });
-        return { reviewRequested: true };
+        await executeCompoundOperation(actions);
+        return { reviewRequested: false };
       }
 
       const completedClients = [];
@@ -588,9 +595,7 @@ const combinedStatement = [...statementWithBalance].reverse();
       await queryClient.invalidateQueries({ queryKey: ['client_transactions'] });
       await queryClient.invalidateQueries({ queryKey: ['all_client_transactions_summary'] });
       await queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
-      showFeedback(result?.reviewRequested
-        ? 'تم تسجيل التحصيل المجمع وتحديث الأرصدة الآن؛ بانتظار اعتماد المراجع.'
-        : '💵 تم تسجيل التحصيل المجمع وتحديث الحسابات بنجاح!', 'success');
+      showFeedback('💵 تم تسجيل التحصيل المجمع وتحديث الحسابات والخزنة أو البنك بنجاح!', 'success');
       setBulkCollectionOpen(false);
       setBulkCollectionAmounts({});
       setBulkCollectionSearch('');
@@ -761,9 +766,15 @@ const combinedStatement = [...statementWithBalance].reverse();
 
   // حذف عميل
   const deleteClientMutation = useMutation({
-    mutationFn: (id) => requestRecordDeletion('clientsmoashe', id),
+    mutationFn: (id) => {
+      if (pendingDeletionKeySet.has(`clientsmoashe/${id}`)) {
+        throw new Error('يوجد بالفعل طلب حذف لهذا العميل بانتظار الموافقة.');
+      }
+      return requestRecordDeletion('clientsmoashe', id);
+    },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
+      await queryClient.invalidateQueries({ queryKey: ['pending_client_deletion_action_keys'] });
       showFeedback('تم إرسال طلب حذف العميل للمدير.', 'success');
       setDeleteModal({ isOpen: false, clientId: null });
     },
@@ -1436,6 +1447,7 @@ const combinedStatement = [...statementWithBalance].reverse();
             <tbody className="divide-y text-sm">
               {filteredClients.map((client) => {
                 const { lastPayment, lastInvoice, lastActivityDate, isOverdue } = getClientCollectionInfo(client);
+                const hasPendingDeletion = pendingDeletionKeySet.has(`clientsmoashe/${client.id}`);
 
                 const lastPaymentDate = lastPayment ? formatLastDate(lastPayment.created || lastPayment.date) : 'لا يوجد';
                 const lastInvoiceDate = lastInvoice ? formatLastDate(lastInvoice.created) : 'لا يوجد';
@@ -1512,9 +1524,10 @@ const combinedStatement = [...statementWithBalance].reverse();
                         </button>
                         <button
                           onClick={() => setDeleteModal({ isOpen: true, clientId: client.id })}
-                          className="bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 px-2.5 py-1 rounded-lg text-xs font-bold transition"
+                          disabled={hasPendingDeletion}
+                          className="bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 px-2.5 py-1 rounded-lg text-xs font-bold transition disabled:cursor-not-allowed disabled:opacity-70"
                         >
-                          🗑️ حذف
+                          {hasPendingDeletion ? 'بانتظار الموافقة' : '🗑️ حذف'}
                         </button>
                       </div>
                     </td>
