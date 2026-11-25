@@ -5,7 +5,6 @@ import { pb } from '../../lib/pocketbase';
 import {
   executeCompoundOperation,
   getPendingReviewActionKeys,
-  requestCompoundOperation,
   requestRecordDeletion,
 } from '../../lib/approval-requests';
 
@@ -276,18 +275,15 @@ export default function ExpensesPage() {
           });
         }
       }
-      return requestCompoundOperation(
-        actions,
-        expenseObj.notes || 'مصروف',
-        { reviewType: isBankPayment ? 'bank' : 'treasury' },
-      );
+      await executeCompoundOperation(actions);
+      return { deletedDirectly: true };
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['expenses'] });
       queryClient.invalidateQueries({ queryKey: ['treasury'] });
       queryClient.invalidateQueries({ queryKey: ['banks'] });
       queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
-      showToast('تم حذف المصروف وعكس أثره المالي الآن؛ بانتظار اعتماد المراجع.');
+      showToast('تم حذف المصروف وإرجاع المبلغ إلى مصدر السداد بنجاح.');
       setDeleteConfirmModal({ show: false, type: '', data: null });
     },
     onError: (error) => {
