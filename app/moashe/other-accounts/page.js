@@ -169,27 +169,17 @@ export default function OtherAccountsPage() {
 
       const nextRemaining = remaining - numericReturn;
       const sourceType = returnSource === 'treasury' ? 'treasury' : 'bank';
-      const actions = [];
-      if (nextRemaining === 0) {
-        actions.push({
-          type: 'delete',
-          collection: 'advances',
-          id: advance.id,
-          record_label: advance.recipient_name || 'عهدة',
-        });
-      } else {
-        actions.push({
-          type: 'update',
-          collection: 'advances',
-          id: advance.id,
-          data: {
-            returned_amount: roundMoney(Number(advance.returned_amount || 0) + numericReturn),
-            remaining_amount: roundMoney(nextRemaining),
-            status: 'open',
-            is_deducted: false,
-          },
-        });
-      }
+      const actions = [{
+        type: 'update',
+        collection: 'advances',
+        id: advance.id,
+        data: {
+          returned_amount: roundMoney(Number(advance.returned_amount || 0) + numericReturn),
+          remaining_amount: roundMoney(nextRemaining),
+          status: nextRemaining === 0 ? 'closed' : 'open',
+          is_deducted: false,
+        },
+      }];
 
       if (sourceType === 'treasury') {
         if (!treasury) throw new Error('لم يتم إعداد سجل الخزنة بعد.');
