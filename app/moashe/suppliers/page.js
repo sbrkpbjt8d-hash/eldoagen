@@ -2,16 +2,8 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
-import { isPurchaseInvoiceApproved } from '../../lib/purchase-approval';
-import {
-  executeCompoundOperation,
-  getPendingDeletionActionKeys,
-  getPendingReviewActionKeys,
-  requestCompoundOperation,
-  requestRecordDeletion,
-  requestRecordUpdate,
-  requestSettlement,
-} from '../../lib/approval-requests';
+import { archiveAndDeleteRecord } from '../../lib/deleted-records';
+import { isSupplierSettlement } from '../../lib/supplier-transactions';
 
 export default function SuppliersPage() {
   const queryClient = useQueryClient();
@@ -54,21 +46,6 @@ export default function SuppliersPage() {
     retry: 5,
     retryDelay: 500,
   });
-  const { data: pendingReviewActionKeys = [], isError: pendingReviewsError } = useQuery({
-    queryKey: ['pending_financial_review_action_keys'],
-    queryFn: getPendingReviewActionKeys,
-    refetchOnWindowFocus: true,
-  });
-  const { data: pendingDeletionKeys = [] } = useQuery({
-    queryKey: ['pending_supplier_deletion_action_keys'],
-    queryFn: getPendingDeletionActionKeys,
-    refetchOnWindowFocus: true,
-    refetchInterval: 15000,
-  });
-  const pendingDeletionKeySet = new Set(pendingDeletionKeys);
-  const isFinancialReviewPending = (collection, id) => (
-    pendingReviewActionKeys.includes(`${collection}/${id}`)
-  );
 
   const { data: treasuryRecords = [] } = useQuery({
     queryKey: ['treasury'],
@@ -116,9 +93,7 @@ export default function SuppliersPage() {
  const saveMutation = useMutation({
     mutationFn: async () => {
       const data = { ...form, name: form.name.trim(), balance: Number(form.balance || 0), actor_name: currentUserName() };
-      if (editingId) {
-        return requestRecordUpdate('suppliers', editingId, data, form.name.trim());
-      }
+      if (editingId) return pb.collection('suppliers').update(editingId, data);
       const supplier = await pb.collection('suppliers').create(data);
       if (data.balance !== 0) {
         await pb.collection('supplier_transactions').create({
@@ -132,12 +107,10 @@ export default function SuppliersPage() {
       return supplier;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: editingId ? ['pending_manager_approvals'] : ['suppliers'],
-      });
+      queryClient.invalidateQueries({ queryKey: ['suppliers'] });
       setForm({ name: '', phone: '', address: '', notes: '', balance: '' });
       setEditingId(null);
-      showFeedback(editingId ? 'تم إرسال طلب تعديل المورد للمدير.' : 'تم إضافة المورد بنجاح.');
+      showFeedback(editingId ? 'تم تعديل المورد بنجاح.' : 'تم إضافة المورد بنجاح.');
     },
     onError: (error) => showFeedback(`فشل حفظ المورد: ${error.message}`, 'error'),
   });
@@ -149,10 +122,8 @@ export default function SuppliersPage() {
 
 
   const deleteMutation = useMutation({
-    mutationFn: (id) => requestRecordDeletion('suppliers', id),
+    mutationFn: (id) => archiveAndDeleteRecord('suppliers', id, undefined, { allowNonAdmin: true }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
-      queryClient.invalidateQueries({ queryKey: ['pending_supplier_deletion_action_keys'] });
       queryClient.invalidateQueries({ queryKey: ['suppliers'] });
       setDeleteId(null);
       showFeedback('تم حذف المورد بنجاح.');
@@ -168,80 +139,6 @@ export default function SuppliersPage() {
       if (paymentDestination === 'banks' && !paymentBankId) {
         throw new Error('اختر البنك الذي سيتم السداد منه');
       }
-      if (paymentDestination === 'banks') {
-        const bank = banks.find((item) => item.id === paymentBankId);
-        if (!bank) throw new Error('البنك المختار غير موجود');
-        await executeCompoundOperation([
-          {
-            type: 'balance_delta',
-            collection: 'suppliers',
-            id: supplier.id,
-            delta: -amount,
-          },
-          {
-            type: 'create',
-            collection: 'supplier_transactions',
-            data: {
-              supplier_id: supplier.id,
-              type: 'payment',
-              amount,
-              destination: paymentDestination,
-              bank_id: paymentBankId,
-              actor_name: currentUserName(),
-              notes: paymentNotes.trim() || 'سداد للمورد',
-              date: new Date().toISOString(),
-            },
-          },
-          {
-            type: 'balance_delta',
-            collection: 'banks',
-            id: bank.id,
-            delta: -amount,
-          },
-        ]);
-        return { reviewRequested: false };
-      }
-      if (paymentDestination === 'treasury') {
-        const actions = [
-          {
-            type: 'balance_delta',
-            collection: 'suppliers',
-            id: supplier.id,
-            delta: -amount,
-          },
-          {
-            type: 'create',
-            collection: 'supplier_transactions',
-            data: {
-              supplier_id: supplier.id,
-              type: 'payment',
-              amount,
-              destination: paymentDestination,
-              bank_id: '',
-              actor_name: currentUserName(),
-              notes: paymentNotes.trim() || 'سداد للمورد',
-              date: new Date().toISOString(),
-            },
-          },
-        ];
-        if (treasury?.id) {
-          actions.push({
-            type: 'balance_delta',
-            collection: 'treasury',
-            id: treasury.id,
-            delta: -amount,
-          });
-        } else {
-          actions.push({
-            type: 'create',
-            collection: 'treasury',
-            data: { balance: -amount, opening_balance: 0 },
-          });
-        }
-        await executeCompoundOperation(actions);
-        return { reviewRequested: false };
-      }
-
       await pb.collection('suppliers').update(supplier.id, {
         balance: currentDue - amount,
       });
@@ -256,20 +153,33 @@ export default function SuppliersPage() {
         date: new Date().toISOString(),
       });
 
+      if (paymentDestination === 'treasury') {
+        const currentBalance = Number(treasury?.balance || 0);
+        if (treasury) {
+          await pb.collection('treasury').update(treasury.id, { balance: currentBalance - amount });
+        } else {
+          await pb.collection('treasury').create({ balance: -amount, opening_balance: 0 });
+        }
+      } else {
+        const bank = banks.find((item) => item.id === paymentBankId);
+        if (!bank) throw new Error('البنك المختار غير موجود');
+        await pb.collection('banks').update(bank.id, {
+          balance: Number(bank.balance || 0) - amount,
+        });
+      }
     },
-    onSuccess: (result) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['suppliers'] });
       queryClient.invalidateQueries({ queryKey: ['supplier_transactions'] });
       queryClient.invalidateQueries({ queryKey: ['all_supplier_transactions'] });
       queryClient.invalidateQueries({ queryKey: ['treasury'] });
       queryClient.invalidateQueries({ queryKey: ['banks'] });
-      queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
       setPaymentModal({ open: false, supplier: null });
       setPaymentAmount('');
       setPaymentNotes('');
       setPaymentDestination('treasury');
       setPaymentBankId('');
-      showFeedback('تم تسجيل السداد وتحديث رصيد المورد والخزنة أو البنك بنجاح.');
+      showFeedback('تم تسجيل السداد وتحديث رصيد المورد.');
     },
     onError: (error) => showFeedback(`فشل تسجيل السداد: ${error.message}`, 'error'),
   });
@@ -285,33 +195,36 @@ export default function SuppliersPage() {
         throw new Error('اكتب مبلغ تسوية صحيح');
       }
       
-      const newBalance = settlementType === 'minus'
-        ? currentBalance - amount
-        : currentBalance + amount;
+      const balanceChange = settlementType === 'minus' ? -amount : amount;
+      const newBalance = currentBalance + balanceChange;
 
-      return requestSettlement({
-        collectionName: 'suppliers',
-        recordId: supplier.id,
-        recordLabel: supplier.name,
-        changes: { balance: newBalance },
-        transactionCollection: 'supplier_transactions',
-        transactionData: {
-          supplier_id: supplier.id,
-          type: settlementType === 'minus' ? 'payment' : 'opening_balance',
-          amount,
-          actor_name: currentUserName(),
-          notes: `تسوية (${settlementType === 'minus' ? 'خصم/تخفيض مستحق' : 'إضافة/زيادة مستحق'}): ${settlementNotes.trim() || 'تسوية حساب'}`,
-          date: new Date().toISOString(),
-        },
+      const transaction = await pb.collection('supplier_transactions').create({
+        supplier_id: supplier.id,
+        type: 'opening_balance',
+        amount: balanceChange,
+        actor_name: currentUserName(),
+        notes: `تسوية (${settlementType === 'minus' ? 'خصم/تخفيض مستحق' : 'إضافة/زيادة مستحق'}): ${settlementNotes.trim() || 'تسوية حساب'}`,
+        date: new Date().toISOString(),
       });
+
+      try {
+        await pb.collection('suppliers').update(supplier.id, {
+          balance: newBalance,
+        });
+      } catch (error) {
+        await pb.collection('supplier_transactions').delete(transaction.id).catch(() => {});
+        throw error;
+      }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
+      queryClient.invalidateQueries({ queryKey: ['suppliers'] });
+      queryClient.invalidateQueries({ queryKey: ['supplier_transactions'] });
+      queryClient.invalidateQueries({ queryKey: ['all_supplier_transactions'] });
       setSettlementModal({ open: false, supplier: null });
       setSettlementAmount('');
       setSettlementNotes('');
       setSettlementType('minus');
-      showFeedback('تم إرسال طلب تسوية المورد للمدير، ولم يتغير الرصيد بعد.');
+      showFeedback('تم إجراء تسوية حساب المورد بنجاح.');
     },
     onError: (error) => showFeedback(`فشل إجراء التسوية: ${error.message}`, 'error'),
   });
@@ -323,7 +236,8 @@ export default function SuppliersPage() {
  const deletePaymentMutation = useMutation({
   mutationFn: async (transactionId) => {
     const transaction = await pb.collection('supplier_transactions').getOne(transactionId);
-    if (String(transaction.type || '').toLowerCase() !== 'payment') {
+    const isSettlement = isSupplierSettlement(transaction);
+    if (String(transaction.type || '').toLowerCase() !== 'payment' && !isSettlement) {
       throw new Error('هذه الحركة ليست سداداً للمورد.');
     }
 
@@ -331,61 +245,52 @@ export default function SuppliersPage() {
     const destination = String(transaction.destination || '').trim();
     const bankId = String(transaction.bank_id || '').trim();
 
-    if (!Number.isFinite(amount) || amount <= 0) {
+    if (!Number.isFinite(amount) || (isSettlement ? amount === 0 : amount <= 0)) {
       throw new Error('مبلغ السداد غير صحيح.');
     }
 
-    const actions = [{
-      type: 'delete',
-      collection: 'supplier_transactions',
-      id: transactionId,
-      record_label: 'سداد مورد',
-    }];
-
-    if (destination === 'treasury') {
+    // 1. استرجاع المبلغ للخزينة أو البنك أولاً
+    if (!isSettlement && destination === 'treasury') {
       const treasuryRecords = await pb.collection('treasury').getFullList().catch(() => []);
       const treasuryRecord = treasuryRecords[0] || null;
       if (treasuryRecord) {
-        actions.push({
-          type: 'balance_delta',
-          collection: 'treasury',
-          id: treasuryRecord.id,
-          delta: amount,
+        await pb.collection('treasury').update(treasuryRecord.id, {
+          balance: Number(treasuryRecord.balance || 0) + amount,
         });
       } else {
-        actions.push({
-          type: 'create',
-          collection: 'treasury',
-          data: { balance: amount, opening_balance: 0 },
+        await pb.collection('treasury').create({
+          balance: amount,
+          opening_balance: 0,
         });
       }
-    } else if (destination === 'banks' && bankId) {
+    } else if (!isSettlement && destination === 'banks' && bankId) {
       const bank = await pb.collection('banks').getOne(bankId).catch(() => null);
       if (bank) {
-        actions.push({
-          type: 'balance_delta',
-          collection: 'banks',
-          id: bank.id,
-          delta: amount,
+        await pb.collection('banks').update(bank.id, {
+          balance: Number(bank.balance || 0) + amount,
         });
       }
     }
 
-    return requestCompoundOperation(
-      actions,
-      `حذف سداد مورد ${transaction.supplier_id}`,
-      { reviewType: destination === 'banks' ? 'bank' : 'treasury' },
-    );
+    // 2. حذف معاملة السداد نهائياً من الجدول
+    await archiveAndDeleteRecord('supplier_transactions', transactionId, isSettlement ? 'تسوية مورد' : 'سداد مورد', { allowNonAdmin: true });
+
+    // 3. عمل Invalidate للـ Queries عشان الـ State تتحدث والـ UI يحسب الأرصدة الجديدة تلقائياً
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['suppliers'] }),
+      queryClient.invalidateQueries({ queryKey: ['supplier_transactions'] }),
+      queryClient.invalidateQueries({ queryKey: ['all_supplier_transactions'] }),
+      queryClient.invalidateQueries({ queryKey: ['treasury'] }),
+      queryClient.invalidateQueries({ queryKey: ['banks'] }),
+    ]);
+
+    return transaction;
   },
-  onSuccess: () => {
-    queryClient.invalidateQueries({ queryKey: ['suppliers'] });
-    queryClient.invalidateQueries({ queryKey: ['treasury'] });
-    queryClient.invalidateQueries({ queryKey: ['banks'] });
-    queryClient.invalidateQueries({ queryKey: ['supplier_transactions'] });
-    queryClient.invalidateQueries({ queryKey: ['all_supplier_transactions'] });
-    queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
+  onSuccess: (transaction) => {
     setDeletePaymentId(null);
-    showFeedback('تم حذف السداد وعكس أثره على الأرصدة الآن؛ بانتظار اعتماد المراجع.');
+    showFeedback(isSupplierSettlement(transaction)
+      ? 'تم حذف التسوية وتحديث رصيد المورد دون تغيير الخزينة أو البنك.'
+      : 'تم حذف السداد واسترجاع رصيد الخزينة/البنك وتحديث الأرصدة بنجاح.');
   },
   onError: (error) => {
     setDeletePaymentId(null);
@@ -419,6 +324,7 @@ export default function SuppliersPage() {
         const negativeAdjustment = /خصم|تخفيض|مرتجع|cancel/i.test(notes);
         const positiveAdjustment = /إضافة|زيادة|مكافأة|credit/i.test(notes);
 
+        const isSettlement = isSupplierSettlement(transaction);
         let effect = 0;
         if (type === 'opening_balance') {
           effect = amount;
@@ -434,13 +340,14 @@ export default function SuppliersPage() {
 
         return {
           ...transaction,
+          isSettlement,
           date: transaction.date || transaction.created,
           effectAmount: Number.isFinite(effect) ? effect : 0,
         };
       });
 
     const supplierPurchases = (allPurchaseInvoices || [])
-      .filter((invoice) => String(invoice.supplier_id || '') === normalizedSupplierId && isPurchaseInvoiceApproved(invoice))
+      .filter((invoice) => String(invoice.supplier_id || '') === normalizedSupplierId)
       .map((invoice) => ({
         ...invoice,
         date: invoice.created || invoice.date,
@@ -473,7 +380,7 @@ const getSupplierDerivedBalance = (supplierId) => {
   // معالجة وحساب الرصيد التراكمي تصاعدياً (من الأقدم للأحدث)
   const transactionsList = transactions.map(t => {
     let effect = 0;
-    const isSettlement = String(t.notes || '').startsWith('تسوية (');
+    const isSettlement = isSupplierSettlement(t);
     const paymentSource = String(t.destination || '').trim();
     const bankName = banks.find((bank) => bank.id === t.bank_id)?.name || '';
     const paymentSourceLabel = (t.type === 'payment' && !isSettlement)
@@ -491,16 +398,16 @@ const getSupplierDerivedBalance = (supplierId) => {
     }
     return {
       ...t,
+      isSettlement,
       source: 'transaction',
-      reviewPending: isFinancialReviewPending('supplier_transactions', t.id),
       displayType: isSettlement ? 'تسوية حساب' : t.type === 'payment' ? 'سداد' : t.type === 'opening_balance' ? 'رصيد افتتاحي' : 'إضافة على الحساب',
       paymentSourceLabel,
       effectAmount: effect,
-      displayAmount: Number(t.amount || 0),
+      displayAmount: isSettlement ? Math.abs(Number(t.amount || 0)) : Number(t.amount || 0),
     };
   });
 
-  const purchasesList = purchaseInvoices.filter(isPurchaseInvoiceApproved).map(inv => ({
+  const purchasesList = purchaseInvoices.map(inv => ({
     ...inv,
     source: 'purchase',
     displayType: `فاتورة شراء (${inv.invoice_number || 'بدون رقم'})`,
@@ -560,7 +467,7 @@ const getSupplierDerivedBalance = (supplierId) => {
     const supplierTransactions = allTransactions
       .filter((transaction) => String(transaction.supplier_id || '') === normalizedSupplierId)
       .map((transaction) => {
-        const isSettlement = String(transaction.notes || '').startsWith('تسوية (');
+        const isSettlement = isSupplierSettlement(transaction);
         const paymentSource = String(transaction.destination || '').trim();
         const bankName = banks.find((bank) => bank.id === transaction.bank_id)?.name || '';
         const paymentSourceLabel = (transaction.type === 'payment' && !isSettlement)
@@ -580,6 +487,7 @@ const getSupplierDerivedBalance = (supplierId) => {
 
         return {
           ...transaction,
+          isSettlement,
           source: 'transaction',
           displayType: isSettlement ? 'تسوية حساب' : transaction.type === 'payment' ? 'سداد' : transaction.type === 'opening_balance' ? 'رصيد افتتاحي' : 'إضافة على الحساب',
           paymentSourceLabel,
@@ -719,11 +627,6 @@ const getSupplierDerivedBalance = (supplierId) => {
               <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="border p-3 rounded-xl text-xs" />
               <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="border p-3 rounded-xl text-xs" />
             </div>
-            {pendingReviewsError && (
-              <p role="alert" className="rounded-xl bg-amber-50 p-3 text-xs font-bold text-amber-800">
-                تعذر تحميل حالات اعتماد العمليات؛ تحقق من اتصال النظام.
-              </p>
-            )}
             <div className="border rounded-2xl overflow-hidden">
               <table className="w-full text-right text-xs">
                 <thead className="bg-gray-100 text-gray-700">
@@ -742,15 +645,8 @@ const getSupplierDerivedBalance = (supplierId) => {
                   {statementRowsForDisplay.length ? statementRowsForDisplay.map((row) => (
                     <tr key={row.id} className={row.source === 'purchase' ? 'bg-blue-50/30' : 'hover:bg-gray-50'}>
                       <td className="p-3">{formatDisplayDate(row.date || row.created)}</td>
-                      <td className="p-3 font-bold">
-                        {row.displayType}
-                        {row.reviewPending && (
-                          <span className="mr-2 inline-flex rounded-md bg-amber-100 px-2 py-1 text-[10px] font-bold text-amber-800">
-                            بانتظار اعتماد المراجع
-                          </span>
-                        )}
-                      </td>
-                      <td className="p-3 font-bold text-emerald-700">{row.type === 'payment' && !String(row.notes || '').startsWith('تسوية (') ? (row.paymentSourceLabel || 'غير محدد') : '-'}</td>
+                      <td className="p-3 font-bold">{row.displayType}</td>
+                      <td className="p-3 font-bold text-emerald-700">{row.type === 'payment' && !row.isSettlement ? (row.paymentSourceLabel || 'غير محدد') : '-'}</td>
                       <td className="p-3 font-black">{Number(row.displayAmount || 0).toLocaleString()} ج.م</td>
                       <td className={`p-3 font-black ${Number(row.runningBalance || 0) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
                         {Number(row.runningBalance || 0).toLocaleString()} ج.م
@@ -758,12 +654,12 @@ const getSupplierDerivedBalance = (supplierId) => {
                       <td className="p-3 text-gray-500">{row.notes || '-'}</td>
                       <td className="p-3 font-bold text-gray-700">{row.actor_name || 'غير معروف'}</td>
                       <td className="p-3">
-                        {row.source !== 'purchase' && row.type === 'payment' && !String(row.notes || '').startsWith('تسوية (') && (
+                        {row.source !== 'purchase' && (row.type === 'payment' || row.isSettlement) && (
                           <button
                             onClick={() => setDeletePaymentId(row.id)}
                             className="bg-red-50 text-red-700 px-2 py-1.5 rounded-lg font-bold"
                           >
-                            حذف السداد
+                            {row.isSettlement ? 'حذف التسوية' : 'حذف السداد'}
                           </button>
                         )}
                       </td>
@@ -816,12 +712,7 @@ const getSupplierDerivedBalance = (supplierId) => {
                       <button onClick={() => { setPaymentAmount(''); setPaymentNotes(''); setPaymentDestination('treasury'); setPaymentBankId(''); setPaymentModal({ open: true, supplier }); }} className="bg-emerald-50 text-emerald-700 px-2.5 py-1.5 rounded-lg font-bold">سداد</button>
                       <button onClick={() => { setSettlementAmount(''); setSettlementNotes(''); setSettlementType('minus'); setSettlementModal({ open: true, supplier }); }} className="bg-amber-50 text-amber-700 px-2.5 py-1.5 rounded-lg font-bold">تسوية</button>
                       <button onClick={() => startEdit(supplier)} className="bg-purple-50 text-purple-700 px-2.5 py-1.5 rounded-lg font-bold">تعديل</button>
-                      <button
-                        onClick={() => setDeleteId(supplier.id)}
-                        className="bg-red-50 text-red-600 px-2.5 py-1.5 rounded-lg font-bold"
-                      >
-                        حذف
-                      </button>
+                      <button onClick={() => setDeleteId(supplier.id)} className="bg-red-50 text-red-600 px-2.5 py-1.5 rounded-lg font-bold">حذف</button>
                     </td>
                   </tr>
                 );

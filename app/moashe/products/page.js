@@ -2,7 +2,7 @@
 import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
-import { getPendingDeletionActionKeys, requestCompoundOperation } from '../../lib/approval-requests';
+import { archiveAndDeleteRecord } from '../../lib/deleted-records';
 import toast, { Toaster } from 'react-hot-toast';
 import { useReactToPrint } from 'react-to-print';
 
@@ -21,10 +21,10 @@ function getEditingMaterialKey(material) {
 
 export default function ProductsPage() {
   const queryClient = useQueryClient();
-  const canRequestChanges = Boolean(pb.authStore.model);
 
   const [productName, setProductName] = useState('');
   const [sellingPrice, setSellingPrice] = useState('');
+  const [cashPrice, setCashPrice] = useState('');
   const [otherCost, setOtherCost] = useState('');
   const [selectedMaterials, setSelectedMaterials] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
@@ -34,6 +34,7 @@ export default function ProductsPage() {
   // حالات خاصة بتعديل سعر البيع
   const [editingPriceProd, setEditingPriceProd] = useState(null);
   const [newSellingPrice, setNewSellingPrice] = useState('');
+  const [newCashPrice, setNewCashPrice] = useState('');
   const [editingMaterialsProd, setEditingMaterialsProd] = useState(null);
   const [editingMaterials, setEditingMaterials] = useState([]);
   const [editingProductName, setEditingProductName] = useState('');
@@ -87,14 +88,6 @@ export default function ProductsPage() {
     refetchOnWindowFocus: true,
   });
 
-  const { data: pendingDeletionKeys = [], isError: pendingDeletionLoadFailed } = useQuery({
-    queryKey: ['pending_manager_deletion_action_keys'],
-    queryFn: getPendingDeletionActionKeys,
-    refetchOnWindowFocus: true,
-    refetchInterval: 15000,
-  });
-  const pendingDeletionKeySet = new Set(pendingDeletionKeys);
-
   const normalizeProductName = (value) => String(value ?? '')
     .replace(/[\u200B-\u200D\uFEFF]/g, '')
     .replace(/\s+/g, ' ')
@@ -110,6 +103,7 @@ export default function ProductsPage() {
         const created = await pb.collection('products_recipes').create({
           product_name: cleanProductName,
           selling_price: Number(sellingPrice),
+          cash_price: cashPrice === '' ? Number(sellingPrice) : Number(cashPrice),
           other_cost: Number(otherCost || 0),
           actor_name: pb.authStore.model?.name || pb.authStore.model?.email || 'مستخدم',
           raw_material_id: item.id,
@@ -132,6 +126,7 @@ export default function ProductsPage() {
       toast.success('تم حفظ المنتج والتركيبة بنجاح! 🚀');
       setProductName('');
       setSellingPrice('');
+      setCashPrice('');
       setOtherCost('');
       setSelectedMaterials([]);
     },
@@ -143,27 +138,22 @@ export default function ProductsPage() {
 
   // 3. استخدام Mutation لتحديث سعر البيع لكل صفوف المنتج في قاعدة البيانات
   const updatePriceMutation = useMutation({
-    mutationFn: async ({ prodName, newPrice }) => {
-      const prodRecipes = allRecipes.filter(r =>
-        normalizeProductName(r.product_name ?? r.name ?? r.product ?? '') === normalizeProductName(prodName)
-      );
-      if (!prodRecipes.length) throw new Error('لا توجد بيانات لهذا المنتج');
-      const actions = prodRecipes.map(record => ({
-        type: 'update',
-        collection: 'products_recipes',
-        id: record.id,
-        data: {
-          selling_price: Number(newPrice),
+    mutationFn: async ({ prodName, newSellingPrice: nextSellingPrice, newCashPrice: nextCashPrice }) => {
+      const prodRecipes = allRecipes.filter(r => (r.product_name || r.name) === prodName);
+      for (const record of prodRecipes) {
+        await pb.collection('products_recipes').update(record.id, {
+          selling_price: Number(nextSellingPrice),
+          cash_price: Number(nextCashPrice),
           actor_name: pb.authStore.model?.name || pb.authStore.model?.email || 'مستخدم',
-        },
-      }));
-      await requestCompoundOperation(actions, `تعديل سعر بيع ${prodName}`);
+        });
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products_recipes'] });
       toast.success('تم تحديث سعر البيع بنجاح! 🎯');
       setEditingPriceProd(null);
       setNewSellingPrice('');
+      setNewCashPrice('');
     },
     onError: (error) => {
       console.error("Error updating price:", error);
@@ -187,30 +177,27 @@ export default function ProductsPage() {
 
       const firstRow = prodRecipes[0];
       const sellingPriceValue = Number(firstRow.selling_price ?? firstRow.sellingPrice ?? firstRow.price ?? 0);
+      const storedCashPrice = Number(firstRow.cash_price);
+      const cashPriceValue = Number.isFinite(storedCashPrice) && storedCashPrice > 0
+        ? storedCashPrice
+        : sellingPriceValue;
       const otherCostValue = Number(firstRow.other_cost ?? firstRow.otherCost ?? 0);
 
-      const actions = prodRecipes.map(record => ({
-        type: 'delete',
-        collection: 'products_recipes',
-        id: record.id,
-        record_label: cleanProductName,
-      }));
+      for (const record of prodRecipes) {
+        await pb.collection('products_recipes').delete(record.id);
+      }
 
       for (const item of cleanedMaterials) {
-        actions.push({
-          type: 'create',
-          collection: 'products_recipes',
-          data: {
+        await pb.collection('products_recipes').create({
           product_name: cleanProductName,
           selling_price: sellingPriceValue,
+          cash_price: cashPriceValue,
           other_cost: otherCostValue,
           actor_name: pb.authStore.model?.name || pb.authStore.model?.email || 'مستخدم',
           raw_material_id: item.id,
           quantity_needed: Number(item.qtyNeeded || 0)
-          },
         });
       }
-      await requestCompoundOperation(actions, `تعديل تركيبة ${cleanProductName}`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products_recipes'] });
@@ -229,22 +216,14 @@ export default function ProductsPage() {
   // 4. استخدام Mutation لحذف المنتج وكل تراكيبه وتحديث الكاش تلقائياً
   const deleteProductMutation = useMutation({
     mutationFn: async (prodName) => {
-      const prodRecipes = allRecipes.filter(r =>
-        normalizeProductName(r.product_name ?? r.name ?? r.product ?? '') === normalizeProductName(prodName)
-      );
-      if (!prodRecipes.length) throw new Error('لا توجد بيانات لهذا المنتج');
-      await requestCompoundOperation(prodRecipes.map(record => ({
-        type: 'delete',
-        collection: 'products_recipes',
-        id: record.id,
-        record_label: prodName,
-      })), `حذف تركيبة ${prodName}`);
+      const prodRecipes = allRecipes.filter(r => (r.product_name || r.name) === prodName);
+      for (const record of prodRecipes) {
+        await archiveAndDeleteRecord('products_recipes', record.id, prodName, { allowNonAdmin: true });
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products_recipes'] });
-      queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
-      queryClient.invalidateQueries({ queryKey: ['pending_manager_deletion_action_keys'] });
-      toast.success('تم حذف المنتج بنجاح.');
+      toast.success('تم حذف المنتج بنجاح!');
       setConfirmModal({ isOpen: false, title: '', message: '', onConfirm: null });
     },
     onError: (error) => {
@@ -309,11 +288,23 @@ export default function ProductsPage() {
   }
 
   function handleUpdatePriceSubmit(prodName) {
-    if (!newSellingPrice || isNaN(newSellingPrice)) {
-      toast.error('الرجاء إدخال سعر بيع صحيح!');
+    const nextSellingPrice = Number(newSellingPrice);
+    const nextCashPrice = newCashPrice === '' ? nextSellingPrice : Number(newCashPrice);
+    if (
+      newSellingPrice === '' ||
+      !Number.isFinite(nextSellingPrice) ||
+      nextSellingPrice < 0 ||
+      !Number.isFinite(nextCashPrice) ||
+      nextCashPrice < 0
+    ) {
+      toast.error('الرجاء إدخال سعري بيع صحيحين!');
       return;
     }
-    updatePriceMutation.mutate({ prodName, newPrice: newSellingPrice });
+    updatePriceMutation.mutate({
+      prodName,
+      newSellingPrice: nextSellingPrice,
+      newCashPrice: nextCashPrice,
+    });
   }
 
   function handleDeleteProduct(prodName) {
@@ -329,11 +320,6 @@ export default function ProductsPage() {
     <div className="products-print-root p-4 md:p-8 max-w-7xl mx-auto space-y-8 relative" dir="rtl">
       {/* إشعارات الـ Toasts */}
       <Toaster position="top-center" reverseOrder={false} />
-      {pendingDeletionLoadFailed && (
-        <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-bold text-amber-800">
-          تعذر تحميل طلبات الحذف المعلقة؛ قد لا تظهر علامة الانتظار على المنتجات.
-        </div>
-      )}
 
       {((editingMaterialsProd && editingMaterials.length > 0) || recipePrintData) && (
         <div ref={recipePrintRef} className="product-recipe-print-document print-only" dir="rtl">
@@ -365,8 +351,9 @@ export default function ProductsPage() {
               <div>إجمالي تكلفة الخامات: {recipePrintData.materialsCost.toLocaleString()} ج.م</div>
               <div>التكلفة الإضافية: {recipePrintData.otherCost.toLocaleString()} ج.م</div>
               <div>إجمالي التكلفة: {recipePrintData.totalCost.toLocaleString()} ج.م</div>
-              <div>سعر البيع: {recipePrintData.sellingPrice.toLocaleString()} ج.م</div>
-              <div>الربح: {recipePrintData.profit.toLocaleString()} ج.م</div>
+              <div>سعر البيع الآجل: {recipePrintData.sellingPrice.toLocaleString()} ج.م</div>
+              <div>سعر البيع كاش: {recipePrintData.cashPrice.toLocaleString()} ج.م</div>
+              <div>الربح على سعر الآجل: {recipePrintData.profit.toLocaleString()} ج.م</div>
             </div>
           )}
         </div>
@@ -439,7 +426,7 @@ export default function ProductsPage() {
             </div>
 
             <div>
-              <label className="text-xs font-bold text-gray-600 block mb-1">سعر البيع (جنيه)</label>
+              <label className="text-xs font-bold text-gray-600 block mb-1">سعر البيع الآجل (جنيه)</label>
               <input
                 type="number"
                 placeholder="0.00"
@@ -449,6 +436,19 @@ export default function ProductsPage() {
                 step="any"
                 min="0"
                 required
+              />
+            </div>
+
+            <div>
+              <label className="text-xs font-bold text-gray-600 block mb-1">سعر البيع كاش (جنيه، اختياري)</label>
+              <input
+                type="number"
+                placeholder="اتركه فارغًا لاستخدام سعر الآجل"
+                value={cashPrice}
+                onChange={(e) => setCashPrice(e.target.value)}
+                className="w-full border border-gray-300 p-2.5 rounded-xl focus:ring-2 focus:ring-blue-600 text-black bg-gray-50/50 text-sm outline-none"
+                step="any"
+                min="0"
               />
             </div>
 
@@ -551,11 +551,12 @@ export default function ProductsPage() {
             ) : (
               filteredProducts.map((prodName, index) => {
                 const prodRecipes = allRecipes.filter(r => normalizeProductName(r.product_name || r.name) === normalizeProductName(prodName));
-                const hasPendingDeletion = prodRecipes.some((recipe) => (
-                  pendingDeletionKeySet.has(`products_recipes/${recipe.id}`)
-                ));
                 const firstRow = prodRecipes[0] || {};
                 const sellingPriceVal = Number(firstRow.selling_price || firstRow.sellingPrice || firstRow.price || 0);
+                const storedCashPrice = Number(firstRow.cash_price);
+                const cashPriceVal = Number.isFinite(storedCashPrice) && storedCashPrice > 0
+                  ? storedCashPrice
+                  : sellingPriceVal;
                 const otherCostVal = Number(firstRow.other_cost || 0);
 
                 const liveCost = prodRecipes.reduce((sum, item) => {
@@ -588,66 +589,78 @@ export default function ProductsPage() {
                           onClick={() => {
                             setEditingPriceProd(prodName);
                             setNewSellingPrice(sellingPriceVal);
+                            setNewCashPrice(cashPriceVal);
                           }}
                           className="text-blue-600 hover:text-blue-800 text-xs font-bold bg-blue-50 px-2.5 py-1 rounded-lg border border-blue-100 transition"
                         >
-                          ✏️ تعديل سعر البيع
+                          ✏️ تعديل السعرين
                         </button>
-                        {canRequestChanges && (
-                          <button
-                            onClick={() => {
-                              setEditingMaterialsProd(prodName);
-                              setEditingProductName(prodName);
-                              const draft = Object.values(
-                                prodRecipes.reduce((acc, row) => {
-                                  const matId = row.raw_material_id || row.material_id;
-                                  const editorKey = matId || `missing-${row.id}`;
-                                  const qty = Number(row.quantity_needed || row.qtyNeeded || row.quantity || 0);
-                                  const materialInfo = materials.find((m) => m.id === matId);
-                                  if (!acc[editorKey]) {
-                                    acc[editorKey] = {
-                                      id: materialInfo ? matId : null,
-                                      editorKey,
-                                      isMissingMaterial: !materialInfo,
-                                      name: materialInfo?.name || 'خامة غير مسجلة',
-                                      price: Number(materialInfo?.price || 0),
-                                      qtyNeeded: 0,
-                                    };
-                                  }
-                                  acc[editorKey].qtyNeeded += qty;
-                                  return acc;
-                                }, {})
-                              );
-                              setEditingMaterials(draft);
-                              setEditMaterialSearchTerm('');
-                            }}
-                            className="text-violet-600 hover:text-violet-800 text-xs font-bold bg-violet-50 px-2.5 py-1 rounded-lg border border-violet-100 transition"
-                          >
-                            🧩 تعديل الخامات
-                          </button>
-                        )}
+                        <button
+                          onClick={() => {
+                            setEditingMaterialsProd(prodName);
+                            setEditingProductName(prodName);
+                            const draft = Object.values(
+                              prodRecipes.reduce((acc, row) => {
+                                const matId = row.raw_material_id || row.material_id;
+                                const editorKey = matId || `missing-${row.id}`;
+                                const qty = Number(row.quantity_needed || row.qtyNeeded || row.quantity || 0);
+                                const materialInfo = materials.find((m) => m.id === matId);
+                                if (!acc[editorKey]) {
+                                  acc[editorKey] = {
+                                    id: materialInfo ? matId : null,
+                                    editorKey,
+                                    isMissingMaterial: !materialInfo,
+                                    name: materialInfo?.name || 'خامة غير مسجلة',
+                                    price: Number(materialInfo?.price || 0),
+                                    qtyNeeded: 0,
+                                  };
+                                }
+                                acc[editorKey].qtyNeeded += qty;
+                                return acc;
+                              }, {})
+                            );
+                            setEditingMaterials(draft);
+                            setEditMaterialSearchTerm('');
+                          }}
+                          className="text-violet-600 hover:text-violet-800 text-xs font-bold bg-violet-50 px-2.5 py-1 rounded-lg border border-violet-100 transition"
+                        >
+                          🧩 تعديل الخامات
+                        </button>
                         <button
                           onClick={() => handleDeleteProduct(prodName)}
                           disabled={deleteProductMutation.isPending}
-                          className="text-red-500 hover:text-red-700 text-xs font-bold bg-red-50 px-2.5 py-1 rounded-lg border border-red-100 transition disabled:cursor-not-allowed disabled:opacity-50"
+                          className="text-red-500 hover:text-red-700 text-xs font-bold bg-red-50 px-2.5 py-1 rounded-lg border border-red-100 transition"
                         >
                           🗑️ حذف المنتج
                         </button>
                       </div>
                     </div>
 
-                    {/* حقل التعديل السريع لسعر البيع */}
+                    {/* تعديل سعر البيع الكاش والآجل */}
                     {isEditing && (
-                      <div className="bg-blue-50/80 border border-blue-200 p-3 rounded-xl flex items-center gap-3 animate-fadeIn">
-                        <span className="text-xs font-bold text-blue-800">السعر الجديد:</span>
-                        <input
-                          type="number"
-                          value={newSellingPrice}
-                          onChange={(e) => setNewSellingPrice(e.target.value)}
-                          className="w-32 border border-blue-300 p-1.5 rounded-lg text-xs font-bold text-black bg-white outline-none focus:ring-2 focus:ring-blue-600"
-                          step="any"
-                          min="0"
-                        />
+                      <div className="bg-blue-50/80 border border-blue-200 p-3 rounded-xl flex flex-wrap items-center gap-3 animate-fadeIn">
+                        <label className="flex items-center gap-2 text-xs font-bold text-blue-800">
+                          سعر الآجل:
+                          <input
+                            type="number"
+                            value={newSellingPrice}
+                            onChange={(e) => setNewSellingPrice(e.target.value)}
+                            className="w-28 border border-blue-300 p-1.5 rounded-lg text-xs font-bold text-black bg-white outline-none focus:ring-2 focus:ring-blue-600"
+                            step="any"
+                            min="0"
+                          />
+                        </label>
+                        <label className="flex items-center gap-2 text-xs font-bold text-blue-800">
+                          سعر الكاش:
+                          <input
+                            type="number"
+                            value={newCashPrice}
+                            onChange={(e) => setNewCashPrice(e.target.value)}
+                            className="w-28 border border-blue-300 p-1.5 rounded-lg text-xs font-bold text-black bg-white outline-none focus:ring-2 focus:ring-blue-600"
+                            step="any"
+                            min="0"
+                          />
+                        </label>
                         <button
                           onClick={() => handleUpdatePriceSubmit(prodName)}
                           disabled={updatePriceMutation.isPending}
@@ -664,7 +677,7 @@ export default function ProductsPage() {
                       </div>
                     )}
 
-                    {canRequestChanges && editingMaterialsProd === prodName && (
+                    {editingMaterialsProd === prodName && (
                       <div className="bg-violet-50 border border-violet-200 rounded-xl p-3 space-y-3">
                         <div className="flex items-center justify-between gap-3">
                           <span className="text-xs font-black text-violet-800">تعديل اسم المنتج والخامات المستخدمة</span>
@@ -848,8 +861,9 @@ export default function ProductsPage() {
 
                     <div className="grid grid-cols-3 gap-2 text-center">
                       <div className="bg-blue-50/60 border border-blue-100 p-2 rounded-xl">
-                        <span className="text-[10px] text-blue-600 block">سعر البيع</span>
+                        <span className="text-[10px] text-blue-600 block">سعر البيع الآجل</span>
                         <span className="font-bold text-blue-700 text-xs sm:text-sm">{sellingPriceVal.toFixed(1)} ج.م</span>
+                        <span className="mt-1 block text-[10px] text-emerald-700">كاش: {cashPriceVal.toFixed(1)} ج.م</span>
                       </div>
                       <div className="bg-amber-50/60 border border-amber-100 p-2 rounded-xl">
                         <span className="text-[10px] text-amber-700 block">التكلفة</span>
@@ -898,6 +912,7 @@ export default function ProductsPage() {
                                   otherCost: otherCostVal,
                                   totalCost,
                                   sellingPrice: sellingPriceVal,
+                                  cashPrice: cashPriceVal,
                                   profit: sellingPriceVal - totalCost,
                                 });
                                 setTimeout(() => printRecipe(), 0);

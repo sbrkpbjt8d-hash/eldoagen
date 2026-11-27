@@ -2,12 +2,7 @@
 import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
-import {
-  requestRecordDeletion,
-  requestRecordUpdate,
-  requestSettlement,
-} from '../../lib/approval-requests';
-import { isPurchaseInvoiceApproved } from '../../lib/purchase-approval';
+import { archiveAndDeleteRecord } from '../../lib/deleted-records';
 import toast, { Toaster } from 'react-hot-toast';
 import { useReactToPrint } from 'react-to-print';
 
@@ -63,7 +58,12 @@ export default function ProductsPage() {
 
   const { data: products = [], isLoading } = useQuery({
     queryKey: ['khamat_moashe'],
-    queryFn: async () => await pb.collection('khamat_moashe').getFullList({ sort: '-created' }),
+    queryFn: async () => {
+      const records = await pb.collection('khamat_moashe').getList(1, 50, {
+        sort: '-created',
+      });
+      return records.items;
+    },
   });
 
   const { data: adjustments = [] } = useQuery({
@@ -114,16 +114,17 @@ export default function ProductsPage() {
       if (!trimmedName) throw new Error('اسم الخامة مطلوب.');
       if (!Number.isFinite(stockValue) || stockValue < 0) throw new Error('أدخل كمية متاحة صحيحة.');
       if (!Number.isFinite(priceValue) || priceValue < 0) throw new Error('أدخل سعراً صحيحاً.');
-      return requestRecordUpdate('khamat_moashe', id, {
+      return await pb.collection('khamat_moashe').update(id, {
         name: trimmedName,
         stock: stockValue,
         price: priceValue,
         actor_name: currentUserName(),
-      }, trimmedName);
+      });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
-      toast.success('تم إرسال طلب تعديل الخامة للمدير.');
+      queryClient.invalidateQueries({ queryKey: ['khamat_moashe'] });
+      queryClient.invalidateQueries({ queryKey: ['material_adjustments'] });
+      toast.success('تم تعديل اسم الخامة والكمية والسعر بنجاح!');
       setEditModal({ isOpen: false, product: null, newName: '', stock: '', price: '' });
     },
     onError: (error) => {
@@ -132,10 +133,12 @@ export default function ProductsPage() {
   });
 
   const deleteProductMutation = useMutation({
-    mutationFn: (id) => requestRecordDeletion('khamat_moashe', id),
+    mutationFn: async (id) => {
+      return await archiveAndDeleteRecord('khamat_moashe', id, undefined, { allowNonAdmin: true });
+    },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
-      toast.success('تم حذف الصنف بنجاح.');
+      queryClient.invalidateQueries({ queryKey: ['khamat_moashe'] });
+      toast.success('تم حذف الصنف بنجاح!');
       setConfirmModal({ isOpen: false, title: '', message: '', onConfirm: null });
     },
     onError: (error) => {
@@ -145,10 +148,12 @@ export default function ProductsPage() {
   });
 
   const deleteAdjustmentMutation = useMutation({
-    mutationFn: (adjustmentId) => requestRecordDeletion('material_adjustments', adjustmentId, 'تسوية خامة'),
+    mutationFn: async (adjustmentId) => {
+      return await archiveAndDeleteRecord('material_adjustments', adjustmentId, 'تسوية خامة', { allowNonAdmin: true });
+    },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
-      toast.success('تم حذف التسوية بنجاح.');
+      queryClient.invalidateQueries({ queryKey: ['material_adjustments'] });
+      toast.success('تم حذف التسوية بنجاح!');
       setConfirmModal({ isOpen: false, title: '', message: '', onConfirm: null });
     },
     onError: (error) => {
@@ -166,31 +171,26 @@ export default function ProductsPage() {
       const oldStock = Number(material.stock || 0);
       const newStock = oldStock + quantity;
       if (newStock < 0) throw new Error('لا يمكن أن تكون كمية المخزون أقل من صفر');
-      return requestSettlement({
-        collectionName: 'khamat_moashe',
-        recordId: material.id,
-        recordLabel: material.name,
-        changes: { stock: newStock },
-        transactionCollection: 'material_adjustments',
-        transactionData: {
-          material_id: material.id,
-          material_name: material.name,
-          quantity,
-          old_stock: oldStock,
-          new_stock: newStock,
-          reason: adjustmentReason.trim(),
-          source_type: 'manual_adjustment',
-          actor_name: currentUserName(),
-          date: new Date().toISOString(),
-        },
+      await pb.collection('khamat_moashe').update(material.id, { stock: newStock });
+      return pb.collection('material_adjustments').create({
+        material_id: material.id,
+        material_name: material.name,
+        quantity,
+        old_stock: oldStock,
+        new_stock: newStock,
+        reason: adjustmentReason.trim(),
+        source_type: 'manual_adjustment',
+        actor_name: currentUserName(),
+        date: new Date().toISOString(),
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
+      queryClient.invalidateQueries({ queryKey: ['khamat_moashe'] });
+      queryClient.invalidateQueries({ queryKey: ['material_adjustments'] });
       setAdjustmentMaterialId('');
       setAdjustmentQuantity('');
       setAdjustmentReason('');
-      toast.success('تم إرسال طلب تسوية المخزون للمدير، ولم تتغير الكمية بعد.');
+      toast.success('تم تنفيذ التسوية وتسجيلها بنجاح!');
     },
     onError: error => toast.error(error.message || 'فشل تنفيذ التسوية'),
   });
@@ -312,7 +312,7 @@ export default function ProductsPage() {
         actor: adjustment.actor_name || 'غير معروف',
       }));
 
-    const purchaseRows = purchaseInvoices.filter(isPurchaseInvoiceApproved).flatMap(invoice => (invoice.items || [])
+    const purchaseRows = purchaseInvoices.flatMap(invoice => (invoice.items || [])
       .filter(item => matchesMaterial(item.materialId || item.material_id, item.name))
       .map((item, index) => ({
         id: `purchase-${invoice.id}-${item.materialId || item.material_id || index}`,

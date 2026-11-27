@@ -2,15 +2,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
-import {
-  executeCompoundOperation,
-  getPendingDeletionActionKeys,
-  getPendingReviewActionKeys,
-  requestCompoundOperation,
-  requestRecordDeletion,
-  requestRecordUpdate,
-  requestSettlement,
-} from '../../lib/approval-requests';
+import { archiveAndDeleteRecord } from '../../lib/deleted-records';
 
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 const EGYPT_TIME_ZONE = 'Africa/Cairo';
@@ -31,12 +23,6 @@ export default function ClientsPage() {
   const [payDestination, setPayDestination] = useState('treasury');
   const [payBankId, setPayBankId] = useState('');
   const [payNotes, setPayNotes] = useState('');
-
-  const [bulkCollectionOpen, setBulkCollectionOpen] = useState(false);
-  const [bulkCollectionSearch, setBulkCollectionSearch] = useState('');
-  const [bulkCollectionAmounts, setBulkCollectionAmounts] = useState({});
-  const [bulkCollectionDestination, setBulkCollectionDestination] = useState('treasury');
-  const [bulkCollectionBankId, setBulkCollectionBankId] = useState('');
 
   // نافذة تسوية الحساب
   const [settlementModal, setSettlementModal] = useState({ isOpen: false, client: null });
@@ -61,7 +47,6 @@ export default function ClientsPage() {
   const [balance, setBalance] = useState('');
   const [clientSalesAgent, setClientSalesAgent] = useState('');
 
-  // فحص صلاحيات الأدمن
   // دالة جلب اسم المستخدم الحالي لتلافي خطأ عدم التعريف
   const currentUserName = () => {
     return pb.authStore.model?.name || pb.authStore.model?.email || 'مسؤول النظام';
@@ -125,21 +110,6 @@ export default function ClientsPage() {
       }).catch(() => []);
     },
   });
-  const { data: pendingReviewActionKeys = [], isError: pendingReviewsError } = useQuery({
-    queryKey: ['pending_financial_review_action_keys'],
-    queryFn: getPendingReviewActionKeys,
-    refetchOnWindowFocus: true,
-  });
-  const { data: pendingDeletionKeys = [] } = useQuery({
-    queryKey: ['pending_client_deletion_action_keys'],
-    queryFn: getPendingDeletionActionKeys,
-    refetchOnWindowFocus: true,
-    refetchInterval: 15000,
-  });
-  const pendingDeletionKeySet = new Set(pendingDeletionKeys);
-  const isFinancialReviewPending = (collection, id) => (
-    pendingReviewActionKeys.includes(`${collection}/${id}`)
-  );
 
   const getClientLedgerBalance = (client) => {
     if (!client) return 0;
@@ -203,8 +173,6 @@ export default function ClientsPage() {
   // دمج الحركات والفواتير في قائمة واحدة لكشف الحساب وترتيبها حسب الأحدث
   const formattedTransactions = transactions.map(tx => ({
     id: tx.id,
-    collection: 'client_transactions',
-    reviewPending: isFinancialReviewPending('client_transactions', tx.id),
     date: tx.created || tx.date,
     type: tx.type === 'opening_balance' ? 'opening_balance' : tx.type === 'settlement' ? 'settlement' : 'payment',
     amount: Number(tx.amount || 0),
@@ -215,8 +183,6 @@ export default function ClientsPage() {
 
   const formattedInvoices = invoices.map(inv => ({
     id: inv.id,
-    collection: 'sales_invoices',
-    reviewPending: isFinancialReviewPending('sales_invoices', inv.id),
     date: inv.created,
     type: 'invoice',
     isCash: !isCreditInvoice(inv),
@@ -286,15 +252,15 @@ const combinedStatement = [...statementWithBalance].reverse();
   const updateClientAgentMutation = useMutation({
     mutationFn: async ({ clientId, agentId }) => {
       const agent = salesAgents.find((item) => item.id === agentId);
-      return requestRecordUpdate('clientsmoashe', clientId, {
+      return await pb.collection('clientsmoashe').update(clientId, {
         sales_agent_id: agentId,
         sales_agent_name: agent?.name || '',
         sales_agent_region: agent?.region || '',
-      }, clients.find((client) => client.id === clientId)?.name);
+      });
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
-      showFeedback('تم إرسال طلب تعديل مندوب العميل للمدير.', 'success');
+      await queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
+      showFeedback('تم تعديل مندوب العميل بنجاح.', 'success');
     },
     onError: (error) => showFeedback('فشل تعديل مندوب العميل: ' + error.message, 'error'),
   });
@@ -311,87 +277,6 @@ const combinedStatement = [...statementWithBalance].reverse();
 
       if (destination === 'banks' && !payBankId) {
         throw new Error('اختر البنك الذي تم استلام التحصيل عليه');
-      }
-
-      if (destination === 'banks') {
-        const bank = banks.find(item => item.id === payBankId);
-        if (!bank) throw new Error('البنك المختار غير موجود');
-        await executeCompoundOperation([
-          {
-            type: 'balance_delta',
-            collection: 'clientsmoashe',
-            id: client.id,
-            delta: -numericAmount,
-          },
-          {
-            type: 'create',
-            collection: 'client_transactions',
-            data: {
-              client_id: client.id,
-              type: 'payment',
-              amount: numericAmount,
-              destination,
-              bank_id: payBankId,
-              sales_agent_id: paymentAgentId,
-              sales_agent_name: paymentAgent?.name || client.sales_agent_name || '',
-              sales_agent_region: paymentAgent?.region || client.sales_agent_region || '',
-              actor_name: currentUserName(),
-              notes: notes || 'تحصيل مديونية',
-              date: new Date().toISOString(),
-            },
-          },
-          {
-            type: 'balance_delta',
-            collection: 'banks',
-            id: bank.id,
-            delta: numericAmount,
-          },
-        ]);
-        return { reviewRequested: false };
-      }
-
-      if (destination === 'treasury') {
-        const actions = [
-          {
-            type: 'balance_delta',
-            collection: 'clientsmoashe',
-            id: client.id,
-            delta: -numericAmount,
-          },
-          {
-            type: 'create',
-            collection: 'client_transactions',
-            data: {
-              client_id: client.id,
-              type: 'payment',
-              amount: numericAmount,
-              destination,
-              bank_id: '',
-              sales_agent_id: paymentAgentId,
-              sales_agent_name: paymentAgent?.name || client.sales_agent_name || '',
-              sales_agent_region: paymentAgent?.region || client.sales_agent_region || '',
-              actor_name: currentUserName(),
-              notes: notes || 'تحصيل مديونية',
-              date: new Date().toISOString(),
-            },
-          },
-        ];
-        if (treasury?.id) {
-          actions.push({
-            type: 'balance_delta',
-            collection: 'treasury',
-            id: treasury.id,
-            delta: numericAmount,
-          });
-        } else {
-          actions.push({
-            type: 'create',
-            collection: 'treasury',
-            data: { balance: roundMoney(numericAmount), opening_balance: 0 },
-          });
-        }
-        await executeCompoundOperation(actions);
-        return { reviewRequested: false };
       }
 
       await pb.collection('clientsmoashe').update(client.id, {
@@ -412,14 +297,29 @@ const combinedStatement = [...statementWithBalance].reverse();
         date: new Date().toISOString()
       });
 
+      if (destination === 'treasury') {
+        const currentTreasuryBalance = treasury ? Number(treasury.balance || 0) : 0;
+        const newTreasuryBalance = currentTreasuryBalance + numericAmount;
+
+        if (treasury) {
+          await pb.collection('treasury').update(treasury.id, { balance: roundMoney(newTreasuryBalance) });
+        } else {
+          await pb.collection('treasury').create({ balance: roundMoney(newTreasuryBalance), opening_balance: 0 });
+        }
+      } else {
+        const bank = banks.find(item => item.id === payBankId);
+        if (!bank) throw new Error('البنك المختار غير موجود');
+        await pb.collection('banks').update(bank.id, {
+          balance: roundMoney(Number(bank.balance || 0) + numericAmount),
+        });
+      }
     },
-    onSuccess: async (result) => {
+    onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
       await queryClient.invalidateQueries({ queryKey: ['treasury'] });
       await queryClient.invalidateQueries({ queryKey: ['client_transactions'] });
       await queryClient.invalidateQueries({ queryKey: ['all_client_transactions_summary'] });
-      await queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
-      showFeedback('💵 تم تسجيل التحصيل وتحديث الحسابات والخزنة أو البنك بنجاح!', 'success');
+      showFeedback('💵 تم تسجيل التحصيل وتحديث الحسابات بنجاح!', 'success');
       setPaymentModal({ isOpen: false, client: null });
       setPayAmount('');
       setPayNotes('');
@@ -428,188 +328,6 @@ const combinedStatement = [...statementWithBalance].reverse();
     },
     onError: (error) => {
       showFeedback('❌ فشل عملية التحصيل: ' + error.message, 'error');
-    },
-  });
-
-  const bulkPayMutation = useMutation({
-    mutationFn: async ({ payments, destination, bankId }) => {
-      if (!payments.length) throw new Error('اختر عميلاً واحداً على الأقل للتحصيل.');
-      if (destination === 'banks' && !banks.some((bank) => bank.id === bankId)) {
-        throw new Error('اختر البنك الذي تم استلام التحصيل عليه.');
-      }
-
-      const validatedPayments = payments.map(({ client, amount }) => {
-        const numericAmount = Number(amount);
-        const currentClientBalance = getClientLedgerBalance(client);
-        const paymentAgentId = client.sales_agent_id || '';
-        const paymentAgent = salesAgents.find((agent) => agent.id === paymentAgentId);
-
-        if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
-          throw new Error(`أدخل مبلغاً صحيحاً للعميل ${client.name}.`);
-        }
-        if (!paymentAgentId) {
-          throw new Error(`العميل ${client.name} ليس له مندوب محدد.`);
-        }
-
-        return { client, amount: numericAmount, currentClientBalance, paymentAgent };
-      });
-
-      if (destination === 'banks') {
-        const bank = banks.find((item) => item.id === bankId);
-        if (!bank) throw new Error('البنك المختار غير موجود.');
-        const totalAmount = roundMoney(validatedPayments.reduce((sum, payment) => sum + payment.amount, 0));
-        const actions = validatedPayments.flatMap(({ client, amount, currentClientBalance, paymentAgent }) => ([
-          {
-            type: 'create',
-            collection: 'client_transactions',
-            data: {
-              client_id: client.id,
-              type: 'payment',
-              amount,
-              destination,
-              bank_id: bankId,
-              sales_agent_id: client.sales_agent_id,
-              sales_agent_name: paymentAgent?.name || client.sales_agent_name || '',
-              sales_agent_region: paymentAgent?.region || client.sales_agent_region || '',
-              actor_name: currentUserName(),
-              notes: 'تحصيل مجمع',
-              date: new Date().toISOString(),
-            },
-          },
-          {
-            type: 'balance_delta',
-            collection: 'clientsmoashe',
-            id: client.id,
-            delta: -amount,
-          },
-        ]));
-        actions.push({
-          type: 'balance_delta',
-          collection: 'banks',
-          id: bank.id,
-          delta: totalAmount,
-        });
-        await executeCompoundOperation(actions);
-        return { reviewRequested: false };
-      }
-
-      if (destination === 'treasury') {
-        const totalAmount = roundMoney(validatedPayments.reduce((sum, payment) => sum + payment.amount, 0));
-        const actions = validatedPayments.flatMap(({ client, amount, currentClientBalance, paymentAgent }) => ([
-          {
-            type: 'create',
-            collection: 'client_transactions',
-            data: {
-              client_id: client.id,
-              type: 'payment',
-              amount,
-              destination,
-              bank_id: '',
-              sales_agent_id: client.sales_agent_id,
-              sales_agent_name: paymentAgent?.name || client.sales_agent_name || '',
-              sales_agent_region: paymentAgent?.region || client.sales_agent_region || '',
-              actor_name: currentUserName(),
-              notes: 'تحصيل مجمع',
-              date: new Date().toISOString(),
-            },
-          },
-          {
-            type: 'balance_delta',
-            collection: 'clientsmoashe',
-            id: client.id,
-            delta: -amount,
-          },
-        ]));
-        if (treasury?.id) {
-          actions.push({
-            type: 'balance_delta',
-            collection: 'treasury',
-            id: treasury.id,
-            delta: totalAmount,
-          });
-        } else {
-          actions.push({
-            type: 'create',
-            collection: 'treasury',
-            data: { balance: totalAmount, opening_balance: 0 },
-          });
-        }
-        await executeCompoundOperation(actions);
-        return { reviewRequested: false };
-      }
-
-      const completedClients = [];
-      try {
-        for (const payment of validatedPayments) {
-          const { client, amount, currentClientBalance, paymentAgent } = payment;
-          await pb.collection('client_transactions').create({
-            client_id: client.id,
-            type: 'payment',
-            amount,
-            destination,
-            bank_id: destination === 'banks' ? bankId : '',
-            sales_agent_id: client.sales_agent_id,
-            sales_agent_name: paymentAgent?.name || client.sales_agent_name || '',
-            sales_agent_region: paymentAgent?.region || client.sales_agent_region || '',
-            actor_name: currentUserName(),
-            notes: 'تحصيل مجمع',
-            date: new Date().toISOString(),
-          });
-          completedClients.push(client.name);
-          await pb.collection('clientsmoashe').update(client.id, {
-            balance: roundMoney(currentClientBalance - amount),
-          });
-        }
-
-        const totalAmount = roundMoney(validatedPayments.reduce((sum, payment) => sum + payment.amount, 0));
-        if (destination === 'treasury') {
-          const currentTreasuryBalance = treasury ? Number(treasury.balance || 0) : 0;
-          if (treasury) {
-            await pb.collection('treasury').update(treasury.id, {
-              balance: roundMoney(currentTreasuryBalance + totalAmount),
-            });
-          } else {
-            await pb.collection('treasury').create({
-              balance: totalAmount,
-              opening_balance: 0,
-            });
-          }
-        } else {
-          const bank = banks.find((item) => item.id === bankId);
-          await pb.collection('banks').update(bank.id, {
-            balance: roundMoney(Number(bank.balance || 0) + totalAmount),
-          });
-        }
-      } catch (error) {
-        const completedMessage = completedClients.length
-          ? ` تم تسجيل التحصيل للعملاء: ${completedClients.join('، ')}. راجع الأرصدة قبل إعادة المحاولة.`
-          : '';
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        throw new Error(`${errorMessage}${completedMessage}`);
-      }
-    },
-    onSuccess: async (result) => {
-      await queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
-      await queryClient.invalidateQueries({ queryKey: ['treasury'] });
-      await queryClient.invalidateQueries({ queryKey: ['banks'] });
-      await queryClient.invalidateQueries({ queryKey: ['client_transactions'] });
-      await queryClient.invalidateQueries({ queryKey: ['all_client_transactions_summary'] });
-      await queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
-      showFeedback('💵 تم تسجيل التحصيل المجمع وتحديث الحسابات والخزنة أو البنك بنجاح!', 'success');
-      setBulkCollectionOpen(false);
-      setBulkCollectionAmounts({});
-      setBulkCollectionSearch('');
-      setBulkCollectionDestination('treasury');
-      setBulkCollectionBankId('');
-    },
-    onError: async (error) => {
-      await queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
-      await queryClient.invalidateQueries({ queryKey: ['treasury'] });
-      await queryClient.invalidateQueries({ queryKey: ['banks'] });
-      await queryClient.invalidateQueries({ queryKey: ['client_transactions'] });
-      await queryClient.invalidateQueries({ queryKey: ['all_client_transactions_summary'] });
-      await queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
-      showFeedback('❌ فشل التحصيل المجمع: ' + error.message, 'error');
     },
   });
 
@@ -623,26 +341,25 @@ const combinedStatement = [...statementWithBalance].reverse();
         ? currentClientBalance - numericAmount 
         : currentClientBalance + numericAmount;
 
-      return requestSettlement({
-        collectionName: 'clientsmoashe',
-        recordId: client.id,
-        recordLabel: client.name,
-        changes: { balance: newClientBalance },
-        transactionCollection: 'client_transactions',
-        transactionData: {
-          client_id: client.id,
-          type: 'settlement',
-          amount: numericAmount,
-          destination: '-',
-          actor_name: currentUserName(),
-          notes: `تسوية (${type === 'minus' ? 'خصم/تخفيض' : 'إضافة/زيادة'}): ${notes || 'تسوية حساب'}`,
-          date: new Date().toISOString(),
-        },
+      await pb.collection('clientsmoashe').update(client.id, {
+        balance: newClientBalance,
+      });
+
+      await pb.collection('client_transactions').create({
+        client_id: client.id,
+        type: 'settlement',
+        amount: numericAmount,
+        destination: '-',
+        actor_name: currentUserName(),
+        notes: `تسوية (${type === 'minus' ? 'خصم/تخفيض' : 'إضافة/زيادة'}): ${notes || 'تسوية حساب'}`,
+        date: new Date().toISOString()
       });
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
-      showFeedback('تم إرسال طلب التسوية للمدير، ولم يتغير الحساب بعد.', 'success');
+      await queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
+      await queryClient.invalidateQueries({ queryKey: ['client_transactions'] });
+      await queryClient.invalidateQueries({ queryKey: ['all_client_transactions_summary'] });
+      showFeedback('⚙️ تم إجراء التسوية وتحديث الحساب بنجاح!', 'success');
       setSettlementModal({ isOpen: false, client: null });
       setSettlementAmount('');
       setSettlementNotes('');
@@ -669,93 +386,76 @@ const combinedStatement = [...statementWithBalance].reverse();
         throw new Error('قيمة التحصيل غير صحيحة.');
       }
 
-      const actions = [{
-        type: 'delete',
-        collection: 'client_transactions',
-        id: transactionId,
-        record_label: 'تحصيل عميل',
-      }];
-
       if (destination === 'treasury') {
         const treasuryRecords = await pb.collection('treasury').getFullList().catch(() => []);
         const treasuryRecord = treasuryRecords[0] || null;
         if (treasuryRecord) {
-          actions.push({
-            type: 'balance_delta',
-            collection: 'treasury',
-            id: treasuryRecord.id,
-            delta: -amount,
+          await pb.collection('treasury').update(treasuryRecord.id, {
+            balance: Number(treasuryRecord.balance || 0) - amount,
           });
         } else {
-          actions.push({
-            type: 'create',
-            collection: 'treasury',
-            data: { balance: -amount, opening_balance: 0 },
+          await pb.collection('treasury').create({
+            balance: -amount,
+            opening_balance: 0,
           });
         }
       } else if (destination === 'banks' && bankId) {
         const bank = await pb.collection('banks').getOne(bankId).catch(() => null);
         if (bank) {
-          actions.push({
-            type: 'balance_delta',
-            collection: 'banks',
-            id: bank.id,
-            delta: -amount,
+          await pb.collection('banks').update(bank.id, {
+            balance: Number(bank.balance || 0) - amount,
           });
         }
       }
 
       if (client) {
-        actions.push({
-          type: 'balance_delta',
-          collection: 'clientsmoashe',
-          id: client.id,
-          delta: amount,
+        await pb.collection('clientsmoashe').update(client.id, {
+          balance: roundMoney(getClientLedgerBalance(client) + amount),
         });
       }
 
-      return requestCompoundOperation(
-        actions,
-        `حذف تحصيل العميل ${client?.name || clientId}`,
-        { reviewType: destination === 'banks' ? 'bank' : 'treasury' },
-      );
+      await archiveAndDeleteRecord('client_transactions', transactionId, 'تحصيل عميل', { allowNonAdmin: true });
+
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] }),
+        queryClient.invalidateQueries({ queryKey: ['client_transactions'] }),
+        queryClient.invalidateQueries({ queryKey: ['all_client_transactions_summary'] }),
+        queryClient.invalidateQueries({ queryKey: ['treasury'] }),
+        queryClient.invalidateQueries({ queryKey: ['banks'] }),
+      ]);
+
+      return transaction;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
-      queryClient.invalidateQueries({ queryKey: ['treasury'] });
-      queryClient.invalidateQueries({ queryKey: ['banks'] });
-      queryClient.invalidateQueries({ queryKey: ['all_client_transactions_summary'] });
-      queryClient.invalidateQueries({ queryKey: ['client_transactions'] });
-      queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
-      showFeedback('تم حذف التحصيل وإلغاء أثره مؤقتًا؛ بانتظار اعتماد المراجع.', 'success');
+      showFeedback('✅ تم حذف التحصيل واسترجاع تأثيره من الخزنة/البنك وتحديث العميل.', 'success');
     },
     onError: (error) => {
       showFeedback('❌ فشل حذف التحصيل: ' + error.message, 'error');
     },
   });
 
-  // إضافة أو تعديل الرصيد الافتتاحي للعميل (محمي للأدمن فقط)
+  // إضافة أو تعديل الرصيد الافتتاحي للعميل
   const openingBalanceMutation = useMutation({
     mutationFn: async ({ client, amount }) => {
       const numericAmount = Number(amount);
-      return requestSettlement({
-        collectionName: 'clientsmoashe',
-        recordId: client.id,
-        recordLabel: client.name,
-        changes: { balance: roundMoney(numericAmount) },
-        transactionCollection: 'client_transactions',
-        transactionData: {
-          client_id: client.id,
-          type: 'opening_balance',
-          amount: numericAmount,
-          notes: 'إضافة/تعديل الرصيد الافتتاحي',
-          date: new Date().toISOString(),
-        },
+      
+      await pb.collection('clientsmoashe').update(client.id, {
+        balance: roundMoney(numericAmount),
+      });
+
+      await pb.collection('client_transactions').create({
+        client_id: client.id,
+        type: 'opening_balance',
+        amount: numericAmount,
+        notes: 'إضافة/تعديل الرصيد الافتتاحي',
+        date: new Date().toISOString()
       });
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
-      showFeedback('تم إرسال طلب تعديل الرصيد الافتتاحي للمدير.', 'success');
+      await queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
+      await queryClient.invalidateQueries({ queryKey: ['client_transactions'] });
+      await queryClient.invalidateQueries({ queryKey: ['all_client_transactions_summary'] });
+      showFeedback('✨ تم تحديث الرصيد الافتتاحي بنجاح', 'success');
       setOpeningModal({ isOpen: false, client: null });
       setOpeningAmount('');
     },
@@ -766,10 +466,10 @@ const combinedStatement = [...statementWithBalance].reverse();
 
   // حذف عميل
   const deleteClientMutation = useMutation({
-    mutationFn: (id) => requestRecordDeletion('clientsmoashe', id),
+    mutationFn: async (id) => {
+      return await archiveAndDeleteRecord('clientsmoashe', id, undefined, { allowNonAdmin: true });
+    },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
-      await queryClient.invalidateQueries({ queryKey: ['pending_client_deletion_action_keys'] });
       await queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] });
       showFeedback('تم حذف العميل بنجاح.', 'success');
       setDeleteModal({ isOpen: false, clientId: null });
@@ -814,19 +514,6 @@ const combinedStatement = [...statementWithBalance].reverse();
       amount: payAmount,
       destination: payDestination,
       notes: payNotes,
-    });
-  };
-
-  const handleBulkPaymentSubmit = (e) => {
-    e.preventDefault();
-    const payments = clients
-      .filter((client) => Object.prototype.hasOwnProperty.call(bulkCollectionAmounts, client.id))
-      .map((client) => ({ client, amount: bulkCollectionAmounts[client.id] }));
-
-    bulkPayMutation.mutate({
-      payments,
-      destination: bulkCollectionDestination,
-      bankId: bulkCollectionBankId,
     });
   };
 
@@ -894,186 +581,11 @@ const combinedStatement = [...statementWithBalance].reverse();
       return 0;
     });
 
-  const bulkEligibleClients = clients.filter((client) => {
-    const hasDebt = getClientLedgerBalance(client) > 0;
-    const matchesSearch = (
-      String(client.name || '').toLowerCase().includes(bulkCollectionSearch.toLowerCase()) ||
-      String(client.phone || '').includes(bulkCollectionSearch)
-    );
-    return hasDebt && matchesSearch;
-  });
-  const selectedBulkClients = clients.filter((client) => (
-    Object.prototype.hasOwnProperty.call(bulkCollectionAmounts, client.id)
-  ));
-  const bulkCollectionTotal = selectedBulkClients.reduce(
-    (total, client) => total + Number(bulkCollectionAmounts[client.id] || 0),
-    0,
-  );
-
   const totalBalances = clients.reduce((sum, client) => sum + getClientLedgerBalance(client), 0);
 
   return (
     <div className="p-4 md:p-8 max-w-6xl mx-auto space-y-8 relative" dir="rtl">
       
-      {bulkCollectionOpen && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-3 md:p-6">
-          <div className="bg-white rounded-3xl p-5 md:p-6 max-w-4xl w-full max-h-[92vh] shadow-2xl flex flex-col gap-4">
-            <div className="flex justify-between items-center border-b pb-3">
-              <div>
-                <h3 className="text-lg font-black text-gray-800">💵 تحصيل مجمع</h3>
-                <p className="text-xs text-gray-500 mt-1">اختر العملاء واكتب مبلغ التحصيل لكل عميل</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setBulkCollectionOpen(false)}
-                className="text-gray-400 font-bold"
-                aria-label="إغلاق التحصيل المجمع"
-              >
-                ✕
-              </button>
-            </div>
-
-            <form onSubmit={handleBulkPaymentSubmit} className="flex flex-col gap-4 min-h-0">
-              <input
-                type="search"
-                value={bulkCollectionSearch}
-                onChange={(event) => setBulkCollectionSearch(event.target.value)}
-                placeholder="🔍 ابحث عن عميل بالاسم أو الهاتف..."
-                className="border px-3 py-2.5 rounded-xl text-sm outline-none"
-              />
-
-              <div className="overflow-auto border rounded-xl max-h-[42vh]">
-                <table className="w-full text-right border-collapse">
-                  <thead className="sticky top-0 bg-gray-50 text-xs text-gray-500">
-                    <tr>
-                      <th className="p-3">اختيار</th>
-                      <th className="p-3">العميل</th>
-                      <th className="p-3">المديونية</th>
-                      <th className="p-3">مبلغ التحصيل (ج.م)</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y text-sm">
-                    {bulkEligibleClients.map((client) => {
-                      const isSelected = Object.prototype.hasOwnProperty.call(bulkCollectionAmounts, client.id);
-                      const clientBalance = getClientLedgerBalance(client);
-                      return (
-                        <tr key={client.id} className="hover:bg-gray-50">
-                          <td className="p-3">
-                            <input
-                              type="checkbox"
-                              checked={isSelected}
-                              disabled={bulkPayMutation.isPending}
-                              onChange={(event) => {
-                                setBulkCollectionAmounts((current) => {
-                                  const next = { ...current };
-                                  if (event.target.checked) next[client.id] = '';
-                                  else delete next[client.id];
-                                  return next;
-                                });
-                              }}
-                              aria-label={`اختيار ${client.name}`}
-                            />
-                          </td>
-                          <td className="p-3 font-bold">{client.name}</td>
-                          <td className="p-3 font-bold text-red-600">{clientBalance.toLocaleString()} ج.م</td>
-                          <td className="p-3">
-                            {isSelected ? (
-                              <input
-                                type="number"
-                                min="0.01"
-                                step="0.01"
-                                required
-                                disabled={bulkPayMutation.isPending}
-                                value={bulkCollectionAmounts[client.id]}
-                                onChange={(event) => setBulkCollectionAmounts((current) => ({
-                                  ...current,
-                                  [client.id]: event.target.value,
-                                }))}
-                                className="w-36 border p-2 rounded-lg text-xs"
-                                aria-label={`مبلغ التحصيل للعميل ${client.name}`}
-                              />
-                            ) : (
-                              <span className="text-gray-400">اختر العميل أولاً</span>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                    {bulkEligibleClients.length === 0 && (
-                      <tr>
-                        <td colSpan="4" className="p-6 text-center text-gray-400">
-                          لا يوجد عملاء بمديونيات مطابقة للبحث.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs font-bold text-gray-700">توريد التحصيل إلى:</label>
-                  <select
-                    value={bulkCollectionDestination}
-                    disabled={bulkPayMutation.isPending}
-                    onChange={(event) => {
-                      setBulkCollectionDestination(event.target.value);
-                      setBulkCollectionBankId('');
-                    }}
-                    className="w-full border p-3 rounded-xl text-xs font-bold bg-white mt-1"
-                  >
-                    <option value="treasury">🏦 الخزنة</option>
-                    <option value="banks">💳 بنك محدد</option>
-                  </select>
-                </div>
-                {bulkCollectionDestination === 'banks' && (
-                  <div>
-                    <label className="text-xs font-bold text-gray-700">البنك المستلم:</label>
-                    <select
-                      required
-                      value={bulkCollectionBankId}
-                      disabled={bulkPayMutation.isPending}
-                      onChange={(event) => setBulkCollectionBankId(event.target.value)}
-                      className="w-full border p-3 rounded-xl text-xs font-bold bg-white mt-1"
-                    >
-                      <option value="">-- اختر البنك --</option>
-                      {banks.map((bank) => (
-                        <option key={bank.id} value={bank.id}>
-                          {bank.name} (الرصيد: {Number(bank.balance || 0).toLocaleString()} ج.م)
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-3">
-                <p className="text-sm font-bold text-gray-700">
-                  العملاء المحددون: {selectedBulkClients.length} — إجمالي التحصيل: {roundMoney(bulkCollectionTotal).toLocaleString()} ج.م
-                </p>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    disabled={bulkPayMutation.isPending}
-                    onClick={() => setBulkCollectionOpen(false)}
-                    className="bg-gray-100 text-gray-700 px-5 py-3 rounded-xl text-xs font-bold"
-                  >
-                    إلغاء
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={bulkPayMutation.isPending || selectedBulkClients.length === 0}
-                    className="bg-emerald-600 text-white px-5 py-3 rounded-xl text-xs font-bold disabled:opacity-50"
-                  >
-                    {bulkPayMutation.isPending ? 'جارٍ تسجيل التحصيل...' : 'تأكيد التحصيل المجمع'}
-                  </button>
-                </div>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
       {/* نافذة حذف العميل */}
       {deleteModal.isOpen && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -1277,11 +789,6 @@ const combinedStatement = [...statementWithBalance].reverse();
             </div>
 
             <div className="overflow-x-auto">
-              {pendingReviewsError && (
-                <p role="alert" className="mb-3 rounded-xl bg-amber-50 p-3 text-xs font-bold text-amber-800">
-                  تعذر تحميل حالات اعتماد العمليات؛ تحقق من اتصال النظام.
-                </p>
-              )}
               {loadingTransactions ? (
                 <div className="p-8 text-center text-blue-600 text-xs font-bold">جاري تحميل كشف الحساب...</div>
               ) : filteredStatement.length === 0 ? (
@@ -1315,11 +822,6 @@ const combinedStatement = [...statementWithBalance].reverse();
                             <span className="text-amber-700 bg-amber-50 px-2 py-1 rounded-md">تسوية حساب</span>
                           ) : (
                             <span className="text-emerald-600 bg-emerald-50 px-2 py-1 rounded-md">تحصيل</span>
-                          )}
-                          {tx.reviewPending && (
-                            <span className="mr-2 inline-flex rounded-md bg-amber-100 px-2 py-1 text-[10px] font-bold text-amber-800">
-                              بانتظار اعتماد المراجع
-                            </span>
                           )}
                         </td>
                         <td className={`p-3 font-black ${tx.type === 'invoice' ? 'text-purple-600' : 'text-gray-900'}`}>
@@ -1359,19 +861,7 @@ const combinedStatement = [...statementWithBalance].reverse();
           <h1 className="text-2xl font-black text-gray-800">👥 إدارة العملاء والمديونيات</h1>
           <p className="text-sm text-gray-500">متابعة حسابات العملاء، الفواتير، التحصيل، والتسويات</p>
         </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => {
-              setBulkCollectionAmounts({});
-              setBulkCollectionSearch('');
-              setBulkCollectionOpen(true);
-            }}
-            className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold"
-          >
-            💵 تحصيل مجمع
-          </button>
-          <button onClick={() => queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] })} className="bg-gray-100 text-gray-700 px-4 py-2 rounded-xl text-xs font-bold">🔄 تحديث</button>
-        </div>
+        <button onClick={() => queryClient.invalidateQueries({ queryKey: ['clientsmoashe'] })} className="bg-gray-100 text-gray-700 px-4 py-2 rounded-xl text-xs font-bold">🔄 تحديث</button>
       </div>
 
       {feedbackMessage.text && (

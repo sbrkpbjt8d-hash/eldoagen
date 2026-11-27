@@ -1,38 +1,18 @@
 'use client';
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
-import { getPendingDeletionActionKeys, requestCompoundOperation } from '../../lib/approval-requests';
+import { archiveAndDeleteRecord } from '../../lib/deleted-records';
 import { addQuantities, formatQuantity, roundQuantity } from '../../lib/quantity';
 import toast, { Toaster } from 'react-hot-toast';
 
 export default function ProductionOrdersPage() {
   const queryClient = useQueryClient();
   const [selectedProduct, setSelectedProduct] = useState('');
-  const [productSearch, setProductSearch] = useState('');
-  const [productDropdownOpen, setProductDropdownOpen] = useState(false);
   const [productionQty, setProductionQty] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
-  const [userEmail, setUserEmail] = useState('');
-
-  // جلب إيميل المستخدم الحالي للتحقق من الصلاحيات
-  useEffect(() => {
-    const user = pb.authStore.model;
-    setUserEmail(user?.email || '');
-
-    const unsubscribe = pb.authStore.onChange(() => {
-      setUserEmail(pb.authStore.model?.email || '');
-    });
-
-    return () => {
-      unsubscribe?.();
-    };
-  }, []);
-
-  const canRequestChanges = Boolean(userEmail);
-
   // حالة نافذة التأكيد الاحترافية (Modal) للحذف أو التنفيذ
   const [confirmModal, setConfirmModal] = useState({
     isOpen: false,
@@ -69,14 +49,6 @@ export default function ProductionOrdersPage() {
       return await pb.collection('production_orders').getFullList({ sort: '-created' }).catch(() => []);
     },
   });
-
-  const { data: pendingDeletionKeys = [], isError: pendingDeletionLoadFailed } = useQuery({
-    queryKey: ['pending_manager_deletion_action_keys'],
-    queryFn: getPendingDeletionActionKeys,
-    refetchOnWindowFocus: true,
-    refetchInterval: 15000,
-  });
-  const pendingDeletionKeySet = new Set(pendingDeletionKeys);
 
   const { data: productsStock = [] } = useQuery({
     queryKey: ['products_stock'],
@@ -188,8 +160,6 @@ export default function ProductionOrdersPage() {
       queryClient.invalidateQueries({ queryKey: ['product_stock_transactions'] });
       toast.success('تم تنفيذ أمر التصنيع وتحديث المخازن بنجاح! 🚀');
       setSelectedProduct('');
-      setProductSearch('');
-      setProductDropdownOpen(false);
       setProductionQty('');
       setConfirmModal({ isOpen: false, title: '', message: '', onConfirm: null });
     },
@@ -206,8 +176,6 @@ export default function ProductionOrdersPage() {
       const productName = order.product_name;
       const qtyProduced = roundQuantity(order.batch_quantity || 0);
       const orderCost = Number(order.total_cost || 0);
-      const actions = [];
-      const materialStocks = new Map();
 
       const recipe = allRecipes.filter(r => normalizeProductName(r.product_name || r.name || r.product) === normalizeProductName(productName));
       for (const item of recipe) {
@@ -216,14 +184,14 @@ export default function ProductionOrdersPage() {
         if (matInfo) {
           const qtyPerUnit = Number(item.quantity_needed || item.quantity || 0);
           const totalToRestore = qtyPerUnit * qtyProduced;
-          const currentStock = materialStocks.get(matId) ?? Number(matInfo.stock ?? matInfo.quantity ?? 0);
+          const currentStock = Number(matInfo.stock ?? matInfo.quantity ?? 0);
           const newStock = currentStock + totalToRestore;
-          materialStocks.set(matId, newStock);
 
-          actions.push({
-            type: 'create',
-            collection: 'material_adjustments',
-            data: {
+          await pb.collection('khamat_moashe').update(matId, {
+            stock: newStock
+          });
+
+          await pb.collection('material_adjustments').create({
             material_id: matId,
             material_name: matInfo.name,
             quantity: totalToRestore,
@@ -235,17 +203,8 @@ export default function ProductionOrdersPage() {
             source_type: 'production_order_cancelled',
             actor_name: getCurrentActorName(),
             date: new Date().toISOString(),
-            },
-          });
+          }).catch(() => {});
         }
-      }
-      for (const [matId, stock] of materialStocks) {
-        actions.push({
-          type: 'update',
-          collection: 'khamat_moashe',
-          id: matId,
-          data: { stock },
-        });
       }
 
       const freshProductsStock = await pb.collection('products_stock').getFullList();
@@ -258,32 +217,20 @@ export default function ProductionOrdersPage() {
       const updatedCost = Math.max(0, totalCurrentCost - orderCost);
 
       if (matchingProductStocks.length > 0) {
-        actions.push({
-          type: 'update',
-          collection: 'products_stock',
-          id: matchingProductStocks[0].id,
-          data: { stock: updatedStock, total_cost: updatedCost },
+        await pb.collection('products_stock').update(matchingProductStocks[0].id, {
+          stock: updatedStock,
+          total_cost: updatedCost,
         });
         for (const duplicateStock of matchingProductStocks.slice(1)) {
-          actions.push({
-            type: 'update',
-            collection: 'products_stock',
-            id: duplicateStock.id,
-            data: { stock: 0, total_cost: 0 },
+          await pb.collection('products_stock').update(duplicateStock.id, {
+            stock: 0,
+            total_cost: 0,
           });
         }
       }
 
-      actions.push({
-        type: 'delete',
-        collection: 'production_orders',
-        id: order.id,
-        record_label: productName,
-      });
-      actions.push({
-        type: 'create',
-        collection: 'product_stock_transactions',
-        data: {
+      await archiveAndDeleteRecord('production_orders', order.id, productName, { allowNonAdmin: true });
+      await pb.collection('product_stock_transactions').create({
         product_name: productName,
         quantity: -qtyProduced,
         movement_type: 'delete',
@@ -295,9 +242,7 @@ export default function ProductionOrdersPage() {
         product_stock_id: matchingProductStocks[0]?.id || '',
         movement_at: new Date().toISOString(),
         balance_after: updatedStock,
-        },
       });
-      await requestCompoundOperation(actions, `حذف أمر تصنيع ${productName}`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['production_orders'] });
@@ -305,9 +250,7 @@ export default function ProductionOrdersPage() {
       queryClient.invalidateQueries({ queryKey: ['products_stock'] });
       queryClient.invalidateQueries({ queryKey: ['product_stock_transactions'] });
       queryClient.invalidateQueries({ queryKey: ['invoices_logs_products_stock_history'] });
-      queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
-      queryClient.invalidateQueries({ queryKey: ['pending_manager_deletion_action_keys'] });
-      toast.success('تم حذف أمر التصنيع وإرجاع/تعديل المخزون بنجاح.');
+      toast.success('تم حذف أمر التصنيع وإرجاع الخامات بنجاح!');
       setConfirmModal({ isOpen: false, title: '', message: '', onConfirm: null });
     },
     onError: (error) => {
@@ -327,9 +270,6 @@ export default function ProductionOrdersPage() {
         .filter(([key]) => key)
     ).values()
   );
-  const filteredProductNames = uniqueProductNames.filter((productName) => (
-    productName.toLowerCase().includes(productSearch.trim().toLowerCase())
-  ));
 
   const currentRecipe = allRecipes.filter(r => normalizeProductName(r.product_name || r.name || r.product) === normalizeProductName(selectedProduct));
 
@@ -391,7 +331,7 @@ export default function ProductionOrdersPage() {
     setConfirmModal({
       isOpen: true,
       title: 'تأكيد الحذف والإرجاع',
-      message: `هل تريد حذف أمر التصنيع للمنتج "${order.product_name}" وإرجاع الخامات وخصم المنتجات من المخزون مباشرةً؟`,
+      message: `هل تريد حقاً حذف أمر التصنيع للمنتج "${order.product_name}"؟ سيتم إرجاع الخامات وخصم المنتجات من المخزن.`,
       onConfirm: () => deleteProductionMutation.mutate(order)
     });
   };
@@ -416,11 +356,6 @@ export default function ProductionOrdersPage() {
       {materialsLoadFailed && (
         <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-800">
           تعذر تحميل سجل الخامات من PocketBase؛ لن يمكن التحقق من مكونات أوامر التصنيع. تحقق من اتصال قاعدة البيانات.
-        </div>
-      )}
-      {pendingDeletionLoadFailed && (
-        <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-bold text-amber-800">
-          تعذر تحميل طلبات الحذف المعلقة؛ قد لا تظهر علامة الانتظار على أوامر التصنيع.
         </div>
       )}
 
@@ -469,68 +404,17 @@ export default function ProductionOrdersPage() {
           <form onSubmit={handleExecuteProduction} className="space-y-4">
             <div>
               <label className="text-xs font-bold text-gray-600 block mb-1">اختر المنتج</label>
-              <div className="relative">
-                <input
-                  type="search"
-                  value={productDropdownOpen ? productSearch : selectedProduct}
-                  onFocus={() => {
-                    setProductSearch(selectedProduct);
-                    setProductDropdownOpen(true);
-                  }}
-                  onChange={(event) => {
-                    setProductSearch(event.target.value);
-                    setSelectedProduct('');
-                    setProductDropdownOpen(true);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Escape') {
-                      setProductDropdownOpen(false);
-                      setProductSearch('');
-                    }
-                    if (event.key === 'Enter') {
-                      event.preventDefault();
-                      if (filteredProductNames.length === 1) {
-                        setSelectedProduct(filteredProductNames[0]);
-                        setProductSearch('');
-                        setProductDropdownOpen(false);
-                      }
-                    }
-                  }}
-                  placeholder="ابحث واختر المنتج..."
-                  aria-label="ابحث واختر المنتج"
-                  role="combobox"
-                  aria-controls="production-product-options"
-                  aria-expanded={productDropdownOpen}
-                  required
-                  className="w-full border border-gray-300 p-2.5 rounded-xl text-black bg-gray-50 text-sm outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                {productDropdownOpen && (
-                  <div
-                    id="production-product-options"
-                    role="listbox"
-                    className="absolute z-30 mt-1 max-h-56 w-full overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-xl"
-                  >
-                    {filteredProductNames.length ? filteredProductNames.map((productName) => (
-                      <button
-                        key={productName}
-                        type="button"
-                        role="option"
-                        aria-selected={selectedProduct === productName}
-                        onClick={() => {
-                          setSelectedProduct(productName);
-                          setProductSearch('');
-                          setProductDropdownOpen(false);
-                        }}
-                        className="block w-full px-4 py-2.5 text-right text-sm font-bold text-gray-800 hover:bg-blue-50"
-                      >
-                        {productName}
-                      </button>
-                    )) : (
-                      <p className="p-3 text-xs text-gray-400">لا يوجد منتج بهذا الاسم.</p>
-                    )}
-                  </div>
-                )}
-              </div>
+              <select 
+                value={selectedProduct}
+                onChange={(e) => setSelectedProduct(e.target.value)}
+                className="w-full border border-gray-300 p-2.5 rounded-xl text-black bg-gray-50 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                required
+              >
+                <option value="">-- اضغط لاختيار المنتج --</option>
+                {uniqueProductNames.map((prod, idx) => (
+                  <option key={idx} value={prod}>{prod}</option>
+                ))}
+              </select>
             </div>
 
             <div>
@@ -669,9 +553,9 @@ export default function ProductionOrdersPage() {
                     </div>
                     <button
                       onClick={() => handleDeleteOrder(order)}
-                      className={`border p-2.5 rounded-xl transition text-xs font-bold ${canRequestChanges ? 'bg-red-50 hover:bg-red-100 text-red-600 border-red-200' : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'}`}
-                      title={canRequestChanges ? 'حذف الأمر مباشرةً' : 'سجل الدخول للحذف'}
-                      disabled={!canRequestChanges || deleteProductionMutation.isPending}
+                      disabled={deleteProductionMutation.isPending}
+                      className="border p-2.5 rounded-xl transition text-xs font-bold bg-red-50 hover:bg-red-100 text-red-600 border-red-200"
+                      title="حذف الأمر"
                     >
                       🗑️
                     </button>

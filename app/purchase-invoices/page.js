@@ -2,13 +2,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../lib/pocketbase';
-import { isFactoryAdmin } from '../lib/deleted-records';
-import { getPendingDeletionActionKeys, requestCompoundOperation } from '../lib/approval-requests';
-import {
-  isPurchaseInvoiceApproved,
-  PURCHASE_INVOICE_APPROVED,
-  PURCHASE_INVOICE_PENDING,
-} from '../lib/purchase-approval';
+import { archiveAndDeleteRecord } from '../lib/deleted-records';
 
 const emptyForm = { supplierId: '', items: [], discount: '', paymentType: 'credit' };
 const money = value => `${Number(value || 0).toLocaleString('ar-EG', { maximumFractionDigits: 1 })} ج.م`;
@@ -46,13 +40,6 @@ export default function PurchaseInvoicesPage() {
     queryKey: ['purchase_invoices'],
     queryFn: () => pb.collection('purchase_invoices').getFullList().catch(() => []),
   });
-  const { data: pendingDeletionKeys = [], isError: pendingDeletionLoadFailed } = useQuery({
-    queryKey: ['pending_manager_deletion_action_keys'],
-    queryFn: getPendingDeletionActionKeys,
-    refetchOnWindowFocus: true,
-    refetchInterval: 15000,
-  });
-  const pendingDeletionKeySet = new Set(pendingDeletionKeys);
 
   const { data: supplierTransactions = [] } = useQuery({
     queryKey: ['all_supplier_transactions'],
@@ -73,7 +60,6 @@ export default function PurchaseInvoicesPage() {
 
     const purchaseTotal = invoices
       .filter(invoice => String(invoice.supplier_id || '') === normalizedId)
-      .filter(isPurchaseInvoiceApproved)
       .reduce((sum, invoice) => sum + Number(invoice.total_amount || 0), 0);
 
     return transactionTotal + purchaseTotal;
@@ -87,21 +73,40 @@ export default function PurchaseInvoicesPage() {
   const discount = Number(form.discount || 0);
   const total = Math.max(0, subtotal - discount);
 
-  const isAdmin = isFactoryAdmin();
-  const canRequestChanges = Boolean(pb.authStore.model);
-
   const saveMutation = useMutation({
-    mutationFn: async ({ invoiceNumber }) => {
-      if (editingInvoice && !isPurchaseInvoiceApproved(editingInvoice)) {
-        throw new Error('لا يمكن تعديل فاتورة لم تعتمد بعد.');
-      }
-
+    mutationFn: async () => {
       const supplier = suppliers.find(item => item.id === form.supplierId);
       if (!supplier) throw new Error('اختر المورد أولاً');
       const oldInvoice = editingInvoice;
-      const needsApproval = !oldInvoice && !isAdmin;
+      const stockAfterReversal = new Map(
+        materials.map(material => [material.id, Number(material.stock ?? 0)])
+      );
+
+      // 1. في حالة التعديل: عكس التأثير القديم على المخزون ورصيد المورد
+      if (oldInvoice) {
+        for (const item of oldInvoice.items || []) {
+          const material = materials.find(record => record.id === item.materialId);
+          if (material) {
+            const reversedStock = (stockAfterReversal.get(material.id) ?? 0) - Number(item.qty || 0);
+            stockAfterReversal.set(material.id, reversedStock);
+            await pb.collection('khamat_moashe').update(material.id, {
+              stock: reversedStock
+            });
+          }
+        }
+        if (oldInvoice.payment_type === 'credit') {
+          const oldSupplier = suppliers.find(item => item.id === oldInvoice.supplier_id);
+          if (oldSupplier) {
+            await pb.collection('suppliers').update(oldSupplier.id, {
+              balance: Number(oldSupplier.balance || 0) - Number(oldInvoice.total_amount || 0)
+            });
+          }
+        }
+      }
+
+      // 2. تجهيز بيانات الفاتورة الجديدة أو المعدلة
       const data = {
-        invoice_number: oldInvoice?.invoice_number || invoiceNumber,
+        invoice_number: oldInvoice?.invoice_number || `PUR-${Date.now().toString().slice(-6)}`,
         supplier_id: supplier.id,
         supplier_name: supplier.name,
         items: form.items,
@@ -110,32 +115,14 @@ export default function PurchaseInvoicesPage() {
         total_amount: total,
         payment_type: form.paymentType,
         actor_name: pb.authStore.model?.name || pb.authStore.model?.email || 'مستخدم',
-        status: needsApproval ? PURCHASE_INVOICE_PENDING : oldInvoice?.status || PURCHASE_INVOICE_APPROVED,
+        status: 'مكتملة',
       };
 
-      if (needsApproval) {
-        return pb.collection('purchase_invoices').create(data);
-      }
+      const saved = oldInvoice
+        ? await pb.collection('purchase_invoices').update(oldInvoice.id, data)
+        : await pb.collection('purchase_invoices').create(data);
 
-      const stockAfterReversal = new Map(
-        materials.map(material => [material.id, Number(material.stock ?? 0)])
-      );
-
-      const actions = [];
-
-      // 1. في حالة التعديل: عكس التأثير القديم على المخزون
-      if (oldInvoice) {
-        for (const item of oldInvoice.items || []) {
-          const material = materials.find(record => record.id === (item.materialId || item.material_id));
-          if (material) {
-            const reversedStock = (stockAfterReversal.get(material.id) ?? 0) - Number(item.qty || 0);
-            stockAfterReversal.set(material.id, reversedStock);
-          }
-        }
-      }
-
-      // 2. تجهيز تأثير المخزون الجديد ضمن طلب الاعتماد
-      const materialChanges = new Map();
+      // 3. تطبيق التأثير الجديد على المخزون (زيادة المخزون وحساب متوسط السعر)
       for (const item of form.items) {
         const material = materials.find(record => record.id === item.materialId);
         if (material) {
@@ -147,47 +134,25 @@ export default function PurchaseInvoicesPage() {
             ? ((oldStock * Number(material.price || 0)) + qty * price) / newStock
             : price;
           stockAfterReversal.set(material.id, newStock);
-          materialChanges.set(material.id, {
-            type: 'update',
-            collection: 'khamat_moashe',
-            id: material.id,
-            data: { stock: newStock, price: averagePrice },
+          await pb.collection('khamat_moashe').update(material.id, {
+            stock: newStock,
+            price: averagePrice
           });
         }
       }
-      actions.push(...materialChanges.values());
 
-      // 3. تجهيز تحديثات أرصدة الموردين والفاتورة ضمن طلب واحد
-      const supplierBalanceChanges = new Map();
-      if (oldInvoice?.payment_type === 'credit') {
-        supplierBalanceChanges.set(
-          oldInvoice.supplier_id,
-          (supplierBalanceChanges.get(oldInvoice.supplier_id) || 0) - Number(oldInvoice.total_amount || 0),
-        );
-      }
+      // 4. تحديث رصيد المورد إذا كانت الفاتورة آجل باستخدام الحساب المشتق من الحركات الفعلية
       if (form.paymentType === 'credit') {
-        supplierBalanceChanges.set(
-          supplier.id,
-          (supplierBalanceChanges.get(supplier.id) || 0) + total,
-        );
-      }
-      for (const [supplierId, balanceChange] of supplierBalanceChanges) {
-        if (!supplierId) continue;
-        actions.push({
-          type: 'update',
-          collection: 'suppliers',
-          id: supplierId,
-          data: { balance: getSupplierDerivedBalance(supplierId) + balanceChange },
+        const currentDerivedBalance = getSupplierDerivedBalance(supplier.id);
+        const previousInvoiceAmount = oldInvoice && oldInvoice.payment_type === 'credit' ? Number(oldInvoice.total_amount || 0) : 0;
+        await pb.collection('suppliers').update(supplier.id, {
+          balance: currentDerivedBalance - previousInvoiceAmount + total
         });
       }
 
-      actions.push(oldInvoice
-        ? { type: 'update', collection: 'purchase_invoices', id: oldInvoice.id, data }
-        : { type: 'create', collection: 'purchase_invoices', data });
-      await requestCompoundOperation(actions, `تعديل فاتورة الشراء ${data.invoice_number}`);
-      return { approvalRequested: true };
+      return saved;
     },
-    onSuccess: saved => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['purchase_invoices'] });
       queryClient.invalidateQueries({ queryKey: ['khamat_moashe'] });
       queryClient.invalidateQueries({ queryKey: ['suppliers'] });
@@ -197,66 +162,38 @@ export default function PurchaseInvoicesPage() {
       setSupplierDropdownOpen(false);
       setMaterialDropdownOpen(false);
       setEditingInvoice(null);
-      notify(saved.approvalRequested
-        ? 'تم إرسال تعديل فاتورة الشراء للمدير لاعتماده.'
-        : saved.status === PURCHASE_INVOICE_PENDING
-        ? 'تم إرسال فاتورة الشراء للمدير لاعتمادها.'
-        : 'تم حفظ فاتورة الشراء وتحديث المخزون بنجاح.');
+      notify('تم حفظ فاتورة الشراء وتحديث المخزون بنجاح.');
     },
     onError: error => notify(`فشل الحفظ: ${error.message}`, 'error'),
   });
 
   const deleteMutation = useMutation({
     mutationFn: async invoice => {
-      const actions = [];
-
-      if (isPurchaseInvoiceApproved(invoice)) {
-        const materialChanges = new Map();
-        for (const item of invoice.items || []) {
-          const material = materials.find(record => record.id === (item.materialId || item.material_id));
-          if (material) {
-            const currentStock = materialChanges.get(material.id)?.data.stock ?? Number(material.stock ?? 0);
-            materialChanges.set(material.id, {
-              type: 'update',
-              collection: 'khamat_moashe',
-              id: material.id,
-              data: {
-                stock: currentStock - Number(item.qty || item.quantity || 0),
-              },
-            });
-          }
-        }
-        actions.push(...materialChanges.values());
-        if (invoice.payment_type === 'credit') {
-          const supplier = suppliers.find(item => item.id === invoice.supplier_id);
-          if (supplier) {
-            actions.push({
-              type: 'update',
-              collection: 'suppliers',
-              id: supplier.id,
-              data: {
-                balance: getSupplierDerivedBalance(supplier.id) - Number(invoice.total_amount || 0),
-              },
-            });
-          }
+      for (const item of invoice.items || []) {
+        const material = materials.find(record => record.id === item.materialId);
+        if (material) {
+          await pb.collection('khamat_moashe').update(material.id, {
+            stock: Number(material.stock ?? 0) - Number(item.qty || 0)
+          });
         }
       }
-      actions.push({
-        type: 'delete',
-        collection: 'purchase_invoices',
-        id: invoice.id,
-        record_label: invoice.invoice_number || invoice.id,
-      });
-      await requestCompoundOperation(actions, `حذف فاتورة الشراء ${invoice.invoice_number || invoice.id}`);
+      if (invoice.payment_type === 'credit') {
+        const supplier = suppliers.find(item => item.id === invoice.supplier_id);
+        if (supplier) {
+          const currentDerivedBalance = getSupplierDerivedBalance(supplier.id);
+          await pb.collection('suppliers').update(supplier.id, {
+            balance: currentDerivedBalance - Number(invoice.total_amount || 0)
+          });
+        }
+      }
+      await archiveAndDeleteRecord('purchase_invoices', invoice.id, invoice.invoice_number || invoice.id, { allowNonAdmin: true });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['purchase_invoices'] });
       queryClient.invalidateQueries({ queryKey: ['khamat_moashe'] });
       queryClient.invalidateQueries({ queryKey: ['suppliers'] });
-      queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
-      queryClient.invalidateQueries({ queryKey: ['pending_manager_deletion_action_keys'] });
       setDeleteInvoice(null);
-      notify('تم حذف فاتورة الشراء وإرجاع أثرها إلى المخزون ورصيد المورد بنجاح.');
+      notify('تم حذف الفاتورة بنجاح.');
     },
     onError: error => notify(`فشل الحذف: ${error.message}`, 'error'),
   });
@@ -266,9 +203,7 @@ export default function PurchaseInvoicesPage() {
     const date = String(invoice.created || '').slice(0, 10);
     return (invoice.supplier_name?.toLowerCase().includes(query) || invoice.invoice_number?.toLowerCase().includes(query)) && (!startDate || date >= startDate) && (!endDate || date <= endDate);
   });
-  const filteredTotal = filteredInvoices
-    .filter(isPurchaseInvoiceApproved)
-    .reduce((sum, invoice) => sum + Number(invoice.total_amount || 0), 0);
+  const filteredTotal = filteredInvoices.reduce((sum, invoice) => sum + Number(invoice.total_amount || 0), 0);
 
   const addMaterial = id => {
     const material = materials.find(item => item.id === id);
@@ -277,10 +212,6 @@ export default function PurchaseInvoicesPage() {
   };
 
   const editInvoice = invoice => {
-    if (!isPurchaseInvoiceApproved(invoice)) {
-      notify('الفاتورة المعلقة تحتاج إلى اعتماد أو رفض من صفحة المدير.', 'error');
-      return;
-    }
     setEditingInvoice(invoice);
     setDetailsInvoice(null);
     const selectedSupplier = suppliers.find(supplier => supplier.id === invoice.supplier_id);
@@ -294,9 +225,7 @@ export default function PurchaseInvoicesPage() {
     event.preventDefault();
     if (!form.supplierId) return notify('اختر المورد أولاً.', 'error');
     if (!form.items.length) return notify('أضف خامة واحدة على الأقل للفاتورة.', 'error');
-    saveMutation.mutate({
-      invoiceNumber: `PUR-${Date.now().toString().slice(-6)}`,
-    });
+    saveMutation.mutate();
   };
 
   return (
@@ -306,22 +235,15 @@ export default function PurchaseInvoicesPage() {
           {message.text}
         </div>
       )}
-      {pendingDeletionLoadFailed && (
-        <div role="alert" className="rounded-2xl bg-amber-50 p-4 text-xs font-bold text-amber-800">
-          تعذر تحميل طلبات الحذف المعلقة؛ قد لا تظهر علامة الانتظار على الفواتير.
-        </div>
-      )}
 
       {deleteInvoice && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl p-6 max-w-sm w-full space-y-4">
             <h3 className="font-black">تأكيد حذف الفاتورة</h3>
-            <p className="text-xs text-gray-500">سيتم حذف الفاتورة {deleteInvoice.invoice_number} وإرجاع أثرها إلى المخزون ورصيد المورد مباشرةً.</p>
+            <p className="text-xs text-gray-500">هل تريد حذف الفاتورة {deleteInvoice.invoice_number}؟</p>
             <div className="flex gap-2">
-              <button onClick={() => setDeleteInvoice(null)} disabled={deleteMutation.isPending} className="flex-1 bg-gray-100 p-3 rounded-xl text-xs font-bold disabled:opacity-50">إلغاء</button>
-              <button onClick={() => deleteMutation.mutate(deleteInvoice)} disabled={deleteMutation.isPending} className="flex-1 bg-red-600 text-white p-3 rounded-xl text-xs font-bold disabled:opacity-50">
-                {deleteMutation.isPending ? 'جاري إرسال الطلب...' : 'إرسال طلب الحذف'}
-              </button>
+              <button onClick={() => setDeleteInvoice(null)} className="flex-1 bg-gray-100 p-3 rounded-xl text-xs font-bold">إلغاء</button>
+              <button onClick={() => deleteMutation.mutate(deleteInvoice)} className="flex-1 bg-red-600 text-white p-3 rounded-xl text-xs font-bold">حذف</button>
             </div>
           </div>
         </div>
@@ -447,7 +369,6 @@ export default function PurchaseInvoicesPage() {
                 <th className="p-3">المورد</th>
                 <th className="p-3">الدفع</th>
                 <th className="p-3">الإجمالي</th>
-                <th className="p-3">حالة الاعتماد</th>
                 <th className="p-3">التاريخ</th>
                 <th className="p-3">بواسطة</th>
                 <th className="p-3 print:hidden">الإجراءات</th>
@@ -460,36 +381,16 @@ export default function PurchaseInvoicesPage() {
                   <td className="p-3">{invoice.supplier_name}</td>
                   <td className="p-3">{invoice.payment_type === 'credit' ? 'آجل' : 'كاش'}</td>
                   <td className="p-3 font-black text-blue-700">{money(invoice.total_amount)}</td>
-                  <td className="p-3">
-                    {invoice.status === PURCHASE_INVOICE_PENDING ? (
-                      <span className="rounded-lg bg-amber-100 px-2 py-1 font-bold text-amber-800">بانتظار اعتماد المدير</span>
-                    ) : invoice.status === 'مرفوضة' ? (
-                      <span className="rounded-lg bg-red-100 px-2 py-1 font-bold text-red-700">مرفوضة</span>
-                    ) : (
-                      <span className="rounded-lg bg-emerald-100 px-2 py-1 font-bold text-emerald-800">معتمدة</span>
-                    )}
-                  </td>
                   <td className="p-3">{dateValue(invoice.created)}</td>
                   <td className="p-3 font-bold">{invoice.actor_name || 'غير معروف'}</td>
                   <td className="p-3 flex gap-1 print:hidden">
                     <button onClick={() => setDetailsInvoice(invoice)} className="bg-blue-50 text-blue-700 px-2.5 py-1.5 rounded-lg font-bold">عرض</button>
-                    {canRequestChanges && (
-                      <>
-                        {isPurchaseInvoiceApproved(invoice) && (
-                          <button onClick={() => editInvoice(invoice)} className="bg-amber-50 text-amber-700 px-2.5 py-1.5 rounded-lg font-bold">تعديل</button>
-                        )}
-                        <button
-                          onClick={() => setDeleteInvoice(invoice)}
-                          className="bg-red-50 text-red-600 px-2.5 py-1.5 rounded-lg font-bold disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          حذف
-                        </button>
-                      </>
-                    )}
+                    <button onClick={() => editInvoice(invoice)} className="bg-amber-50 text-amber-700 px-2.5 py-1.5 rounded-lg font-bold">تعديل</button>
+                    <button onClick={() => setDeleteInvoice(invoice)} className="bg-red-50 text-red-600 px-2.5 py-1.5 rounded-lg font-bold">حذف</button>
                   </td>
                 </tr>
               ))}
-              {!filteredInvoices.length && <tr><td colSpan="8" className="p-8 text-center text-gray-400">لا توجد فواتير.</td></tr>}
+              {!filteredInvoices.length && <tr><td colSpan="7" className="p-8 text-center text-gray-400">لا توجد فواتير.</td></tr>}
             </tbody>
           </table>
         </div>

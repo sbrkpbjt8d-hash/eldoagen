@@ -2,11 +2,8 @@
 import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
-import {
-  executeCompoundOperation,
-  getPendingReviewActionKeys,
-  requestRecordDeletion,
-} from '../../lib/approval-requests';
+import { archiveAndDeleteRecord } from '../../lib/deleted-records';
+import { isSupplierSettlement } from '../../lib/supplier-transactions';
 
 const EGYPT_TIME_ZONE = 'Africa/Cairo';
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
@@ -105,11 +102,6 @@ export default function ExpensesPage() {
       }).catch(() => []);
     },
   });
-  const { data: pendingReviewActionKeys = [], isError: pendingReviewsError } = useQuery({
-    queryKey: ['pending_financial_review_action_keys'],
-    queryFn: getPendingReviewActionKeys,
-    refetchOnWindowFocus: true,
-  });
 
   const { data: clientTransactions = [] } = useQuery({
     queryKey: ['client_transactions_expenses_balance'],
@@ -158,12 +150,11 @@ export default function ExpensesPage() {
   // Mutation حذف نوع مصروف فرعي
   const deleteCategoryMutation = useMutation({
     mutationFn: async (categoryId) => {
-      return requestRecordDeletion('expense_categories', categoryId);
+      return await archiveAndDeleteRecord('expense_categories', categoryId, undefined, { allowNonAdmin: true });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['pending_manager_approvals'] });
       queryClient.invalidateQueries({ queryKey: ['expense_categories'] });
-      showToast('تم حذف نوع المصروف بنجاح.');
+      showToast('🗑️ تم حذف نوع المصروف بنجاح!');
       setDeleteConfirmModal({ show: false, type: '', data: null });
     },
     onError: (error) => {
@@ -172,7 +163,7 @@ export default function ExpensesPage() {
     }
   });
 
-  // إضافة المصروفات مباشرةً وتحديث الرصيد من الخزنة أو البنك فورًا.
+  // Mutation تسجيل مصروف جديد (مع التعديل الآمن لتحديث الرصيد)
   const addExpenseMutation = useMutation({
     mutationFn: async () => {
       const expenseAmount = parseFloat(amount);
@@ -181,8 +172,6 @@ export default function ExpensesPage() {
       }
 
       const isTreasury = paymentSource === 'treasury';
-      const selectedCategoryName = categories.find((category) => category.id === selectedCategory)?.name;
-      if (!selectedCategoryName) throw new Error('نوع المصروف المختار غير موجود. اختر نوع المصروف مرة أخرى.');
 
       const expenseData = {
         category_id: selectedCategory,
@@ -194,39 +183,34 @@ export default function ExpensesPage() {
         actor_name: currentUserName(),
       };
 
-      const actions = [{ type: 'create', collection: 'expenses', data: expenseData }];
-      if (!isTreasury) {
-        const targetBank = banks.find((bank) => bank.id === paymentSource);
-        if (!targetBank) throw new Error('البنك المختار غير موجود.');
-        actions.push({
-          type: 'balance_delta',
-          collection: 'banks',
-          id: targetBank.id,
-          delta: -expenseAmount,
-        });
-      } else if (treasury?.id) {
-        actions.push({
-          type: 'balance_delta',
-          collection: 'treasury',
-          id: treasury.id,
-          delta: -expenseAmount,
-        });
+      const newExpense = await pb.collection('expenses').create(expenseData);
+
+      if (isTreasury) {
+        if (treasury) {
+          const currentBalance = Number(treasury.balance || 0);
+          const newBalance = currentBalance - expenseAmount;
+          await pb.collection('treasury').update(treasury.id, { balance: roundMoney(newBalance) });
+        } else {
+          // إذا لم يكن سجل الخزنة موجوداً، ننشئه بالرصيد بالسالب
+          await pb.collection('treasury').create({ balance: roundMoney(-expenseAmount), opening_balance: 0 });
+        }
       } else {
-        actions.push({
-          type: 'create',
-          collection: 'treasury',
-          data: { balance: roundMoney(-expenseAmount), opening_balance: 0 },
-        });
+        const targetBank = banks.find(b => b.id === paymentSource);
+        if (targetBank) {
+          const currentBankBalance = Number(targetBank.balance || 0);
+          const newBankBalance = currentBankBalance - expenseAmount;
+          await pb.collection('banks').update(targetBank.id, { balance: roundMoney(newBankBalance) });
+        } else {
+          throw new Error('البنك المختار غير موجود.');
+        }
       }
 
-      await executeCompoundOperation(actions);
-      return { reviewRequested: false };
+      return newExpense;
     },
-    onSuccess: (result) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['expenses'] });
       queryClient.invalidateQueries({ queryKey: ['treasury'] });
       queryClient.invalidateQueries({ queryKey: ['banks'] });
-      queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
       showToast('🚀 تم تسجيل المصروف وخصمه من مصدر الدفع بنجاح!');
       setAmount('');
       setNotes('');
@@ -244,47 +228,33 @@ export default function ExpensesPage() {
       const expenseAmount = Number(expenseObj.amount || 0);
       const isBankPayment = expenseObj.payment_source === 'bank' || Boolean(expenseObj.bank_id);
       const bankId = typeof expenseObj.bank_id === 'string' ? expenseObj.bank_id : expenseObj.bank_id?.id;
-      const actions = [{
-        type: 'delete',
-        collection: 'expenses',
-        id: expenseObj.id,
-        record_label: expenseObj.notes || 'مصروف',
-      }];
+
+      // 1. حذف المصروف من جدول expenses أولاً
+      await archiveAndDeleteRecord('expenses', expenseObj.id, expenseObj.notes || 'مصروف', { allowNonAdmin: true });
+
+      // 2. إرجاع المبلغ للمصدر الصحيح (بنك أو خزنة)
       if (isBankPayment && bankId) {
         const targetBank = banks.find(b => b.id === bankId);
         if (targetBank) {
-          actions.push({
-            type: 'balance_delta',
-            collection: 'banks',
-            id: targetBank.id,
-            delta: expenseAmount,
-          });
+          const restoredBalance = Number(targetBank.balance || 0) + expenseAmount;
+          await pb.collection('banks').update(targetBank.id, { balance: roundMoney(restoredBalance) });
         }
       } else {
+        // إذا لم يكن بنك إذن فهو خزنة رئيسية
         if (treasury) {
-          actions.push({
-            type: 'balance_delta',
-            collection: 'treasury',
-            id: treasury.id,
-            delta: expenseAmount,
-          });
+          const currentBalance = Number(treasury.balance || 0);
+          const restoredBalance = currentBalance + expenseAmount;
+          await pb.collection('treasury').update(treasury.id, { balance: roundMoney(restoredBalance) });
         } else {
-          actions.push({
-            type: 'create',
-            collection: 'treasury',
-            data: { balance: roundMoney(expenseAmount), opening_balance: 0 },
-          });
+          await pb.collection('treasury').create({ balance: roundMoney(expenseAmount), opening_balance: 0 });
         }
       }
-      await executeCompoundOperation(actions);
-      return { deletedDirectly: true };
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['expenses'] });
       queryClient.invalidateQueries({ queryKey: ['treasury'] });
       queryClient.invalidateQueries({ queryKey: ['banks'] });
-      queryClient.invalidateQueries({ queryKey: ['pending_financial_review_action_keys'] });
-      showToast('تم حذف المصروف وإرجاع المبلغ إلى مصدر السداد بنجاح.');
+      showToast('🗑️ تم حذف المصروف وإرجاع المبلغ إلى مصدره بنجاح!');
       setDeleteConfirmModal({ show: false, type: '', data: null });
     },
     onError: (error) => {
@@ -349,11 +319,10 @@ export default function ExpensesPage() {
     .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
 
   const cashSupplierPayments = supplierTransactions
-    .filter(transaction => ['treasury', 'خزنة', 'كاش', ''].includes(String(transaction.destination || '')) && !String(transaction.type || '').toLowerCase().includes('open') && !String(transaction.notes || '').startsWith('تسوية ('))
+    .filter(transaction => ['treasury', 'خزنة', 'كاش', ''].includes(String(transaction.destination || '')) && !String(transaction.type || '').toLowerCase().includes('open') && !isSupplierSettlement(transaction))
     .reduce((sum, transaction) => sum - Number(transaction.amount || 0), 0);
 
   const cashSales = salesInvoices.reduce((sum, invoice) => {
-    if (['بانتظار اعتماد المراجع', 'رفض اعتماد التحصيل'].includes(String(invoice.status || ''))) return sum;
     const paymentType = String(invoice.payment_type || invoice.payment_method || invoice.type || '').toLowerCase();
     const isCash = paymentType.includes('cash') || paymentType.includes('كاش') || paymentType.includes('نقدي') || paymentType === '';
     return isCash ? sum + Number(invoice.total_amount || invoice.amount || 0) : sum;
@@ -383,7 +352,6 @@ export default function ExpensesPage() {
     .filter(tx => ['treasury', 'خزنة', 'كاش', ''].includes(String(tx.destination || '')) && !String(tx.type || '').toLowerCase().includes('open'))
     .reduce((sum, tx) => sum + Number(tx.amount || 0), 0)
     + salesInvoices.reduce((sum, invoice) => {
-      if (['بانتظار اعتماد المراجع', 'رفض اعتماد التحصيل'].includes(String(invoice.status || ''))) return sum;
       const paymentType = String(invoice.payment_type || invoice.payment_method || invoice.type || '').toLowerCase();
       const isCash = paymentType.includes('cash') || paymentType.includes('كاش') || paymentType.includes('نقدي') || paymentType === '';
       return isCash ? sum + Number(invoice.total_amount || invoice.amount || 0) : sum;
@@ -402,7 +370,7 @@ export default function ExpensesPage() {
       return isBankExpense ? sum : sum + Number(expense.amount || 0);
     }, 0)
     + supplierTransactions
-      .filter(transaction => ['treasury', 'خزنة', 'كاش', ''].includes(String(transaction.destination || '')) && !String(transaction.type || '').toLowerCase().includes('open') && !String(transaction.notes || '').startsWith('تسوية ('))
+      .filter(transaction => ['treasury', 'خزنة', 'كاش', ''].includes(String(transaction.destination || '')) && !String(transaction.type || '').toLowerCase().includes('open') && !isSupplierSettlement(transaction))
       .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0)
     + employeeAdvances.filter((advance) => {
       const hasEmployee = Boolean(advance.employee_id);
@@ -661,7 +629,7 @@ export default function ExpensesPage() {
               disabled={addExpenseMutation.isPending}
               className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-2xl font-black text-xs transition shadow-lg shadow-blue-600/20"
             >
-              {addExpenseMutation.isPending ? 'جاري تسجيل المصروف...' : 'تسجيل المصروف'}
+              {addExpenseMutation.isPending ? 'جاري الخصم والحفظ...' : 'حفظ المصروف وخصمه من المصدر'}
             </button>
           </form>
         </div>
@@ -735,11 +703,6 @@ export default function ExpensesPage() {
 
       {/* جدول سجل المصروفات */}
       <div ref={expenseHistoryPrintRef} className={`expense-history-print-area bg-white p-6 rounded-3xl shadow-xl border border-gray-100 space-y-4 ${isExpenseHistoryExpanded ? 'expense-history-expanded fixed inset-0 z-40 overflow-auto rounded-none' : ''}`}>
-        {pendingReviewsError && (
-          <p role="alert" className="rounded-xl bg-amber-50 p-3 text-xs font-bold text-amber-800">
-            تعذر تحميل حالات اعتماد العمليات؛ تحقق من اتصال النظام.
-          </p>
-        )}
         <div className="flex justify-between items-center gap-3 border-b pb-3">
           <h2 className="text-base font-black text-gray-800">📋 سجل المصروفات</h2>
           <div className="flex items-center gap-2 print:hidden">
@@ -790,14 +753,7 @@ export default function ExpensesPage() {
                 return (
                   <tr key={exp.id} className="hover:bg-gray-50/50 transition">
                     <td className="p-3 text-gray-600">{formatExpenseDateTime(exp)}</td>
-                    <td className="p-3 font-bold text-gray-900">
-                      {catInfo?.name || 'مصروف محذوف'}
-                      {pendingReviewActionKeys.includes(`expenses/${exp.id}`) && (
-                        <span className="mr-2 inline-flex rounded-md bg-amber-100 px-2 py-1 text-[10px] font-bold text-amber-800">
-                          بانتظار اعتماد المراجع
-                        </span>
-                      )}
-                    </td>
+                    <td className="p-3 font-bold text-gray-900">{catInfo?.name || 'مصروف محذوف'}</td>
                     <td className="p-3">
                       <span className={`px-2.5 py-1 rounded-xl text-[10px] font-bold ${
                         isOperational ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'

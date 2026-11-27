@@ -3,12 +3,10 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase'; // تأكد من مطابقة مسار ملف الـ pocketbase عندك
-import { requestRecordUpdate } from '../../lib/approval-requests';
 
 // البيانات الافتراضية كاملة (الأسماء، التعبئة، الأسعار، التصنيف)
 const initialFeedData = [
-
-{ id: 'p1', name: 'سوبر بادي ۲۳ %', weight: '25 / 50 كجم', price: 24800, category: 'poultry' },
+  { id: 'p1', name: 'سوبر بادي ۲۳ %', weight: '25 / 50 كجم', price: 24800, category: 'poultry' },
   { id: 'p2', name: 'سوبر نامي ۲۱,٥ %', weight: '25 / 50 كجم', price: 24700, category: 'poultry' },
   { id: 'p3', name: 'سوبر ناهي ۱۹ %', weight: '25 / 50 كجم', price: 24550, category: 'poultry' },
   { id: 'p4', name: 'سوبر بادي ۲۳ %', weight: '10 كجم', price: 25000, category: 'poultry' },
@@ -20,7 +18,6 @@ const initialFeedData = [
   { id: 'p10', name: 'بياض ۱4 %', weight: '10 كجم', price: 19000, category: 'poultry' },
   { id: 'p11', name: 'بياض ۱4 %', weight: '25 كجم', price: 18800, category: 'poultry' },
 
-  
   { id: 'l1', name: 'الزعيم تسمين ۱٦ %', weight: '( 50ك / 5ك )', price: 17150, category: 'livestock' },
   { id: 'l2', name: 'الزعيم تسمين ۱۴ %', weight: '( 50ك / 5ك )', price: 16850, category: 'livestock' },
   { id: 'l3', name: 'بط فاخر ۱۱ %', weight: '( ك 20 )', price: 10250, category: 'livestock' },
@@ -70,11 +67,11 @@ export default function EditableFeedPrices() {
       if (id.startsWith('p') || id.startsWith('l')) {
         return { id, price: Number(price) || 0 };
       }
-      return requestRecordUpdate('feed_prices', id, { price: Number(price) || 0 });
+      return await pb.collection('feed_prices').update(id, { price: Number(price) || 0 });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['feed_prices'] });
-      showFeedback('تم إرسال طلب تعديل السعر للمدير.');
+      showFeedback('تم حفظ السعر بنجاح.');
     },
     onError: (error) => showFeedback(`فشل الحفظ: ${error.message}`, 'error'),
   });
@@ -95,7 +92,7 @@ export default function EditableFeedPrices() {
         else if (bulkMode === 'percent') newPrice = Math.round(item.price * (1 + val / 100));
         else if (bulkMode === 'set') newPrice = val;
 
-        return requestRecordUpdate('feed_prices', id, { price: newPrice }, item.name);
+        return pb.collection('feed_prices').update(id, { price: newPrice });
       });
 
       await Promise.all(promises.filter(Boolean));
@@ -104,7 +101,7 @@ export default function EditableFeedPrices() {
       queryClient.invalidateQueries({ queryKey: ['feed_prices'] });
       setSelectedIds([]);
       setBulkValue('');
-      showFeedback('تم إرسال طلبات تعديل الأسعار للمدير.');
+      showFeedback('تم تطبيق وحفظ التعديلات المجمعة بنجاح.');
     },
     onError: (error) => showFeedback(`فشل التعديل المجمع: ${error.message}`, 'error'),
   });

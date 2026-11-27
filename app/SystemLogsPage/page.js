@@ -6,6 +6,7 @@ import { pb } from '../lib/pocketbase';
 export default function SystemLogsPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedType, setSelectedType] = useState('all'); // فلترة بنوع الحركة
+  const [selectedAction, setSelectedAction] = useState('all');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [selectedLog, setSelectedLog] = useState(null); // نافذة التفاصيل
@@ -13,90 +14,263 @@ export default function SystemLogsPage() {
   const isAdmin = true; // تحقق الصلاحيات
 
   // 1. جلب السجلات من الجداول المختلفة
-  const { data: banks = [] } = useQuery({
+  const { data: banks = [], isError: banksError } = useQuery({
     queryKey: ['logs_banks'],
-    queryFn: async () => pb.collection('banks').getFullList({ sort: '-created' }).catch(() => []),
+    queryFn: () => pb.collection('banks').getFullList({ sort: '-created' }),
   });
 
-  const { data: expenses = [] } = useQuery({
+  const { data: expenses = [], isError: expensesError } = useQuery({
     queryKey: ['logs_expenses'],
-    queryFn: async () => pb.collection('expenses').getFullList({ sort: '-created', expand: 'category_id' }).catch(() => []),
+    queryFn: () => pb.collection('expenses').getFullList({ sort: '-created', expand: 'category_id' }),
   });
 
-  const { data: clientTransactions = [] } = useQuery({
+  const { data: clientTransactions = [], isError: clientTransactionsError } = useQuery({
     queryKey: ['logs_client_transactions'],
-    queryFn: async () => pb.collection('client_transactions').getFullList({ sort: '-created', expand: 'client_id' }).catch(() => []),
+    queryFn: () => pb.collection('client_transactions').getFullList({ sort: '-created', expand: 'client_id' }),
   });
 
-  const { data: treasuryTransactions = [] } = useQuery({
+  const { data: treasuryTransactions = [], isError: treasuryTransactionsError } = useQuery({
     queryKey: ['logs_treasury_transactions'],
-    queryFn: async () => pb.collection('treasury_transactions').getFullList({ sort: '-date' }).catch(() => []),
+    queryFn: () => pb.collection('treasury_transactions').getFullList({ sort: '-date' }),
   });
 
-  // دمج وتصنيف الحركات بدقة
+  const { data: supplierTransactions = [], isError: supplierTransactionsError } = useQuery({
+    queryKey: ['logs_supplier_transactions'],
+    queryFn: () => pb.collection('supplier_transactions').getFullList({ sort: '-created', expand: 'supplier_id' }),
+  });
+
+  const { data: materialAdjustments = [], isError: materialAdjustmentsError } = useQuery({
+    queryKey: ['logs_material_adjustments'],
+    queryFn: () => pb.collection('material_adjustments').getFullList({ sort: '-created' }),
+  });
+
+  const { data: productStockTransactions = [], isError: productStockTransactionsError } = useQuery({
+    queryKey: ['logs_product_stock_transactions'],
+    queryFn: () => pb.collection('product_stock_transactions').getFullList({ sort: '-created' }),
+  });
+
+  const { data: deletedRecords = [], isError: deletedRecordsError } = useQuery({
+    queryKey: ['logs_deleted_records'],
+    queryFn: () => pb.collection('deleted_records').getFullList({ sort: '-created' }),
+  });
+
+  const { data: invoiceLogs = [], isError: invoiceLogsError } = useQuery({
+    queryKey: ['logs_invoice_changes'],
+    queryFn: () => pb.collection('invoices_logs').getFullList({ sort: '-created' }),
+  });
+
+  const hasLogSourceError = [
+    banksError,
+    expensesError,
+    clientTransactionsError,
+    treasuryTransactionsError,
+    supplierTransactionsError,
+    materialAdjustmentsError,
+    productStockTransactionsError,
+    deletedRecordsError,
+    invoiceLogsError,
+  ].some(Boolean);
+
+  const wasUpdated = (record) => (
+    record.updated && record.created &&
+    new Date(record.updated).getTime() > new Date(record.created).getTime()
+  );
+  const isSettlement = (record) => (
+    String(record.type || '').toLowerCase() === 'settlement' ||
+    String(record.notes || '').startsWith('تسوية (')
+  );
+  const invoiceDeleteNumbers = new Set(
+    invoiceLogs
+      .filter((log) => log.action_type === 'حذف')
+      .map((log) => String(log.invoice_number || '')),
+  );
+
+  // دمج السجلات الحالية مع سجلات الحذف والتعديل والتسوية المسجلة.
   const allSystemLogs = [
-    ...banks.map(b => ({
-      id: b.id,
-      section: 'البنوك',
-      type: 'bank_operation',
-      typeName: 'حركة بنكية',
-      action: 'إضافة / تعديل بنك',
-      actor: b.actor_name || 'مسؤول النظام',
-      date: b.created,
-      details: {
-        'اسم البنك': b.name,
-        'الرصيد الافتتاحي': `${Number(b.opening_balance || 0).toLocaleString()} ج.م`,
-        'الرصيد الحالي': `${Number(b.balance || 0).toLocaleString()} ج.م`,
-        'ملاحظات': b.notes || 'لا توجد ملاحظات'
-      }
-    })),
-    ...expenses.map(e => ({
-      id: e.id,
-      section: 'المصروفات',
-      type: 'expense',
-      typeName: 'مصروف',
-      action: 'تسجيل مصروف جديد',
-      actor: e.actor_name || 'مسؤول النظام',
-      date: e.created || e.date,
-      details: {
-        'بند المصروف': e.expand?.category_id?.name || 'مصروف عام',
-        'المبلغ': `${Number(e.amount || 0).toLocaleString()} ج.م`,
-        'طريقة الدفع': e.payment_source || 'خزنة',
-        'ملاحظات': e.notes || 'لا توجد ملاحظات'
-      }
-    })),
-    ...clientTransactions.map(t => ({
-      id: t.id,
-      section: 'حركات العملاء',
-      type: 'client_transaction',
-      typeName: 'حركة عملاء',
-      action: 'حركة مالية لعميل',
-      actor: t.actor_name || 'مسؤول النظام',
-      date: t.created || t.date,
-      details: {
-        'اسم العميل': t.expand?.client_id?.name || 'عميل',
-        'المبلغ': `${Number(t.amount || 0).toLocaleString()} ج.م`,
-        'الوجهة': t.destination || '-',
-        'ملاحظات': t.notes || 'لا توجد ملاحظات'
-      }
-    })),
-    ...treasuryTransactions
-      .filter(t => String(t.movement_type || '').toLowerCase() === 'bank_deposit')
-      .map(t => ({
-        id: t.id,
-        section: 'الخزنة والبنوك',
-        type: 'bank_deposit',
-        typeName: 'إيداع بنكي',
-        action: 'إيداع من الخزنة إلى البنك',
-        actor: t.actor_name || 'مسؤول النظام',
-        date: t.created || t.date,
+    ...banks.map((bank) => {
+      const isEdited = wasUpdated(bank);
+      return {
+        id: `bank:${bank.id}`,
+        section: 'البنوك',
+        type: 'bank_operation',
+        typeName: isEdited ? 'تعديل بنك' : 'إضافة بنك',
+        actionCategory: isEdited ? 'edit' : 'add',
+        action: isEdited ? 'تعديل بيانات بنك' : 'إضافة بنك',
+        actor: bank.actor_name || 'مسؤول النظام',
+        date: bank.updated || bank.created,
         details: {
-          'البيان': t.title || 'إيداع من الخزنة إلى البنك',
-          'المبلغ': `${Number(t.amount || 0).toLocaleString()} ج.م`,
-          'ملاحظات': t.notes || 'لا توجد ملاحظات'
-        }
-      }))
-  ].sort((a, b) => new Date(b.date) - new Date(a.date));
+          'اسم البنك': bank.name,
+          'الرصيد الافتتاحي': `${Number(bank.opening_balance || 0).toLocaleString()} ج.م`,
+          'الرصيد الحالي': `${Number(bank.balance || 0).toLocaleString()} ج.م`,
+          'ملاحظات': bank.notes || 'لا توجد ملاحظات',
+        },
+      };
+    }),
+    ...expenses.map((expense) => {
+      const isEdited = wasUpdated(expense);
+      return {
+        id: `expense:${expense.id}`,
+        section: 'المصروفات',
+        type: 'expense',
+        typeName: isEdited ? 'تعديل مصروف' : 'مصروف',
+        actionCategory: isEdited ? 'edit' : 'add',
+        action: isEdited ? 'تعديل مصروف' : 'تسجيل مصروف جديد',
+        actor: expense.actor_name || 'مسؤول النظام',
+        date: expense.updated || expense.created || expense.date,
+        details: {
+          'بند المصروف': expense.expand?.category_id?.name || 'مصروف عام',
+          'المبلغ': `${Number(expense.amount || 0).toLocaleString()} ج.م`,
+          'طريقة الدفع': expense.payment_source || 'خزنة',
+          'ملاحظات': expense.notes || 'لا توجد ملاحظات',
+        },
+      };
+    }),
+    ...clientTransactions.map((transaction) => {
+      const settlement = isSettlement(transaction);
+      return {
+        id: `client:${transaction.id}`,
+        section: 'حركات العملاء',
+        type: 'client_transaction',
+        typeName: settlement ? 'تسوية حساب عميل' : 'حركة عملاء',
+        actionCategory: settlement ? 'settlement' : 'add',
+        action: settlement ? 'تسوية حساب عميل' : 'حركة مالية لعميل',
+        actor: transaction.actor_name || 'مسؤول النظام',
+        date: transaction.created || transaction.date,
+        details: {
+          'اسم العميل': transaction.expand?.client_id?.name || 'عميل',
+          'المبلغ': `${Number(transaction.amount || 0).toLocaleString()} ج.م`,
+          'الوجهة': transaction.destination || '-',
+          'ملاحظات': transaction.notes || 'لا توجد ملاحظات',
+        },
+      };
+    }),
+    ...supplierTransactions.map((transaction) => {
+      const settlement = isSettlement(transaction);
+      return {
+        id: `supplier:${transaction.id}`,
+        section: 'حركات الموردين',
+        type: 'supplier_transaction',
+        typeName: settlement ? 'تسوية حساب مورد' : 'حركة مورد',
+        actionCategory: settlement ? 'settlement' : 'add',
+        action: settlement ? 'تسوية حساب مورد' : 'حركة مالية لمورد',
+        actor: transaction.actor_name || 'مسؤول النظام',
+        date: transaction.created || transaction.date,
+        details: {
+          'اسم المورد': transaction.expand?.supplier_id?.name || 'مورد',
+          'المبلغ': `${Number(transaction.amount || 0).toLocaleString()} ج.م`,
+          'ملاحظات': transaction.notes || 'لا توجد ملاحظات',
+        },
+      };
+    }),
+    ...treasuryTransactions
+      .filter((transaction) => ['bank_deposit', 'bank_adjustment'].includes(String(transaction.movement_type || '').toLowerCase()))
+      .map((transaction) => {
+        const movementType = String(transaction.movement_type || '').toLowerCase();
+        const title = transaction.title || '';
+        const settlement = movementType === 'bank_adjustment' && title.includes('تسوية');
+        const edited = movementType === 'bank_adjustment' && title.includes('تعديل رصيد البنك');
+        return {
+          id: `treasury:${transaction.id}`,
+          section: 'الخزنة والبنوك',
+          type: movementType === 'bank_deposit' ? 'bank_deposit' : 'bank_adjustment',
+          typeName: settlement ? 'تسوية رصيد بنك' : edited ? 'تعديل رصيد بنك' : 'حركة بنكية',
+          actionCategory: settlement ? 'settlement' : edited ? 'edit' : 'add',
+          action: title || (movementType === 'bank_deposit' ? 'إيداع من الخزنة إلى البنك' : 'تعديل رصيد البنك'),
+          actor: transaction.actor_name || 'مسؤول النظام',
+          date: transaction.created || transaction.date,
+          details: {
+            'البيان': title || 'حركة بنكية',
+            'المبلغ': `${Number(transaction.amount || 0).toLocaleString()} ج.م`,
+            'ملاحظات': transaction.notes || 'لا توجد ملاحظات',
+          },
+        };
+      }),
+    ...materialAdjustments.map((adjustment) => ({
+      id: `material-adjustment:${adjustment.id}`,
+      section: 'الخامات',
+      type: 'material_adjustment',
+      typeName: 'تسوية خامة',
+      actionCategory: 'settlement',
+      action: 'تسوية مخزون خامة',
+      actor: adjustment.actor_name || 'مسؤول النظام',
+      date: adjustment.created || adjustment.date,
+      details: {
+        'الخامة': adjustment.material_name || 'خامة',
+        'كمية التسوية': `${Number(adjustment.quantity || 0).toLocaleString()}`,
+        'الرصيد قبل التسوية': `${Number(adjustment.old_stock || 0).toLocaleString()}`,
+        'الرصيد بعدها': `${Number(adjustment.new_stock || 0).toLocaleString()}`,
+        'السبب': adjustment.reason || adjustment.notes || 'لا توجد ملاحظات',
+      },
+    })),
+    ...productStockTransactions
+      .filter((transaction) => ['adjustment', 'stock_edit', 'delete'].includes(String(transaction.movement_type || '').toLowerCase()))
+      .map((transaction) => {
+        const movementType = String(transaction.movement_type || '').toLowerCase();
+        const deleted = movementType === 'delete';
+        const edited = movementType === 'stock_edit';
+        return {
+          id: `product-stock:${transaction.id}`,
+          section: 'مخزن المنتجات',
+          type: 'product_stock_adjustment',
+          typeName: deleted ? 'حذف من المخزن' : edited ? 'تعديل مخزون' : 'تسوية مخزن',
+          actionCategory: deleted ? 'delete' : edited ? 'edit' : 'settlement',
+          action: transaction.title || (deleted ? 'حذف منتج من المخزن' : edited ? 'تعديل كمية المخزون' : 'تسوية مخزن المنتجات'),
+          actor: transaction.actor_name || 'مسؤول النظام',
+          date: transaction.movement_at || transaction.created,
+          details: {
+            'المنتج': transaction.product_name || 'منتج',
+            'الكمية': `${Number(transaction.quantity || 0).toLocaleString()}`,
+            'الرصيد بعد الحركة': `${Number(transaction.balance_after || 0).toLocaleString()}`,
+            'ملاحظات': transaction.notes || 'لا توجد ملاحظات',
+          },
+        };
+      }),
+    ...deletedRecords
+      .filter((record) => !(
+        record.collection_name === 'sales_invoices' &&
+        invoiceDeleteNumbers.has(String(record.record_data?.invoice_number || record.display_name || ''))
+      ))
+      .map((record) => ({
+        id: `deleted:${record.id}`,
+        section: record.collection_name || 'غير معروف',
+        type: 'deleted_record',
+        typeName: 'حذف',
+        actionCategory: 'delete',
+        action: `حذف ${record.display_name || 'سجل'}`,
+        actor: record.deleted_by || 'مسؤول النظام',
+        date: record.created,
+        details: {
+          'اسم السجل': record.display_name || 'سجل بدون اسم',
+          'المجموعة': record.collection_name || 'غير معروف',
+          'معرّف السجل': record.record_id || '-',
+        },
+      })),
+    ...invoiceLogs.map((log) => {
+      const deleted = log.action_type === 'حذف';
+      let detailsMessage = log.details || 'لا توجد تفاصيل';
+      try {
+        const parsedDetails = JSON.parse(log.details || '{}');
+        detailsMessage = parsedDetails.message || detailsMessage;
+      } catch {
+        detailsMessage = log.details || 'لا توجد تفاصيل';
+      }
+      return {
+        id: `invoice-log:${log.id}`,
+        section: 'فواتير البيع',
+        type: 'sales_invoice',
+        typeName: deleted ? 'حذف فاتورة' : 'تعديل فاتورة',
+        actionCategory: deleted ? 'delete' : 'edit',
+        action: `${deleted ? 'حذف' : 'تعديل'} فاتورة ${log.invoice_number || ''}`.trim(),
+        actor: log.actor_name || 'مسؤول النظام',
+        date: log.created,
+        details: {
+          'رقم الفاتورة': log.invoice_number || '-',
+          'الإجراء': log.action_type || '-',
+          'التفاصيل': detailsMessage,
+        },
+      };
+    }),
+  ].sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
 
   // تصفية السجلات حسب البحث، الفترة، ونوع الحركة
   const filteredLogs = allSystemLogs.filter(log => {
@@ -110,11 +284,21 @@ export default function SystemLogsPage() {
       return false;
     }
 
+    if (selectedAction !== 'all' && log.actionCategory !== selectedAction) {
+      return false;
+    }
+
     if (searchTerm.trim()) {
       const term = searchTerm.toLowerCase();
-      const matchActor = log.actor.toLowerCase().includes(term);
-      const matchSection = log.section.toLowerCase().includes(term);
-      if (!matchActor && !matchSection) return false;
+      const searchableDetails = Object.values(log.details).join(' ').toLowerCase();
+      const matchText = [
+        log.actor,
+        log.section,
+        log.typeName,
+        log.action,
+        searchableDetails,
+      ].some((value) => String(value || '').toLowerCase().includes(term));
+      if (!matchText) return false;
     }
 
     return true;
@@ -181,10 +365,16 @@ export default function SystemLogsPage() {
         <p className="text-xs text-gray-500 mt-1">متابعة كافة الحركات والإجراءات التي تتم داخل النظام وتفاصيلها الكاملة</p>
       </div>
 
+      {hasLogSourceError && (
+        <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-bold text-amber-800">
+          تعذر تحميل بعض مصادر السجلات؛ قد تكون النتائج غير مكتملة. تحقق من صلاحيات القراءة للمجموعات المرتبطة بالسجلات.
+        </div>
+      )}
+
       {/* أدوات البحث والفترة وفلترة نوع الحركة */}
-      <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 grid grid-cols-1 md:grid-cols-4 gap-3">
+      <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
         <div>
-          <label className="text-xs font-bold text-gray-700 block mb-1">بحث باسم المستخدم / القسم</label>
+          <label className="text-xs font-bold text-gray-700 block mb-1">بحث باسم المستخدم / القسم / الإجراء</label>
           <input
             type="text"
             placeholder="🔍 ابحث هنا..."
@@ -195,7 +385,7 @@ export default function SystemLogsPage() {
         </div>
 
         <div>
-          <label className="text-xs font-bold text-gray-700 block mb-1">نوع الحركة</label>
+          <label className="text-xs font-bold text-gray-700 block mb-1">القسم / نوع السجل</label>
           <select
             value={selectedType}
             onChange={(e) => setSelectedType(e.target.value)}
@@ -205,7 +395,28 @@ export default function SystemLogsPage() {
             <option value="expense">مصروف</option>
             <option value="bank_operation">حركة بنكية</option>
             <option value="client_transaction">حركة عملاء</option>
+            <option value="supplier_transaction">حركة موردين</option>
             <option value="bank_deposit">إيداع بنكي</option>
+            <option value="bank_adjustment">تعديل / تسوية بنك</option>
+            <option value="material_adjustment">تسوية خامة</option>
+            <option value="product_stock_adjustment">تعديل / تسوية مخزن</option>
+            <option value="deleted_record">سجلات محذوفة</option>
+            <option value="sales_invoice">فواتير البيع</option>
+          </select>
+        </div>
+
+        <div>
+          <label className="text-xs font-bold text-gray-700 block mb-1">نوع الإجراء</label>
+          <select
+            value={selectedAction}
+            onChange={(e) => setSelectedAction(e.target.value)}
+            className="w-full border p-2.5 rounded-xl text-xs outline-none focus:border-blue-500 bg-gray-50 font-bold"
+          >
+            <option value="all">كل الإجراءات</option>
+            <option value="add">إضافة</option>
+            <option value="edit">تعديل</option>
+            <option value="delete">حذف</option>
+            <option value="settlement">تسوية</option>
           </select>
         </div>
 

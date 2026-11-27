@@ -36,12 +36,18 @@ export default function LoginPage() {
         }
       }
 
+      // توجيه مستخدم الخزنة إلى صفحته، وباقي المستخدمين إلى صفحة النظام الرئيسية
       const loggedUser = pb.authStore.model;
       const savedUserName = loggedUser?.name || loggedUser?.email || 'مسؤول النظام';
       if (typeof window !== 'undefined') {
         localStorage.setItem('userName', savedUserName);
       }
-      router.replace('/moashe/Treasury');
+      
+      if (loggedUser?.email === 'ahmed@gmail.com') {
+        router.replace('/moashe/Treasury');
+      } else {
+        router.replace('/moashe/khamatMoashe');
+      }
 
     } catch (requestError) {
       console.error("PocketBase Error Details:", requestError); // طباعة الخطأ الكامل في الـ Console

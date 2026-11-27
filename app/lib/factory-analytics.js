@@ -1,3 +1,5 @@
+import { isSupplierSettlement } from './supplier-transactions';
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export const normalizeAnalyticsName = (value) => String(value || '')
@@ -242,7 +244,7 @@ export function buildCashForecast({ treasury, invoices, clientTransactions, supp
     .reduce((sum, transaction) => sum + toNumber(transaction.amount), 0);
   const supplierPayments = supplierTransactions.filter((transaction) => isInPeriod(transaction)
     && !String(transaction.type || '').toLowerCase().includes('open')
-    && !String(transaction.notes || '').startsWith('تسوية (')
+    && !isSupplierSettlement(transaction)
     && isTreasuryDestination(transaction))
     .reduce((sum, transaction) => sum + toNumber(transaction.amount), 0);
   const treasuryExpenses = expenses.filter((expense) => isInPeriod(expense)

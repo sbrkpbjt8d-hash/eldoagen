@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { pb } from '../../lib/pocketbase';
-import { executeCompoundOperation } from '../../lib/approval-requests';
+import { archiveAndDeleteRecord } from '../../lib/deleted-records';
 
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 
@@ -41,6 +41,21 @@ export default function OtherAccountsPage() {
 
   const otherAdvances = advances.filter(item => item.advance_type === 'other' && Number(item.remaining_amount ?? item.amount ?? 0) > 0);
 
+  const updateBalance = async (sourceType, bankId, delta) => {
+    if (sourceType === 'treasury') {
+      if (treasury) {
+        await pb.collection('treasury').update(treasury.id, { balance: roundMoney(Number(treasury.balance || 0) + delta) });
+      } else {
+        await pb.collection('treasury').create({ opening_balance: 0, balance: roundMoney(delta) });
+      }
+      return;
+    }
+
+    const bank = banks.find(item => item.id === bankId);
+    if (!bank) throw new Error('البنك المختار غير موجود.');
+    await pb.collection('banks').update(bank.id, { balance: roundMoney(Number(bank.balance || 0) + delta) });
+  };
+
   const createAdvanceMutation = useMutation({
     mutationFn: async () => {
       const numericAmount = Number(amount);
@@ -49,52 +64,7 @@ export default function OtherAccountsPage() {
       if (source !== 'treasury' && !banks.some(bank => bank.id === source)) throw new Error('اختر مصدر صرف صحيح.');
 
       const sourceType = source === 'treasury' ? 'treasury' : 'bank';
-      if (sourceType === 'bank') {
-        const bank = banks.find(item => item.id === source);
-        if (!bank) throw new Error('البنك المختار غير موجود.');
-        const advanceData = {
-          advance_type: 'other',
-          recipient_name: recipientName.trim(),
-          amount: roundMoney(numericAmount),
-          original_amount: roundMoney(numericAmount),
-          returned_amount: 0,
-          remaining_amount: roundMoney(numericAmount),
-          source_type: sourceType,
-          bank_id: source,
-          status: 'open',
-          date,
-          notes: notes.trim() || 'عهدة',
-          actor_name: actorName,
-          is_deducted: false,
-        };
-        await executeCompoundOperation([
-          { type: 'create', collection: 'advances', data: advanceData },
-          {
-            type: 'balance_delta',
-            collection: 'banks',
-            id: bank.id,
-            delta: -numericAmount,
-          },
-          {
-            type: 'create',
-            collection: 'treasury_transactions',
-            data: {
-              type: 'purchase',
-              movement_type: 'other_advance',
-              source_type: sourceType,
-              bank_id: source,
-              amount: numericAmount,
-              title: `صرف عهدة: ${recipientName.trim()}`,
-              notes: notes.trim() || 'صرف عهدة',
-              date: new Date().toISOString(),
-              actor_name: actorName,
-            },
-          },
-        ]);
-        return;
-      }
-
-      const advanceData = {
+      const advance = await pb.collection('advances').create({
         advance_type: 'other',
         recipient_name: recipientName.trim(),
         amount: roundMoney(numericAmount),
@@ -108,40 +78,22 @@ export default function OtherAccountsPage() {
         notes: notes.trim() || 'عهدة',
         actor_name: actorName,
         is_deducted: false,
-      };
-      const actions = [
-        { type: 'create', collection: 'advances', data: advanceData },
-      ];
-      if (treasury?.id) {
-        actions.push({
-          type: 'balance_delta',
-          collection: 'treasury',
-          id: treasury.id,
-          delta: -numericAmount,
-        });
-      } else {
-        actions.push({
-          type: 'create',
-          collection: 'treasury',
-          data: { opening_balance: 0, balance: roundMoney(-numericAmount) },
-        });
-      }
-      actions.push({
-        type: 'create',
-        collection: 'treasury_transactions',
-        data: {
-          type: 'purchase',
-          movement_type: 'other_advance',
-          source_type: sourceType,
-          bank_id: '',
-          amount: numericAmount,
-          title: `صرف عهدة: ${recipientName.trim()}`,
-          notes: notes.trim() || 'صرف عهدة',
-          date: new Date().toISOString(),
-          actor_name: actorName,
-        },
       });
-      await executeCompoundOperation(actions);
+
+      await updateBalance(sourceType, source, -numericAmount);
+      await pb.collection('treasury_transactions').create({
+        type: 'purchase',
+        movement_type: 'other_advance',
+        source_type: sourceType,
+        bank_id: sourceType === 'bank' ? source : '',
+        amount: numericAmount,
+        title: `صرف عهدة: ${recipientName.trim()}`,
+        notes: notes.trim() || 'صرف عهدة',
+        date: new Date().toISOString(),
+        actor_name: actorName,
+        advance_id: advance.id,
+      });
+      return advance;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['other_accounts_advances'] });
@@ -151,10 +103,7 @@ export default function OtherAccountsPage() {
       setAmount('');
       setNotes('');
       setSource('treasury');
-      setMessage({
-        text: 'تم صرف العهدة وخصمها من المصدر وتسجيلها في السجل.',
-        type: 'success',
-      });
+      setMessage({ text: 'تم صرف العهدة وخصمها من المصدر وتسجيلها في السجل.', type: 'success' });
     },
     onError: error => setMessage({ text: error.message || 'تعذر تسجيل العهدة.', type: 'error' }),
   });
@@ -169,40 +118,14 @@ export default function OtherAccountsPage() {
 
       const nextRemaining = remaining - numericReturn;
       const sourceType = returnSource === 'treasury' ? 'treasury' : 'bank';
-      const actions = [{
-        type: 'update',
-        collection: 'advances',
-        id: advance.id,
-        data: {
-          returned_amount: roundMoney(Number(advance.returned_amount || 0) + numericReturn),
-          remaining_amount: roundMoney(nextRemaining),
-          status: nextRemaining === 0 ? 'closed' : 'open',
-          is_deducted: false,
-        },
-      }];
-
-      if (sourceType === 'treasury') {
-        if (!treasury) throw new Error('لم يتم إعداد سجل الخزنة بعد.');
-        actions.push({
-          type: 'balance_delta',
-          collection: 'treasury',
-          id: treasury.id,
-          delta: numericReturn,
-        });
-      } else {
-        const bank = banks.find(item => item.id === returnSource);
-        if (!bank) throw new Error('البنك المختار غير موجود.');
-        actions.push({
-          type: 'balance_delta',
-          collection: 'banks',
-          id: bank.id,
-          delta: numericReturn,
-        });
-      }
-      actions.push({
-        type: 'create',
-        collection: 'treasury_transactions',
-        data: {
+      await pb.collection('advances').update(advance.id, {
+        returned_amount: roundMoney(Number(advance.returned_amount || 0) + numericReturn),
+        remaining_amount: roundMoney(nextRemaining),
+        status: nextRemaining === 0 ? 'closed' : 'open',
+        is_deducted: nextRemaining === 0,
+      });
+      await updateBalance(sourceType, returnSource, numericReturn);
+      await pb.collection('treasury_transactions').create({
         type: 'purchase',
         movement_type: 'other_advance_return',
         source_type: sourceType,
@@ -213,9 +136,10 @@ export default function OtherAccountsPage() {
         date: new Date().toISOString(),
         actor_name: actorName,
         advance_id: advance.id,
-        },
       });
-      await executeCompoundOperation(actions);
+      if (nextRemaining === 0) {
+        await archiveAndDeleteRecord('advances', advance.id, advance.recipient_name || 'عهدة');
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['other_accounts_advances'] });
@@ -223,10 +147,7 @@ export default function OtherAccountsPage() {
       queryClient.invalidateQueries({ queryKey: ['other_accounts_banks'] });
       setReturnAmounts({});
       setReturnSources({});
-      setMessage({
-        text: 'تم رد المبلغ وتحديث رصيد المصدر وتسجيل الحركة.',
-        type: 'success',
-      });
+      setMessage({ text: 'تم رد المبلغ وتحديث رصيد المصدر وتسجيل الحركة.', type: 'success' });
     },
     onError: error => setMessage({ text: error.message || 'تعذر رد مبلغ العهدة.', type: 'error' }),
   });
