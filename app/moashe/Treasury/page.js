@@ -595,7 +595,7 @@ export default function TreasuryPage() {
   };
 
   const getTransactionTimestamp = (transaction) => {
-    const movementTime = Date.parse(getTransactionDate(transaction) || '');
+    const movementTime = Date.parse(transaction.displayDate || getTransactionDate(transaction) || '');
     if (!Number.isNaN(movementTime)) return movementTime;
     const createdTime = Date.parse(transaction.created || '');
     return Number.isNaN(createdTime) ? 0 : createdTime;
@@ -645,8 +645,16 @@ const transactionsWithTreasuryBalance = sortedAscTransactions.reduce((transactio
   ];
 }, []);
 
-// 3. عكس الترتيب لعرض الأحدث في الأعلى مع الاحتفاظ بالأرصدة الصحيحة لكل حركة
-const allTransactions = [...transactionsWithTreasuryBalance].reverse();
+// 3. عرض الأحدث في الأعلى صراحةً، مع الاحتفاظ بالأرصدة المحسوبة في الخطوة السابقة
+const allTransactions = [...transactionsWithTreasuryBalance].sort((a, b) => {
+  const timestampDifference = getTransactionTimestamp(b) - getTransactionTimestamp(a);
+  if (timestampDifference !== 0) return timestampDifference;
+
+  const createdDifference = Date.parse(b.created || '') - Date.parse(a.created || '');
+  if (Number.isFinite(createdDifference) && createdDifference !== 0) return createdDifference;
+
+  return String(b.id || '').localeCompare(String(a.id || ''));
+});
 
   const filteredTreasuryTransactions = allTransactions.filter(transaction => {
     const transactionDay = getTransactionDay(transaction);

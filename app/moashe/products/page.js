@@ -396,11 +396,6 @@ export default function ProductsPage() {
           <h1 className="text-2xl font-black text-gray-800">📦 إدارة المنتجات والتراكيب</h1>
           <p className="text-sm text-gray-500">نظام متكامل لإدارة المنتجات وحساب التكاليف والأرباح بدقة</p>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="bg-blue-50 text-blue-700 border border-blue-200 text-xs font-bold px-4 py-2 rounded-xl">
-            إجمالي المنتجات: {uniqueProductNames.length}
-          </span>
-        </div>
       </div>
 
       {/* تخطيط الشبكة */}
@@ -530,7 +525,12 @@ export default function ProductsPage() {
         {/* قسم استعراض المنتجات والبحث */}
         <div className="lg:col-span-7 bg-white shadow-xl rounded-2xl border border-gray-100 overflow-hidden flex flex-col">
           <div className="p-4 bg-gray-50 border-b flex flex-col sm:flex-row justify-between items-center gap-3">
-            <h2 className="text-lg font-bold text-gray-800">قائمة المنتجات والتراكيب المسجلة</h2>
+            <div className="flex flex-wrap items-center gap-3">
+              <h2 className="text-lg font-bold text-gray-800">قائمة المنتجات والتراكيب المسجلة</h2>
+              <span className="bg-blue-50 text-blue-700 border border-blue-200 text-xs font-bold px-4 py-2 rounded-xl whitespace-nowrap">
+                عدد المنتجات المسجلة: {uniqueProductNames.length}
+              </span>
+            </div>
             
             <div className="w-full sm:w-64">
               <input

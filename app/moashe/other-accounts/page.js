@@ -138,7 +138,7 @@ export default function OtherAccountsPage() {
         advance_id: advance.id,
       });
       if (nextRemaining === 0) {
-        await archiveAndDeleteRecord('advances', advance.id, advance.recipient_name || 'عهدة');
+        await archiveAndDeleteRecord('advances', advance.id, advance.recipient_name || 'عهدة', { allowNonAdmin: true });
       }
     },
     onSuccess: () => {
